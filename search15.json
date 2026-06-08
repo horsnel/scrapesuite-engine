@@ -1,0 +1,74 @@
+[
+  {
+    "url": "https://www.kadoa.com/blog/how-ai-is-changing-web-scraping-2026",
+    "name": "How AI Is Changing Web Scraping in 2026 - Kadoa",
+    "snippet": "Explore how AI is changing web scraping in 2026. From automation and data quality to compliance to scalability and real-world use cases.",
+    "host_name": "www.kadoa.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/best-web-extraction-tools",
+    "name": "Best Web Extraction Tools for AI in 2026 - Firecrawl",
+    "snippet": "Discover the 10 best web extraction tools for AI use cases in 2026. Compare features, pricing, and AI-readiness of top platforms including ...\nScrape - Extract content from a single URL with advanced options. Handles JavaScript rendering and returns clean Markdown or structured JSON.\nBuilding RAG systems or AI agents? Start with Firecrawl. Five endpoints (scrape, crawl, search, map, interact), LLM-ready output out of the box.",
+    "host_name": "www.firecrawl.dev",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://arxiv.org/html/2504.12682v1",
+    "name": "WebLists: Extracting Structured Information From Complex  - arXiv",
+    "snippet": "We present WebLists, a benchmark of 200 data-extraction tasks across four common business and enterprise use-cases.",
+    "host_name": "arxiv.org",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://simonw.substack.com/p/structured-data-extraction-from-unstructured",
+    "name": "Structured data extraction from unstructured content using LLM",
+    "snippet": "I'm presenting a workshop at the NICAR 2025 data journalism conference next week about Cutting-edge web scraping techniques. LLM schemas is ...\nThe trick where you feed an LLM an article, or a PDF, or a screenshot and use it to turn that into JSON or CSV or some other structured format.",
+    "host_name": "simonw.substack.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/automation/comments/1jp5i3t/i_tried_6_pdf_extraction_toolsheres_what_i_learned",
+    "name": "I Tried 6 PDF Extraction Tools—Here's What I Learned : r/automation",
+    "snippet": "Blackbox AI – Great at technical documentations and better at extracting from scanned documents, API guides, and research papers. It cleans up ...",
+    "host_name": "www.reddit.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.researchgate.net/post/Which_AI_tools_do_you_use_to_support_data_extraction",
+    "name": "Which AI tools do you use to support data extraction? - ResearchGate",
+    "snippet": "Web scraping frameworks with AI enhancements What they do: navigate websites, locate data elements, and extract content — often using AI to ...",
+    "host_name": "www.researchgate.net",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://groupbwt.com/blog/llm-for-web-scraping",
+    "name": "Advanced LLM Web Scraping for DataOps - GroupBWT",
+    "snippet": "Discover how enterprise leaders use LLMs to fix brittle scrapers, align inconsistent markup, and deploy schema-first data extraction.",
+    "host_name": "groupbwt.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/blog/best-ai-web-scraper-2026",
+    "name": "Best AI Web Scraper Tools 2026: LLM-Powered Data Extraction",
+    "snippet": "Best AI web scrapers 2026: Firecrawl, Apify AI extraction, Bright Data AI, Diffbot, and Jina Reader. LLM schema extraction, Markdown ...",
+    "host_name": "use-apify.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  }
+]

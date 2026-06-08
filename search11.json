@@ -1,0 +1,74 @@
+[
+  {
+    "url": "https://brightdata.com/products/scraping-browser",
+    "name": "Browser API - Automated Browser for Scraping - Bright Data",
+    "snippet": "Browser API is a GUI browser designed for web scraping. Automated browser that is eperienced as a headless browser, interacting with Puppeteer or Playwright ...",
+    "host_name": "brightdata.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://brightdata.com/blog/web-data/cloakbrowser-vs-bright-data",
+    "name": "CloakBrowser vs. Bright Data Browser API",
+    "snippet": "This tool works as a drop-in replacement for Playwright and Puppeteer. It includes built-in fingerprint management, human-like interaction ...",
+    "host_name": "brightdata.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/blog/bright-data-scraping-browser",
+    "name": "Bright Data Scraping Browser: AI-Powered Headless Browsing (2026)",
+    "snippet": "Bright Data Scraping Browser is a cloud-hosted headless. It's Playwright- and Puppeteer-compatible, with built-in fingerprinting, CAPTCHA ...\nBright Data Scraping Browser is a cloud-hosted headless Chrome that connects via Chrome DevTools Protocol (CDP). It's Playwright- and ...",
+    "host_name": "use-apify.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/luminati-io/scraping-browser",
+    "name": "Scraping Browser is an automated headless browser for  - GitHub",
+    "snippet": "A fully automated headless browser solution for dynamic web scraping with Puppeteer, Selenium, and Playwright. The Scraping Browser is opened as a GUI on Bright ...",
+    "host_name": "github.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1ljk054/automated_browser_with_fingerprint_rotation",
+    "name": "Automated browser with fingerprint rotation? : r/webscraping - Reddit",
+    "snippet": "You can use playwright/puppeteer to capture network requests or do it yourself by exporting HAR file from devtools and feed that to an ai.",
+    "host_name": "www.reddit.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://aimultiple.com/scraping-browser",
+    "name": "5 Best Scraping Browsers in 2026 (Bright Data vs Oxylabs vs Zyte)",
+    "snippet": "Explore top scraping browser solutions and learn how to efficiently extract data from websites and automate web interactions.\nA headless browser is a barebones browser you control with code. A scraping browser includes that functionality plus built-in unblocking (proxy ...",
+    "host_name": "aimultiple.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@gidon.eli/getting-started-with-bright-datas-web-scraping-browser-18892624bbc9",
+    "name": "Getting started with Bright Data's Web Scraping Browser - Medium",
+    "snippet": "it does have a graphic user interface and can be controlled by Puppeteer, Selenium, or the Playwright API. fingerprints appear less suspicious.\nA web scraping browser, also known as a headless browser, is normally a tool that simulates a web browser environment without a graphical ...",
+    "host_name": "medium.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://bug0.com/knowledge-base/playwright-web-scraping",
+    "name": "Playwright Web Scraping in 2026: A Strategic Guide | Bug0",
+    "snippet": "tldr: Playwright is now the default browser-automation framework for both end-to-end testing and large-scale web scraping.",
+    "host_name": "bug0.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  }
+]

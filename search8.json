@@ -1,0 +1,74 @@
+[
+  {
+    "url": "https://scrapfly.io",
+    "name": "Scrapfly - Web Scraping API, Cloud Browser, Screenshot API",
+    "snippet": "Learn how HTTP/2 and HTTP/3 fingerprinting works at the protocol level, how anti-bot services use SETTINGS frames, pseudo-header ordering, and QUIC transport ...",
+    "host_name": "scrapfly.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/docs/release-notes",
+    "name": "Scrapfly Product Release Notes",
+    "snippet": "Latest engine, V8, and rendering pipeline matching real-world Chrome 148 fingerprints ・ anti-bot protection, proxy extraction, and more HTTP ・ continue to ...",
+    "host_name": "scrapfly.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/products/web-scraping-api",
+    "name": "Scrapfly is the Best Web Scraping API: 98% Success Rate, Anti-Bot",
+    "snippet": "Scrapfly detects the active anti-bot vendor, builds a coherent browser fingerprint (TLS, HTTP/2, JS runtime, behavioral signals), solves the challenge, and ...",
+    "host_name": "scrapfly.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/social-media-scraping",
+    "name": "How to Scrape Social Media with Python in 2026 - Scrapfly Blog",
+    "snippet": "Scrapfly's web scraping platform handles fingerprinting, IP rotation, and JavaScript rendering in a single API call.",
+    "host_name": "scrapfly.io",
+    "rank": 3,
+    "date": "Jun 1, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/scrapfly",
+    "name": "Scrapfly - GitHub",
+    "snippet": "Official TypeScript/JavaScript SDK for the Scrapfly platform: web scraping, screenshots, AI extraction, crawling, and a remote anti-bot browser.",
+    "host_name": "github.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.capterra.com/p/212653/Scrapfly/reviews",
+    "name": "Scrapfly Reviews 2026. Verified Reviews, Pros & Cons - Capterra",
+    "snippet": "Scrapfly is a dependable middle layer for scraping sites with real anti-bot measures. Once you dial in the right settings per site, it's reliable and the API ...",
+    "host_name": "www.capterra.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/best-web-scraping-apis",
+    "name": "11 Best Web Scraping APIs and Tools in 2026 - Scrapfly Blog",
+    "snippet": "Scrapfly offers 1,000 free credits with no credit card required, which is enough to test access, JavaScript rendering, and anti-bot bypass on ...",
+    "host_name": "scrapfly.io",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrape.do/compare/scrapfly-vs-scrapedo",
+    "name": "ScrapFly vs. Scrape.do: Which API Is Better?",
+    "snippet": "Anti-Bot Bypass. ScrapFly is one of the only scraping APIs that require phone verification before you can even test the service.",
+    "host_name": "scrape.do",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  }
+]

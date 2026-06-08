@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://brightdata.com/products/web-unlocker",
+    "name": "Web Unlocker - Automated Web Unblocker - Bright Data",
+    "snippet": "Automate your CAPTCHA solving while scraping websites. Our advanced technology rotates IPs, tackles user agents, and solves CAPTCHAs with ease.\nA 3-in-1 website unlocking and scraping solution · AI-powered website unlocking · Automated proxy management · Built-in browser for JavaScript rendering.",
+    "host_name": "brightdata.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.brightdata.com/scraping-automation/web-unlocker/introduction",
+    "name": "Web Unlocker API Overview - Bright Data Docs",
+    "snippet": "Bright Data Web Unlocker API (98% success rate) handles proxy rotation, anti-bot challenges and CAPTCHA solving in 1 call. Returns clean HTML or JSON.",
+    "host_name": "docs.brightdata.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://brightdata.com/blog/web-data/web-scraping-with-botright",
+    "name": "Web Scraping with Botright: CAPTCHA Solving & Limitations",
+    "snippet": "Learn how Botright solves CAPTCHAs for web scraping, its limitations, and why Bright Data's CAPTCHA Solver and Scraping Browser are better alternatives.",
+    "host_name": "brightdata.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/luminati-io/web-unlocker-api",
+    "name": "luminati-io/web-unlocker-api: Web Unlocker is a powerful scraping",
+    "snippet": "Web Unlocker is a powerful scraping API that bypasses sophisticated anti-bot measures, automating proxy management, CAPTCHA solving, and JavaScript rendering ...",
+    "host_name": "github.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1babrzc/i_need_to_scrap_1m_pages_heavily_protected",
+    "name": "I need to scrap 1M+ pages heavily protected (cloudflare, anti bots",
+    "snippet": "I've done exactly this using bright data's web unlocker. The proxy is simple to use you just use it as a proxy string on your requests. they ...",
+    "host_name": "www.reddit.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=d_FGtjjVNQw",
+    "name": "Overcoming CAPTCHAs, Antibot Systems, and Scaling with Bright",
+    "snippet": "Unlock the secrets to scalable web scraping and travel data collection with Bright Data experts Rafael Levy and Ariel Ventura.",
+    "host_name": "www.youtube.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.octoparse.com/blog/bright-data-alternative",
+    "name": "5 Best Bright Data Alternatives in 2026 (Tested & Cheaper)",
+    "snippet": "Its Web Unblocker mirrors Bright Data's Web Unlocker, including auto-CAPTCHA solving, JS rendering, and anti-bot fingerprinting. Feature ...\nShort answer: The 5 best Bright Data alternatives in 2026 are Octoparse (best no-code scraper), Apify (best pre-built scraper marketplace), ...\nCompare the 5 best Bright Data alternatives in 2026: Octoparse, Apify, Firecrawl, Decodo, and Oxylabs. Tested pricing, real benchmarks, ...",
+    "host_name": "www.octoparse.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://platform.softwareone.com/product/bright-data-web-unlocker/PCP-1330-8947",
+    "name": "Bright Data Web Unlocker - SoftwareOne Marketplace",
+    "snippet": "Unlock any domain with one scraping API. Effortlessly bypass advanced bot protections, ensure unmatched success rates, and scale your scraping without limits.\nUnlock any domain with one scraping API · Simulate real user behavior to overcome anti-bot detection · Automated proxy management and CAPTCHA solving · Seamlessly ...",
+    "host_name": "platform.softwareone.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://brightdata.com/blog/web-data/web-unlocker-vs-scraping-browser",
+    "name": "Web Unblocker vs Scraping Browser: Which to Use? - Bright Data",
+    "snippet": "A scraping browser solves both problems. It manages automatically scaling, cloud-based browser instances, with built-in anti-bot features. Plus, to save ...\nCompare web unlockers and scraping browsers. Learn the differences, main features, and which tool to choose for your web scraping needs.",
+    "host_name": "brightdata.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://us.fitgap.com/products/017025/bright-data-web-unlocker/alternatives",
+    "name": "Best bright data web unlocker alternatives of April 2026 | FitGap",
+    "snippet": "Bright Data Web Unlocker is genuinely excellent at what it does: managed anti-bot bypass, automatic retry logic, and fingerprint handling delivered through ...\nExplore the best bright data web unlocker alternatives with curated lists and clear guides. Use FitGap's data-driven insights to find your right fit.",
+    "host_name": "us.fitgap.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

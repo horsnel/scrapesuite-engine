@@ -1,0 +1,74 @@
+[
+  {
+    "url": "https://www.firecrawl.dev",
+    "name": "Firecrawl - The API to search, scrape, and interact with the web at",
+    "snippet": "Power AI agents with clean web data. The API to search, scrape, and interact with the web at scale.It's also open source. Search. Scrape. Map. Crawl. Scrape.",
+    "host_name": "www.firecrawl.dev",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog",
+    "name": "Firecrawl Blog",
+    "snippet": "Jun 05, 2025 · Announcing /search: Discover and scrape the web with one API call. Search the web and get LLM-ready page content for each result in one simple ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/firecrawl/firecrawl",
+    "name": "GitHub - firecrawl/firecrawl: The API to search, scrape, and interact",
+    "snippet": "The API to search, scrape, and interact with the web at scale. The web context API to find sources, extract content, and turn it into clean Markdown or ...",
+    "host_name": "github.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/category/product-updates",
+    "name": "The API to search, scrape, and interact with the web at  - Firecrawl",
+    "snippet": "Firecrawl's official Claude Code plugin gives Claude direct access to live web data — scrape pages, crawl sites, search the web, and extract structured data ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/dynamic-scraping-tools",
+    "name": "9 Best Tools for Dynamic Web Scraping in 2026 - Firecrawl",
+    "snippet": "Compare nine dynamic web scraping tools with strengths, trade-offs, and use cases, from API-first services to headless browsers and no-code ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.blott.com/blog/post/how-firecrawl-cuts-web-scraping-time-by-60-real-developer-results",
+    "name": "How Firecrawl Cuts Web Scraping Time by 60%: Real Developer",
+    "snippet": "The combination of automated recursive crawling, LLM-powered extraction, and reliable error handling cuts development time significantly.",
+    "host_name": "www.blott.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://dorian599.medium.com/firecrawl-the-smarter-way-to-map-crawl-scrape-and-extract-web-data-with-llm-ae56b96b979a",
+    "name": "FireCrawl: The Smarter Way to Map, Crawl, Scrape, and Extract Web",
+    "snippet": "FireCrawl takes a new approach — leveraging Large Language Models (LLMs) and prompt-based scraping to make data collection precise, flexible, ...",
+    "host_name": "dorian599.medium.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/ai-powered-data-retrieval",
+    "name": "Add AI-Powered Data Retrieval to Your Product with Firecrawl",
+    "snippet": "Learn how to add web data retrieval to your product using Firecrawl's Python SDK. Covers four patterns with code examples - search, scrape, ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  }
+]

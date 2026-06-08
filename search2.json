@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.gartner.com/reviews/market/data-center-infrastructure-management-tools",
+    "name": "Data Center Infrastructure Management (DCIM) Tools - Gartner",
+    "snippet": "DCIM Monitoring is a software designed for data center infrastructure management, providing monitoring and analysis of power usage, energy consumption, and ...",
+    "host_name": "www.gartner.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://modius.com/blog/scalable-and-secure-data-collection-for-modern-data-center-management",
+    "name": "Distributed Data Collection for DCIM - Modius, Inc.",
+    "snippet": "Modius OpenData is a DCIM platform built around real-time, trusted data. It brings power, cooling, environmental, and asset information into ...",
+    "host_name": "modius.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.nlyte.com/solutions/data-center-infrastructure-management-dcim",
+    "name": "Modern Data Center Infrastructure Management | Nlyte DCIM",
+    "snippet": "Optimize hybrid environments with Nlyte data center infrastructure management for insight, workflow automation, and improved uptime.",
+    "host_name": "www.nlyte.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.sunbirddcim.com/what-dcim",
+    "name": "What is DCIM Software? A Data Center Infrastructure Management",
+    "snippet": "DCIM software solves problems related to gathering information needed to enable Data Center Managers to effectively and efficiently manage the Data Center ...",
+    "host_name": "www.sunbirddcim.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fedtechmagazine.com/article/2019/08/what-data-center-infrastructure-management-preparing-ombs-dcoi-policy-perfcon",
+    "name": "What is Data Center Infrastructure Management (DCIM)?",
+    "snippet": "DCIM software gives agencies the ability to automate the monitoring of data center performance, especially power consumption and cooling,",
+    "host_name": "fedtechmagazine.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://netboxlabs.com/blog/open-source-dcim-tools",
+    "name": "8 Open-Source DCIM Tools | NetBox Labs",
+    "snippet": "Here are eight open-source DCIM tools that can help organizations manage their data center infrastructure effectively.",
+    "host_name": "netboxlabs.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.quora.com/What-are-the-best-DCIM-tools-available-in-the-market-that-can-monitor-big-data-centers-can-create-tickets-along-with-capacity-planning-etc",
+    "name": "What are the best DCIM tools available in the market that can",
+    "snippet": "DCIM software is used to measure, monitor and manage the IT equipment and supporting infrastructure of data centers. DCIM software also ...",
+    "host_name": "www.quora.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hyperviewhq.com/blog/dcim-software-is-the-key-to-uptime-and-performance",
+    "name": "DCIM Software is the Key to Uptime and Performance - Hyperview",
+    "snippet": "DCIM software is crucial for modern data centers, ensuring uptime and performance. It enables real-time monitoring, alerts, maintenance, capacity planning, ...",
+    "host_name": "www.hyperviewhq.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/datacenter/comments/1ijd9g1/open_source_dcim_tools",
+    "name": "Open source DCIM tools : r/datacenter - Reddit",
+    "snippet": "Best DCIM software for data center management. 3D data center design software options. Latest trends in data center technology. Best practices ...",
+    "host_name": "www.reddit.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.akcp.com/2021/07/10/data-center-infrastructure-management-dcim-quick-facts",
+    "name": "Data Center Infrastructure Management (DCIM) Quick Facts - AKCP",
+    "snippet": "DCIM Software monitors manage and measures data center performance. It covers IT equipment and the infrastructure that supports it, ...",
+    "host_name": "www.akcp.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

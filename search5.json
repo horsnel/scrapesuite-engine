@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://docs.zyte.com/zyte-api/migration/zyte/scrapy-zyte-smartproxy.html",
+    "name": "Migrating from scrapy-zyte-smartproxy to scrapy-zyte-api",
+    "snippet": "This migration guide provides the steps necessary to migrate from scrapy-zyte-smartproxy or scrapy-crawlera to scrapy-zyte-api.",
+    "host_name": "docs.zyte.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.zyte.com/blog/death-of-the-proxy",
+    "name": "Death of the Proxy? There's An API for That - Zyte",
+    "snippet": "Zyte announced the retirement of its dedicated Smart Proxy Manager solution, folding the same service, alongside other core scraping tasks, into Zyte API,",
+    "host_name": "www.zyte.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/zyte-alternatives",
+    "name": "Top 3 Zyte Alternatives for Web Scraping in 2026 - Firecrawl",
+    "snippet": "Zyte API, is a web scraping API designed to unblock, render, and extract data from any website, handling anti-bot measures, CAPTCHA solving, ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.zyte.com/smart-proxy-manager",
+    "name": "Automated Rotating Proxy Service - Smart Proxy Manager | Zyte API",
+    "snippet": "Zyte API's rotating proxy service manages hundreds of thousands of proxies, so you don't have to. Top automated rotating IP solution for web scraping.",
+    "host_name": "www.zyte.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=ySZucCSWw5o",
+    "name": "How to Use Zyte Smart Proxy Manager / Crawlera with Scrapy Cloud",
+    "snippet": "In this video, we'll walk you through the steps needed to set up Zyte Proxy Manager / CRAWLERA for use with Scrapy Cloud.",
+    "host_name": "www.youtube.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.zyte.com/learn/web-scraping-dynamic-websites-with-zyte-api",
+    "name": "Web Scraping Dynamic Websites With Zyte API",
+    "snippet": "Zyte API provides features such as JavaScript rendering support, smart proxy rotation, and auto-handling of anti-bot protections. It is an effective tool,",
+    "host_name": "www.zyte.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/68837946/how-to-authenticate-using-scrapy-spider-with-zyte-smart-proxy-manager-former-cr",
+    "name": "How to authenticate using scrapy spider with Zyte Smart Proxy",
+    "snippet": "How to authenticate using scrapy spider with Zyte Smart Proxy Manager (former Crawlera) enabled? You need to create your own scrapy middleware",
+    "host_name": "stackoverflow.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.rapidseedbox.com/blog/zyte-review-and-alternatives",
+    "name": "Zyte Review 2026: Pricing, Features & Best Alternatives",
+    "snippet": "The API is designed to handle JavaScript-heavy websites, complex page structures, and anti-bot protection using Zyte's built-in rendering and ...",
+    "host_name": "www.rapidseedbox.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.zyte.com/zyte-api/usage/proxy-mode.html",
+    "name": "Zyte API proxy mode - Zyte documentation",
+    "snippet": "To use Zyte API as a proxy, use the api.zyte.com:8011 endpoint, with your Zyte API key and proxy headers.",
+    "host_name": "docs.zyte.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrape.do/blog/zyte-alternatives",
+    "name": "Top 6 Zyte Alternatives for Web Scraping and Crawling in 2026",
+    "snippet": "Looking for Zyte alternatives? Compare 6 web scraping tools from Scrapy Cloud replacements to faster unblocking APIs with better pricing.",
+    "host_name": "scrape.do",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

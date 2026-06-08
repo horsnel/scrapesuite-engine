@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://apify.com",
+    "name": "Apify: Full-stack web scraping and data extraction platform",
+    "snippet": "Cloud platform for web scraping, browser automation, AI agents, and data for AI. Use 37000+ ready-made tools, code templates, or order a custom solution.\nApify Actors scrape up-to-date web data from any website for AI apps and agents, social media monitoring, competitive intelligence, lead generation, and product ...",
+    "host_name": "apify.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/docs/what-is-apify",
+    "name": "What Is Apify? Platform Guide for Developers (2026)",
+    "snippet": "Apify is an end-to-end scraping platform with 30,000+ Actors and integrated scheduling. Bright Data centers on proxy and enterprise data ...",
+    "host_name": "use-apify.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.capterra.ca/software/150854/apify",
+    "name": "Apify Pricing, Reviews & Features - Capterra Canada 2026",
+    "snippet": "Actors are serverless cloud programs that extract data, automate web tasks, and run AI agents. Developers build them using JavaScript, Python, or Crawlee, ...",
+    "host_name": "www.capterra.ca",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://apify.com/proxy",
+    "name": "Apify Proxy",
+    "snippet": "Apify Proxy allows you to change your IP address when web scraping to reduce the chance of being blocked because of your geographical location.",
+    "host_name": "apify.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://crawlee.dev/js/docs/deployment/apify-platform",
+    "name": "Apify Platform | Crawlee for JavaScript · Build reliable crawlers. Fast.",
+    "snippet": "Apify is a platform built to serve large-scale and high-performance web scraping and automation needs. It provides easy access to compute instances (Actors) ...",
+    "host_name": "crawlee.dev",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=KQIo1gNFAeM",
+    "name": "Apify FULL GUIDE 2025 (Scrape Literally Anything) - YouTube",
+    "snippet": "So if you were to build an automation for a client, would you have them sign up for their own Apify account or use your own and bill them ...",
+    "host_name": "www.youtube.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.g2.com/products/apify/reviews?page=2&ref=blog.apify.com",
+    "name": "Apify Reviews 2026: Details, Pricing, & Features - G2",
+    "snippet": "Behind the scenes, Actors handle proxy rotation, CAPTCHA bypassing, JavaScript rendering, headless browsers, scaling, storage, and scheduling. Everything runs ...",
+    "host_name": "www.g2.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.b12.io/glossary-of-web-design-terms/apify",
+    "name": "What is Apify? Definition, how it works, and FAQs - B12 website",
+    "snippet": "Apify Actors are reusable, cloud-hosted programs that handle scraping and automation tasks without you needing to manage any infrastructure. Each Actor is self- ...\nApify's features and capabilities: · 1. Actor System · 2. Apify Store · 3. Built-in proxy rotation, CAPTCHA solving, and JavaScript rendering · 4. Scheduling system ...",
+    "host_name": "www.b12.io",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://hackceleration.com/agency/apify",
+    "name": "Apify Agency 2026: Custom Web Scraping That Scales Fast",
+    "snippet": "Apify agency that builds custom Actors, beats anti-blocking with proxy rotation, and delivers clean datasets to your stack via API. Free 60-min audit.",
+    "host_name": "hackceleration.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://vibecoding.app/blog/apify-review",
+    "name": "Apify Review: The Web Scraping Platform Built for Scale",
+    "snippet": "Each Actor is a self-contained scraper or automation task. The platform provides everything around them: proxy management, scheduling, data ...",
+    "host_name": "vibecoding.app",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]
