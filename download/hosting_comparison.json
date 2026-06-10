@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://www.vultr.com/pricing",
+    "name": "High Performance, High Frequency, Bare Metal, Affordable Cloud",
+    "snippet": "Vultr offers globally available, enterprise-grade infrastructure, for just a fraction of the cost of the Big Tech clouds.",
+    "host_name": "www.vultr.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/blog/best-vps-web-scraping-2026",
+    "name": "Best VPS for Web Scraping 2026: Liquid Web, Hetzner, Vultr",
+    "snippet": "Quick Comparison: Top VPS for Web Scraping (2026)​ ; Hetzner, ~€3.49/mo, 2 ; Vultr, $2.50–$6/mo, 1–2 ; DigitalOcean, $4–6/mo, 1 ; Liquid Web, $5– ...",
+    "host_name": "use-apify.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.vantage.sh/blog/best-bare-metal",
+    "name": "Best Bare Metal Cloud Providers - Vantage",
+    "snippet": "Compare the top bare metal cloud providers, including phoenixNAP, AWS, Equinix Metal, Hetzner, OVHcloud, Vultr, and Lumen, to find the best fit ...",
+    "host_name": "www.vantage.sh",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=kGLCmSBa-Xo",
+    "name": "Vultr vs Hetzner (2026) - Which One Is BETTER? - YouTube",
+    "snippet": "Vultr vs Hetzner (2026) – Which One Is BETTER? Choosing between Vultr and Hetzner in 2026 isn't just about price — it's about performance vs ...",
+    "host_name": "www.youtube.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.vultr.com/products/bare-metal",
+    "name": "Vultr Bare Metal Single-Tenant Dedicated Servers",
+    "snippet": "Bare Metal \"Starting from\" pricing is presented per GPU per hour for pre-paid contract terms. Please contact sales to discuss pricing. On demand pricing is ...",
+    "host_name": "www.vultr.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

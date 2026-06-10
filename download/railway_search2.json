@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://docs.steel.dev/overview/self-hosting/railway",
+    "name": "Railway | Steel Docs",
+    "snippet": "A quick guide on deploying Steel Browser to Railway using our template.\nA quick guide on deploying Steel Browser to Railway. Steel Browser runs as a containerized application Chrome/Chromium: Host your servers, databases, AI agents ...",
+    "host_name": "docs.steel.dev",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.railway.com/guides/playwright",
+    "name": "Run Playwright in a Docker Container | Railway Guides",
+    "snippet": "Memory configuration · Allocate at least 1 GB of memory to the Railway service. · For workloads that run multiple browser contexts or pages concurrently, increase ...",
+    "host_name": "docs.railway.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://codestax.medium.com/mastering-playwright-in-2026-a-hands-on-guide-to-modern-browser-automation-0546edbe9cff",
+    "name": "Mastering Playwright in 2026: A Hands-On Guide to Modern",
+    "snippet": "Developed by Microsoft, Playwright is a powerful open-source framework for end-to-end browser automation. It allows you to automate Chromium, ...\nPlaywright is a powerful open-source framework for end-to-end browser automation. It allows you to automate Chromium, Firefox, and WebKit using ...",
+    "host_name": "codestax.medium.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://playwright.dev/docs/browsers",
+    "name": "Browsers - Playwright",
+    "snippet": "Playwright can run tests on Chromium, WebKit and Firefox browsers as well as branded browsers such as Google Chrome and Microsoft Edge.",
+    "host_name": "playwright.dev",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/76611076/failed-to-install-the-browsers-playwright-automation-tool",
+    "name": "Failed to install the browsers - Playwright Automation tool",
+    "snippet": "This error is because of the proxy server is blocking the npm to download the chromium browser exe file. to overcome this, download the chromium exe manually.",
+    "host_name": "stackoverflow.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/railwayapp-templates/browserless",
+    "name": "railwayapp-templates/browserless: Deploy Browserless on  - GitHub",
+    "snippet": "Browserless Chrome Deploy on Railway. Browserless with added IPv6 capabilities, thus allowing for communication threw Railway's private network.\nDeploy on Railway Browserless with added IPv6 capabilities, thus allowing for communication threw Railway's private network. Web browser automation built for ...",
+    "host_name": "github.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://thinksys.com/qa-testing/playwright-features",
+    "name": "Playwright Features 2026: New AI Updates and MCP Capabilities",
+    "snippet": "Playwright lets you use one API to test Chrome/Edge (Chromium), Firefox, and Safari (WebKit). That matters because many bugs only show up in one engine.",
+    "host_name": "thinksys.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://workflowautomation.net/reviews/railway",
+    "name": "Railway Review 2025 - Features, Pricing & Alternatives",
+    "snippet": "You can scale vertically (more CPU/RAM per service), but horizontal scaling requires manual intervention or deploying multiple service replicas yourself. For ...",
+    "host_name": "workflowautomation.net",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=qnSpYiKCK4Q",
+    "name": "What is Playwright? Fast & Reliable Browser Automation (2025)",
+    "snippet": "Playwright with TypeScript (2025) - The Future of Browser Automation Why Developers & QA Engineers Are Switching from Selenium In this ...",
+    "host_name": "www.youtube.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://bug0.com/knowledge-base/playwright-web-scraping",
+    "name": "Playwright Web Scraping in 2026: A Strategic Guide | Bug0",
+    "snippet": "Created May 16, 2026. tldr: Playwright is now the default browser-automation framework for both end-to-end testing and large-scale web scraping.",
+    "host_name": "bug0.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

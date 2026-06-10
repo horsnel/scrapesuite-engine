@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.reddit.com/r/webdev/comments/1j8vace/price_comparison_calculator_for_flyio_heroku",
+    "name": "Price comparison calculator for Fly.io, Heroku, Render, and Railway",
+    "snippet": "Fly.io pricing details. Fly.io vs Railway comparison. Railway vs Heroku pricing comparison. Fly.io alternatives for PaaS. Railway free trial ...\nThis is really helpful! I think this showcases how expensive things are, and also how consistently expensive the providers are compared to more effortful ...",
+    "host_name": "www.reddit.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://getdeploying.com/flyio-vs-hetzner",
+    "name": "Fly.io vs Hetzner - GetDeploying",
+    "snippet": "Price comparison ; VM Small. Closest config to 1 vCPU, 1 GB RAM. · $10.70 / mo ; VM Medium. Closest config to 4 vCPU, 8 GB RAM. · $42.79 / mo ; VM ...",
+    "host_name": "getdeploying.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://techsy.io/en/blog/railway-vs-render-vs-fly-io",
+    "name": "Heroku's Dead — Railway vs Render vs Fly.io 2026 - TECHSY",
+    "snippet": "At scale, Fly.io's $0.02/GB egress gives it a meaningful edge over Railway's $0.05/GB. If your app serves a lot of static assets or API ...\nRailway is simpler and cheaper for small projects. Fly.io offers more control and global reach but requires Docker knowledge. Since Heroku ...",
+    "host_name": "techsy.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://northflank.com/blog/railway-vs-render",
+    "name": "Railway vs Render: which platform fits your workload in 2026? | Blog",
+    "snippet": "Railway charges based on actual resource consumption billed by the second. For workloads that do not run continuously, such as staging ...",
+    "host_name": "northflank.com",
+    "rank": 3,
+    "date": "Jun 1, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=ysjX9-z1w0Q",
+    "name": "Rails 8 Hosting SHOWDOWN: Hetzner $5 vs Fly io $22 - YouTube",
+    "snippet": "Subscribe to my email list to be the first to know Rails Quest updates! https://railsquest.gumroad.com/subscribe Also find me here: ...",
+    "host_name": "www.youtube.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://expresstech.io/7-fly-io-alternatives-in-2026-real-pricing-after-the-free-tier-died",
+    "name": "7 Fly.io Alternatives in 2026: Real Pricing After the Free Tier Died",
+    "snippet": "Hetzner Cloud with Coolify is cheaper per-resource if you are running multiple apps on one box (€4.59/mo for what would be $20-40/mo of ...",
+    "host_name": "expresstech.io",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fly.io/docs/about/pricing",
+    "name": "Fly.io Resource Pricing · Fly Docs",
+    "snippet": "The price of a running Fly Machine VM is the price of a named CPU/RAM preset, plus about $5 per 30 days per GB of additional RAM.",
+    "host_name": "fly.io",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://blog.boltops.com/2025/05/01/heroku-vs-render-vs-vercel-vs-fly-io-vs-railway-meet-blossom-an-alternative",
+    "name": "Heroku vs Render vs Vercel vs Fly.io vs Railway: Meet Blossom, an",
+    "snippet": "Cost escalates quickly — $50/month for a 1GB Standard Dyno, $250/month+ for 2.5GB Performance Dynos; Heroku is nice, but for $50/month you don't ...\nIn this article, we'll cover Heroku, Render, Vercel, Fly.io, and Railway and introduce Blossom, a simple and refreshing alternative.",
+    "host_name": "blog.boltops.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.getopenclaw.ai/compare/railway-vs-hetzner",
+    "name": "Railway vs Hetzner: Best Hosting for OpenClaw 2026",
+    "snippet": "Hetzner wins on value — 4GB RAM for $4.10/mo vs Railway's variable pricing. Railway wins on convenience but costs more for always-on workloads.",
+    "host_name": "www.getopenclaw.ai",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://servercompass.app/blog/railway-pricing-what-youll-actually-pay",
+    "name": "Railway Costs $20+/mo. This Tool Costs $29 Once - Server Compass",
+    "snippet": "The key takeaways for understanding Railway pricing: CPU costs ~$20/month per full vCPU; memory costs ~$10/month per GB; Databases are ...",
+    "host_name": "servercompass.app",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

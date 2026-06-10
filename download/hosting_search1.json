@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.reddit.com/r/Hosting/comments/1rs81z6/scaleway_vs_ovhcloud_vs_flyio_vs_hetzner_for",
+    "name": "Scaleway vs OVHcloud vs Fly.io vs Hetzner for microservices (solo",
+    "snippet": "OVH cloud is OK, but their product feels legacy/old. Hetzner was nice, but agressive with their terms (many reports on Internet).",
+    "host_name": "www.reddit.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/blog/best-vps-web-scraping-2026",
+    "name": "Best VPS for Web Scraping 2026: Liquid Web, Hetzner, Vultr",
+    "snippet": "Hetzner and Vultr offer the lowest cost per GB RAM. Liquid Web wins on support and IP reputation. DigitalOcean suits teams that want strong docs ...",
+    "host_name": "use-apify.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://bug0.com/knowledge-base/playwright-web-scraping",
+    "name": "Playwright Web Scraping in 2026: A Strategic Guide | Bug0",
+    "snippet": "tldr: Playwright is now the default browser-automation framework for both end-to-end testing and large-scale web scraping.",
+    "host_name": "bug0.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fly.io",
+    "name": "Fly.io",
+    "snippet": "For builders who need compute that keeps up with their ideas, Fly Machines are hardware-virtualized containers that launch instantly and run only when you need ...",
+    "host_name": "fly.io",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=F2wvE-mrT6M",
+    "name": "The Best Web Hosting in 2026 (Seriously) - YouTube",
+    "snippet": "... top contenders, and exposes a few hosting services you might want to avoid. ✓ Best hosting for beginners ✓ Fastest web hosting in 2025 ✓ Top ...",
+    "host_name": "www.youtube.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hetzner.com/cloud",
+    "name": "Cloud-hosting provider for developers & teams - Hetzner",
+    "snippet": "Shared vs. Dedicated Cloud: Which resources are suitable for your setup? Shared cloud plans are perfect for development and testing environments.",
+    "host_name": "www.hetzner.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cherryservers.com/blog/dedicated-server-web-hosting",
+    "name": "7 Dedicated Server Providers for Web Hosting - Cherry Servers",
+    "snippet": "According to other reviews, Liquid Web is ranked among the top managed dedicated hosting providers for 2025. Overview: Liquid Web is known ...",
+    "host_name": "www.cherryservers.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/best-cloud-browser-apis",
+    "name": "Best Cloud Browser APIs in 2026 - Scrapfly Blog",
+    "snippet": "Ranked guide to the best cloud browser APIs in 2026: Scrapfly, Steel.dev, Browserbase, Browserless, Bright Data, Oxylabs.",
+    "host_name": "scrapfly.io",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://northflank.com/blog/best-cloud-hosting-platforms",
+    "name": "Best cloud hosting platforms for 2026 | Blog - Northflank",
+    "snippet": "Cloud hosting platforms compared: AWS, Azure, GCP vs Northflank, Render, Railway. Northflank lets you deploy in your own cloud to avoid ...",
+    "host_name": "northflank.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fast.io/resources/best-mcp-hosting-platforms",
+    "name": "Best MCP Hosting Platforms for AI Agents 2026: Top 7 - Fast.io",
+    "snippet": "Compare MCP hosting for AI agent servers: pricing, serverless scaling, and file integration. Fastio offers 50GB free, 19 consolidated tools, ...",
+    "host_name": "fast.io",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

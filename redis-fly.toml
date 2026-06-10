@@ -1,0 +1,29 @@
+# ScrapeSuite Redis — Fly.io Configuration
+# Runs Redis as a persistent Fly Machine
+
+app = "scrapesuite-redis"
+primary_region = "lhr"
+
+[build]
+  image = "redis:7-alpine"
+
+[env]
+  # Redis will use the config from the command below
+
+[http_service]
+  internal_port = 6379
+  auto_stop_machines = "never"
+  auto_start_machines = false
+  min_machines_running = 1
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1
+
+[[mounts]]
+  source = "redis_data"
+  destination = "/data"
+
+[deploy]
+  command = "redis-server --maxmemory 400mb --maxmemory-policy allkeys-lru --appendonly yes --dir /data"

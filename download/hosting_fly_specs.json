@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://fly.io/docs/about/pricing",
+    "name": "Fly.io Resource Pricing · Fly Docs",
+    "snippet": "The price of a running Fly Machine VM is the price of a named CPU/RAM preset, plus about $5 per 30 days per GB of additional RAM.\n* $0.005 per hour (~$3.60/month) Standard ($29/month), Premium ($199/month), or Enterprise (starting at $2500/month) The price of a running Fly Machine VM is ...",
+    "host_name": "fly.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/elixir/comments/1h8ajm2/is_flyio_ridiculously_expensive",
+    "name": "Is fly.io ridiculously expensive? : r/elixir - Reddit",
+    "snippet": "The total cost, including Postgres, Redis, storage, and bandwidth, is around $50 per month. would cost $328.04. They're handling security fixes ...\nThe total cost, including Postgres, Redis, storage, and bandwidth, is around $50 per month. I was considering trying Fly.io, but when I saw the ...",
+    "host_name": "www.reddit.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fly.io/pricing",
+    "name": "Pricing - Fly.io",
+    "snippet": "Starting at $29/month. Try our new pricing calculator. Enter your expected usage and we'll give you a personalized estimate. for just $99/month. 2026 Fly.io\nStarting at $29/month. Try our new pricing calculator. Enter your expected usage and we'll give you a personalized estimate. just $99/month.\nStarting at $29/month. Learn More. Pay up Front and Save. Get 40% off by making a machine reservation. Learn More. Everyone Loves a Calculator. Want to know how ...",
+    "host_name": "fly.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fly.io/machines",
+    "name": "Fly Machines",
+    "snippet": "Lightweight, fast-booting virtual machines for running any code. Need a web server? Background job? Script for world domination? Run it on a Fly Machine.",
+    "host_name": "fly.io",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.srvrlss.io/blog/fly-io-pay-as-you-go",
+    "name": "Fly.io's New 2024 Pricing Model: Pay As You Go | srvrlss",
+    "snippet": "The cost of running a Fly Machine VM is determined by its CPU/RAM preset, with an additional charge of approximately $5 per GB of extra RAM for ...\nInitial prices remain unchanged for the first month but will increase by 25% of the difference between the base price and regional price each ...",
+    "host_name": "www.srvrlss.io",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

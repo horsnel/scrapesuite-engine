@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>ScrapeSuite Hosting Infrastructure Guide</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&display=swap" rel="stylesheet">
+<style>
+  @page { size: 794px 1123px; margin: 0; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 794px; height: 1123px; overflow: hidden; background: #f8fafb; font-family: 'Inter', sans-serif; }
+  .cover { position: relative; width: 100%; height: 100%; background: #f8fafb; }
+
+  /* Safe zone: 12% top/bottom, 14% left/right */
+  .safe-zone {
+    position: absolute;
+    top: 12%; left: 14%; right: 14%; bottom: 12%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  /* Geometric accent - vertical bar */
+  .accent-bar {
+    position: absolute;
+    left: 8%; top: 20%;
+    width: 4px; height: 180px;
+    background: #3090b0;
+    opacity: 0.8;
+  }
+
+  /* Horizontal rule */
+  .h-rule {
+    width: 120px; height: 2px;
+    background: #3090b0;
+    margin: 28px 0 32px 0;
+    opacity: 0.6;
+  }
+
+  /* Kicker / eyebrow */
+  .kicker {
+    font-size: 13pt;
+    font-weight: 600;
+    letter-spacing: 3pt;
+    text-transform: uppercase;
+    color: #82888e;
+    margin-bottom: 16px;
+  }
+
+  /* Hero title */
+  .hero-title {
+    font-size: 42pt;
+    font-weight: 800;
+    line-height: 1.15;
+    color: #1b1c1e;
+    max-width: 540px;
+  }
+
+  /* Subtitle */
+  .subtitle {
+    font-size: 18pt;
+    font-weight: 300;
+    color: #3090b0;
+    margin-top: 8px;
+    max-width: 480px;
+    line-height: 1.4;
+  }
+
+  /* Summary block */
+  .summary {
+    margin-top: 48px;
+    padding: 20px 24px;
+    background: rgba(48, 144, 176, 0.06);
+    border-left: 3px solid #3090b0;
+    max-width: 480px;
+  }
+  .summary p {
+    font-size: 12pt;
+    font-weight: 400;
+    color: #4a4e54;
+    line-height: 1.7;
+  }
+
+  /* Meta / footer */
+  .meta {
+    position: absolute;
+    bottom: 12%;
+    left: 14%;
+    right: 14%;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+  }
+  .meta-left {
+    font-size: 11pt;
+    color: #82888e;
+    line-height: 1.6;
+  }
+  .meta-right {
+    font-size: 11pt;
+    color: #82888e;
+    text-align: right;
+    line-height: 1.6;
+  }
+
+  /* Corner geometric element */
+  .corner-geo {
+    position: absolute;
+    bottom: 12%; right: 14%;
+    width: 60px; height: 60px;
+    border: 2px solid #3090b0;
+    opacity: 0.15;
+    transform: rotate(45deg);
+  }
+
+  /* Thin top border */
+  .top-line {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 3px;
+    background: #3090b0;
+  }
+</style>
+</head>
+<body>
+<div class="cover">
+  <div class="top-line"></div>
+  <div class="accent-bar"></div>
+  <div class="safe-zone">
+    <div class="kicker">Infrastructure Blueprint</div>
+    <div class="hero-title">ScrapeSuite<br>Hosting Guide</div>
+    <div class="subtitle">Production deployment strategies for the Nuclear Fusion scraping engine</div>
+    <div class="h-rule"></div>
+    <div class="summary">
+      <p>A comprehensive analysis of hosting providers, infrastructure requirements, cost projections, and deployment architectures for running ScrapeSuite at scale, covering 66,900 lines of code across 20 proxy modules with Playwright, BullMQ, PostgreSQL, Redis, and TOR.</p>
+    </div>
+  </div>
+  <div class="corner-geo"></div>
+  <div class="meta">
+    <div class="meta-left">
+      ScrapeSuite Engine v1.0<br>
+      Nuclear Fusion Architecture
+    </div>
+    <div class="meta-right">
+      June 2026<br>
+      Confidential
+    </div>
+  </div>
+</div>
+</body>
+</html>

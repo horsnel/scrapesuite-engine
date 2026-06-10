@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://us.ovhcloud.com/bare-metal/advance",
+    "name": "Advance Dedicated Servers - OVHcloud",
+    "snippet": "Advance dedicated servers with AMD EPYC 4004/4005 CPUs, customizable RAM and storage, and 25 Gbps private networking for high-performance projects.",
+    "host_name": "us.ovhcloud.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://us.ovhcloud.com/bare-metal/prices",
+    "name": "OVHcloud Full Dedicated Server Range",
+    "snippet": "Choose from a wide range of options, including CPU, memory, storage, and networking, and customize your server to meet your specific needs and requirements.",
+    "host_name": "us.ovhcloud.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.datacenterdynamics.com/en/news/ovhcloud-reveals-bare-metal-2026-generation-of-dedicated-servers",
+    "name": "OVHcloud reveals Bare Metal 2026 generation of dedicated servers",
+    "snippet": "The servers are built on AMD Epyc 9005 series x86 processors, with up to 384 cores/768 threads and up to 3TB of ECC DDR5 memory. Storage options ...",
+    "host_name": "www.datacenterdynamics.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://us.ovhcloud.com/bare-metal",
+    "name": "Bare Metal Dedicated Servers | OVHcloud US",
+    "snippet": "Advance Dedicated Servers · Memory: up to 1TB · SLA: 99.95% · Confidential computing (SGX/SEV) · Public bandwidth: from 1 to 5Gbps · Private bandwidth: from 1 to ...",
+    "host_name": "us.ovhcloud.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://itbrief.com.au/story/ovhcloud-debuts-bare-metal-2026-amd-servers-in-apac",
+    "name": "OVHcloud debuts Bare Metal 2026 AMD servers in APAC",
+    "snippet": "OVHcloud rolls out Bare Metal 2026 AMD-powered servers in APAC, targeting data-heavy, AI, blockchain and game hosting workloads.",
+    "host_name": "itbrief.com.au",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

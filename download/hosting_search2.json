@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.reddit.com/r/hetzner/comments/1rphwd7/hetzners_threat_to_remove_all_my_servers_on_april",
+    "name": "Hetzner's \"Threat\" to remove all my servers on April 1st after I replied",
+    "snippet": "So for the Feb 23rd email, I replied this: \"I am against this price increase. When I got this server, RAM prices already had bubbled.",
+    "host_name": "www.reddit.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hetzner.com/pressroom/standardization-and-price-adjustment-of-our-server-products",
+    "name": "Standardization and price adjustment of our server products",
+    "snippet": "The transition will take effect on 15 June 2026. We will provide further details on the new prices on our website during the rollout. We thank ...",
+    "host_name": "www.hetzner.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hetzner.com",
+    "name": "Günstige Dedicated Server, Cloud & Hosting aus Deutschland",
+    "snippet": "Günstige Hosting-Lösungen, Dedicated Server und Cloud-Services bei Hetzner ✓ DSGVO-konform ✓ günstige Preise ✓ 100 % grüne Energie.",
+    "host_name": "www.hetzner.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://news.ycombinator.com/item?id=47120145",
+    "name": "Hetzner Prices increase 30-40% | Hacker News",
+    "snippet": "The price increases for dedicated servers are reflected in the higher setup costs. For example, I believe AX102 setup was EUR 39.00 now EUR 269.00.",
+    "host_name": "news.ycombinator.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hetzner.com/cloud",
+    "name": "Cloud-hosting provider for developers & teams - Hetzner",
+    "snippet": "Server Finder. Configure the server of your dreams. In seconds. from € 38.40. EX-Line Server. Get your own dedicated server at an unbeatable price. from € 44.00 ...",
+    "host_name": "www.hetzner.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://serverspace.io/about/blog/best-hetzner-alternatives-in-europe-in-2026-top-hosting-providers-compared",
+    "name": "Best Hetzner Alternatives in Europe in 2026: Top Hosting Providers",
+    "snippet": "The trade-off is cost on standard plans: a 4 vCPU and 8 GB instance runs 40 USD per month, roughly five times what Hetzner charges for similar ...",
+    "host_name": "serverspace.io",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.achromatic.dev/blog/hetzner-server-comparison",
+    "name": "Hetzner Server Comparison 2025: Best Value Cloud & Dedicated",
+    "snippet": "Best budget option: CAX11 (€3.79/mo) — ARM-based, incredible value · Best all-rounder: EX44 (€44/mo) — Intel i5-13500, dedicated hardware · Best ...",
+    "host_name": "www.achromatic.dev",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.technology.org/2026/05/11/datacenter-vs-residential-proxies-for-web-scraping-which-should-you-choose",
+    "name": "Datacenter vs Residential Proxies for Web Scraping - Technology Org",
+    "snippet": "Dedicated datacenter proxies cost a bit more and skip the inheritance problem. For anything that runs on a schedule and feeds a real ...",
+    "host_name": "www.technology.org",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://forum.cloudron.io/topic/15111/hetzner-price-increases-by-20-30-other-hosting-providers-soon-to-follow?page=2",
+    "name": "Hetzner price increases by 20-30 % - other hosting providers soon",
+    "snippet": "I note that the CPX41 cloud VPS server (8 vCPU, 16GB RAM, 240 GB) is now only €4.21 cheaper than my significantly more powerful AX41 dedicated ...",
+    "host_name": "forum.cloudron.io",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.hetzner.com/robot/dedicated-server/dedicated-server-hardware/price-server-addons",
+    "name": "Price Dedicated Server Addons - Hetzner Docs",
+    "snippet": "The prices listed are monthly additional costs. This list is a a rough guide that you can use to plan your individual server configuration or to ...",
+    "host_name": "docs.hetzner.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

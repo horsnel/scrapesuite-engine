@@ -1,0 +1,57 @@
+{
+  "name": "@scrapesuite/nodejs",
+  "version": "1.0.0",
+  "description": "Official Node.js/TypeScript SDK for the ScrapeSuite API — web scraping, data extraction, SERP, sessions, monitoring, webhooks, and CDP browser.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "module": "dist/index.mjs",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist/"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "scrapesuite",
+    "web-scraping",
+    "scraper",
+    "serp",
+    "extraction",
+    "browser-automation",
+    "cdp",
+    "proxy",
+    "api-client"
+  ],
+  "author": "ScrapeSuite",
+  "license": "MIT",
+  "homepage": "https://scrapesuite.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/scrapesuite/scrapesuite-engine",
+    "directory": "sdk/nodejs"
+  },
+  "peerDependencies": {
+    "playwright": ">=1.30.0"
+  },
+  "peerDependenciesMeta": {
+    "playwright": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

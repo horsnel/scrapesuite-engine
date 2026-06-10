@@ -1,0 +1,731 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Plan {
+  starter
+  pro
+  business
+}
+
+enum JobStatus {
+  queued
+  running
+  done
+  failed
+}
+
+enum ProxyTier {
+  residential
+  mobile
+  datacenter
+  isp
+}
+
+enum WebhookEvent {
+  job_completed
+  job_failed
+  monitor_change
+  alert_triggered
+  credits_low
+}
+
+enum CaptchaType {
+  recaptcha_v2
+  recaptcha_v3
+  hcaptcha
+  funcaptcha
+  turnstile
+  image
+}
+
+enum SerpEngine {
+  google
+  bing
+  yahoo
+  duckduckgo
+  yandex
+  baidu
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id               String   @id @default(uuid()) @db.Uuid
+  email            String   @unique
+  name             String?
+  passwordHash     String   @map("password_hash")
+  plan             Plan     @default(starter)
+  creditsRemaining Int      @default(10000) @map("credits_remaining")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  apiKeys        ApiKey[]
+  scrapeJobs     ScrapeJob[]
+  monitors       Monitor[]
+  webhooks       Webhook[]
+  usageSnapshots UsageSnapshot[]
+  batches        Batch[]
+  collectors     Collector[]
+  datasets       Dataset[]
+
+  @@map("users")
+}
+
+// ─── API Keys ─────────────────────────────────────────────────────────────────
+
+model ApiKey {
+  id               String   @id @default(uuid()) @db.Uuid
+  userId           String   @map("user_id") @db.Uuid
+  keyHash          String   @unique @map("key_hash")
+  name             String?  @map("name")
+  plan             Plan     @default(starter)
+  creditsRemaining Int      @default(10000) @map("credits_remaining")
+  creditsUsed      Int      @default(0) @map("credits_used")
+  bandwidthBytes   Int      @default(0) @map("bandwidth_bytes")
+  lastUsed         DateTime? @map("last_used") @db.Timestamptz
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  rotatedFrom      String?  @map("rotated_from") @db.Uuid
+
+  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  scrapeJobs ScrapeJob[]
+  monitors   Monitor[]
+  batches    Batch[]
+  collectors Collector[]
+
+  @@map("api_keys")
+}
+
+// ─── Scrape Jobs ──────────────────────────────────────────────────────────────
+
+model ScrapeJob {
+  id              String     @id @default(uuid()) @db.Uuid
+  apiKeyId        String     @map("api_key_id") @db.Uuid
+  userId          String     @map("user_id") @db.Uuid
+  url             String
+  domain          String
+  status          JobStatus  @default(queued)
+  strategy        String?
+  proxyTier       ProxyTier? @map("proxy_tier")
+  proxyId         String?    @map("proxy_id")
+  proxyCountry    String?    @map("proxy_country")
+  creditsUsed     Int        @default(0) @map("credits_used")
+  creditsCharged  Int        @default(0) @map("credits_charged")
+  bandwidthBytes  Int        @default(0) @map("bandwidth_bytes")
+  result          Json?
+  extractedData   Json?      @map("extracted_data")
+  structuredData  Json?      @map("structured_data")
+  error           String?
+  responseMs      Int?       @map("response_ms")
+  statusCode      Int?       @map("status_code")
+  retryCount      Int        @default(0) @map("retry_count")
+  captchaSolved          Boolean    @default(false) @map("captcha_solved")
+  batchId                String?    @map("batch_id") @db.Uuid
+  templateId             String?    @map("template_id")
+  outputFormat           String?    @map("output_format")
+  outputCompressionRatio Float?     @map("output_compression_ratio")
+  createdAt              DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  completedAt            DateTime?  @map("completed_at") @db.Timestamptz
+
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  batch  Batch? @relation(fields: [batchId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([domain, createdAt(sort: Desc)])
+  @@index([batchId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("scrape_jobs")
+}
+
+// ─── Batch Jobs ──────────────────────────────────────────────────────────────
+
+model Batch {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  apiKeyId      String    @map("api_key_id") @db.Uuid
+  totalJobs     Int       @map("total_jobs")
+  completedJobs Int       @default(0) @map("completed_jobs")
+  failedJobs    Int       @default(0) @map("failed_jobs")
+  status        JobStatus @default(queued)
+  creditsUsed   Int       @default(0) @map("credits_used")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz
+
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey      @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  jobs   ScrapeJob[]
+
+  @@map("batches")
+}
+
+// ─── Monitors ─────────────────────────────────────────────────────────────────
+
+model Monitor {
+  id              String    @id @default(uuid()) @db.Uuid
+  apiKeyId        String    @map("api_key_id") @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  url             String
+  fields          String[]
+  schedule        String
+  alertThresholds Json?     @map("alert_thresholds")
+  webhookUrl      String?   @map("webhook_url")
+  active          Boolean   @default(true)
+  lastRun         DateTime? @map("last_run") @db.Timestamptz
+  lastChangeAt    DateTime? @map("last_change_at") @db.Timestamptz
+  consecutiveFailures Int   @default(0) @map("consecutive_failures")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  apiKey    ApiKey     @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  snapshots Snapshot[]
+
+  @@map("monitors")
+}
+
+// ─── Snapshots ────────────────────────────────────────────────────────────────
+
+model Snapshot {
+  id         String   @id @default(uuid()) @db.Uuid
+  monitorId  String   @map("monitor_id") @db.Uuid
+  data       Json
+  previousData Json?  @map("previous_data")
+  changes    Json?
+  capturedAt DateTime @default(now()) @map("captured_at") @db.Timestamptz
+
+  monitor Monitor @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@index([monitorId, capturedAt(sort: Desc)])
+  @@map("snapshots")
+}
+
+// ─── Domain Profiles ─────────────────────────────────────────────────────────
+
+model DomainProfile {
+  domain             String     @id
+  requiresBrowser    Boolean    @default(false) @map("requires_browser")
+  browserConfidence  Float      @default(0.0) @map("browser_confidence")
+  optimalProxyTier   ProxyTier  @default(residential) @map("optimal_proxy_tier")
+  safeRps            Float      @default(5.0) @map("safe_rps")
+  avgResponseMs      Float      @default(0.0) @map("avg_response_ms")
+  successRate        Float      @default(1.0) @map("success_rate")
+  sampleCount        Int        @default(0) @map("sample_count")
+  hasCloudflare      Boolean    @default(false) @map("has_cloudflare")
+  hasDatadome        Boolean    @default(false) @map("has_datadome")
+  hasAkamai          Boolean    @default(false) @map("has_akamai")
+  hasPerimeterX      Boolean    @default(false) @map("has_perimeter_x")
+  hasImperva         Boolean    @default(false) @map("has_imperva")
+  requiresJs         Boolean    @default(false) @map("requires_js")
+  requiresCaptcha    Boolean    @default(false) @map("requires_captcha")
+  avgPageSizeKb      Float      @default(0.0) @map("avg_page_size_kb")
+  cacheTtlSeconds    Int        @default(3600) @map("cache_ttl_seconds")
+  robotsTxtAllowed   Boolean    @default(true) @map("robots_txt_allowed")
+  lastRobotsCheck    DateTime?  @map("last_robots_check") @db.Timestamptz
+  lastUpdated        DateTime   @default(now()) @map("last_updated") @db.Timestamptz
+  createdAt          DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  learnedSchemas  LearnedSchema[]
+  schemaDriftLogs SchemaDriftLog[]
+
+  @@map("domain_profiles")
+}
+
+// ─── Learned Schemas ─────────────────────────────────────────────────────────
+
+model LearnedSchema {
+  id              String    @id @default(uuid()) @db.Uuid
+  domain          String
+  instructionHash String    @map("instruction_hash")
+  schema          Json
+  exampleOutput   Json?     @map("example_output")
+  uses            Int       @default(0)
+  lastSuccess     DateTime? @map("last_success") @db.Timestamptz
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  domainProfile DomainProfile @relation(fields: [domain], references: [domain], onDelete: Cascade)
+
+  @@unique([domain, instructionHash])
+  @@index([domain])
+  @@map("learned_schemas")
+}
+
+// ─── Schema Drift Log ────────────────────────────────────────────────────────
+
+model SchemaDriftLog {
+  id              String   @id @default(uuid()) @db.Uuid
+  domain          String
+  instructionHash String   @map("instruction_hash")
+  detectedAt      DateTime @default(now()) @map("detected_at") @db.Timestamptz
+  newSample       Json     @map("new_sample")
+
+  domainProfile DomainProfile @relation(fields: [domain], references: [domain], onDelete: Cascade)
+
+  @@map("schema_drift_log")
+}
+
+// ─── Proxies (Enhanced for Bright Data-level features) ────────────────────────
+
+model Proxy {
+  id          String     @id
+  url         String
+  tier        ProxyTier  @default(residential)
+  country     String     @default("US")
+  city        String?    @map("city")
+  region      String?    @map("region")
+  asn         String?    @map("asn")
+  isp         String?    @map("isp")
+  provider    String
+  successRate Float      @default(0.5) @map("success_rate")
+  p95Latency  Int        @default(1000) @map("p95_latency")
+  failures    Int        @default(0)
+  consecutiveFailures Int @default(0) @map("consecutive_failures")
+  retired     Boolean    @default(false)
+  sticky      Boolean    @default(false) @map("sticky")
+  lastUsed    DateTime?  @map("last_used") @db.Timestamptz
+  lastChecked DateTime?  @map("last_checked") @db.Timestamptz
+  addedAt     DateTime   @default(now()) @map("added_at") @db.Timestamptz
+
+  outcomes ProxyOutcome[]
+
+  @@index([tier])
+  @@index([retired])
+  @@index([country])
+  @@index([country, city])
+  @@index([asn])
+  @@map("proxies")
+}
+
+// ─── Proxy Outcomes ──────────────────────────────────────────────────────────
+
+model ProxyOutcome {
+  id          String   @id @default(uuid()) @db.Uuid
+  proxyId     String   @map("proxy_id")
+  domain      String
+  success     Boolean
+  statusCode  Int?     @map("status_code")
+  latencyMs   Int      @map("latency_ms")
+  recordedAt  DateTime @default(now()) @map("recorded_at") @db.Timestamptz
+
+  proxy Proxy @relation(fields: [proxyId], references: [id], onDelete: Cascade)
+
+  @@index([proxyId, recordedAt(sort: Desc)])
+  @@map("proxy_outcomes")
+}
+
+// ─── CAPTCHA Solving Logs ────────────────────────────────────────────────────
+
+model CaptchaLog {
+  id           String     @id @default(uuid()) @db.Uuid
+  domain       String
+  captchaType  CaptchaType @map("captcha_type")
+  provider     String
+  siteKey      String?    @map("site_key")
+  solved       Boolean
+  solveTimeMs  Int        @map("solve_time_ms")
+  cost         Float      @default(0)
+  token        String?
+  jobId        String?    @map("job_id") @db.Uuid
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([domain])
+  @@index([provider, createdAt(sort: Desc)])
+  @@map("captcha_logs")
+}
+
+// ─── SERP Results ─────────────────────────────────────────────────────────────
+
+model SerpResult {
+  id             String    @id @default(uuid()) @db.Uuid
+  userId         String    @map("user_id") @db.Uuid
+  apiKeyId       String    @map("api_key_id") @db.Uuid
+  engine         SerpEngine
+  query          String
+  country        String    @default("us")
+  language       String    @default("en")
+  page           Int       @default(1)
+  results        Json
+  totalResults   Int?      @map("total_results")
+  searchTimeMs   Int       @map("search_time_ms")
+  creditsUsed    Int       @default(0) @map("credits_used")
+  creditsCharged Int       @default(0) @map("credits_charged")
+  cached         Boolean   @default(false)
+  createdAt      DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([engine, query])
+  @@map("serp_results")
+}
+
+// ─── Webhooks ─────────────────────────────────────────────────────────────────
+
+model Webhook {
+  id        String        @id @default(uuid()) @db.Uuid
+  userId    String        @map("user_id") @db.Uuid
+  url       String
+  events    WebhookEvent[]
+  secret    String?
+  active    Boolean        @default(true)
+  lastSent  DateTime?      @map("last_sent") @db.Timestamptz
+  failCount Int            @default(0) @map("fail_count")
+  createdAt DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  logs WebhookLog[]
+
+  @@map("webhooks")
+}
+
+model WebhookLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  webhookId  String   @map("webhook_id") @db.Uuid
+  event      String
+  payload    Json
+  statusCode Int?     @map("status_code")
+  response   String?
+  success    Boolean
+  sentAt     DateTime @default(now()) @map("sent_at") @db.Timestamptz
+
+  webhook Webhook @relation(fields: [webhookId], references: [id], onDelete: Cascade)
+
+  @@index([webhookId, sentAt(sort: Desc)])
+  @@map("webhook_logs")
+}
+
+// ─── Usage Snapshots (Analytics) ─────────────────────────────────────────────
+
+model UsageSnapshot {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String   @map("user_id") @db.Uuid
+  date           DateTime @map("date") @db.Date
+  httpRequests   Int      @default(0) @map("http_requests")
+  browserRequests Int     @default(0) @map("browser_requests")
+  cacheHits      Int      @default(0) @map("cache_hits")
+  nlExtractions  Int      @default(0) @map("nl_extractions")
+  structuredRequests Int  @default(0) @map("structured_requests")
+  monitorChecks  Int      @default(0) @map("monitor_checks")
+  serpRequests   Int      @default(0) @map("serp_requests")
+  captchaSolves  Int      @default(0) @map("captcha_solves")
+  creditsUsed    Int      @default(0) @map("credits_used")
+  creditsCharged Int      @default(0) @map("credits_charged")
+  bandwidthBytes Int      @default(0) @map("bandwidth_bytes")
+  successRate    Float    @default(0) @map("success_rate")
+  avgResponseMs  Float    @default(0) @map("avg_response_ms")
+  uniqueDomains  Int      @default(0) @map("unique_domains")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date(sort: Desc)])
+  @@map("usage_snapshots")
+}
+
+// ─── Collectors (Templated Data Collection) ─────────────────────────────────
+
+model Collector {
+  id              String    @id @default(uuid()) @db.Uuid
+  userId          String    @map("user_id") @db.Uuid
+  apiKeyId        String    @map("api_key_id") @db.Uuid
+  name            String
+  description     String?
+  templateId      String    @map("template_id")
+  urls            String[]
+  pagination      Json?     @map("pagination")
+  schedule        String?
+  outputFormat    String    @default("json") @map("output_format")
+  webhookUrl      String?   @map("webhook_url")
+  maxConcurrency  Int       @default(3) @map("max_concurrency")
+  proxyTier       String?   @map("proxy_tier")
+  proxyCountry    String?   @map("proxy_country")
+  active          Boolean   @default(true)
+  lastRunAt       DateTime? @map("last_run_at") @db.Timestamptz
+  runCount        Int       @default(0) @map("run_count")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  apiKey ApiKey @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([templateId])
+  @@map("collectors")
+}
+
+// ─── Datasets (Collector Run Results) ──────────────────────────────────────
+
+model Dataset {
+  id            String   @id @default(uuid()) @db.Uuid
+  collectorId   String   @map("collector_id") @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  totalRecords  Int      @default(0) @map("total_records")
+  successCount  Int      @default(0) @map("success_count")
+  failureCount  Int      @default(0) @map("failure_count")
+  durationMs    Int      @default(0) @map("duration_ms")
+  records       Json     @default("[]")
+  deltaSummary  Json?    @map("delta_summary")
+  runAt         DateTime @default(now()) @map("run_at") @db.Timestamptz
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([collectorId, runAt(sort: Desc)])
+  @@index([userId, runAt(sort: Desc)])
+  @@map("datasets")
+}
+
+// ─── Pool Events (IP Pool Scaling & Management) ────────────────────────────
+
+model PoolEvent {
+  id          String   @id @default(uuid()) @db.Uuid
+  eventType   String   @map("event_type")    // auto_scale, prewarm, blacklist, unblacklist, provider_failover,
+                                              // fusion_ignite, fusion_shutdown, fusion_scram, chain_reaction,
+                                              // breed, quantum_tunnel, plasma_rotate, containment_breach,
+                                              // containment_scram, subnet_expand, session_rotate, tor_rotate,
+                                              // discovery_cycle, validation_cycle, critical_mass, milestone
+  proxyId     String?  @map("proxy_id")
+  domain      String?
+  provider    String?
+  country     String?
+  tier        String?
+  metadata    Json?    @map("metadata")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([eventType, createdAt(sort: Desc)])
+  @@index([domain])
+  @@index([proxyId])
+  @@map("pool_events")
+}
+
+// ─── Compliance Models ─────────────────────────────────────────────────────────
+
+model ScrapedData {
+  id           String   @id @default(uuid()) @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  url          String
+  domain       String
+  dataType     String   @map("data_type")      // html, json, screenshot, pdf
+  rawContent   Json?    @map("raw_content")
+  redactedContent Json? @map("redacted_content")
+  dataFields   Json?    @map("data_fields")
+  piiFound     Int      @default(0) @map("pii_found")
+  complianceStatus String @default("pending") @map("compliance_status") // pending, compliant, flagged, blocked
+  retentionDays Int     @default(90) @map("retention_days")
+  legalHoldIds String[] @default([]) @map("legal_hold_ids")
+  expiresAt    DateTime? @map("expires_at") @db.Timestamptz
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([domain])
+  @@index([complianceStatus])
+  @@map("scraped_data")
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String?  @map("user_id") @db.Uuid
+  action      String
+  resource    String
+  resourceId  String?  @map("resource_id")
+  category    String                       // auth, scraping, compliance, billing, admin
+  severity    String   @default("info")    // debug, info, warn, error, critical
+  eventType   String?  @map("event_type")   // compliance-specific event type
+  url         String?
+  domain      String?
+  details     Json?
+  piiFound    Boolean  @default(false) @map("pii_found")
+  piiRedacted Boolean  @default(false) @map("pii_redacted")
+  previousHash String? @map("previous_hash")
+  currentHash  String? @map("current_hash")
+  metadata    Json?
+  ipAddress   String?  @map("ip_address")
+  userAgent   String?  @map("user_agent")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([action, createdAt(sort: Desc)])
+  @@index([category, severity])
+  @@index([resource, resourceId])
+  @@map("audit_logs")
+}
+
+model CCPARequest {
+  id            String   @id @default(uuid()) @db.Uuid
+  userId        String   @map("user_id") @db.Uuid
+  requestType   String   @map("request_type")  // access, deletion, opt_out, know, correction
+  status        String   @default("pending")    // pending, processing, completed, denied, expired
+  consumerName  String?  @map("consumer_name")
+  consumerEmail String?  @map("consumer_email")
+  notes         String?
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status])
+  @@index([requestType])
+  @@map("ccpa_requests")
+}
+
+// ─── Marketplace Models ────────────────────────────────────────────────────────
+
+model MarketplaceItem {
+  id               String   @id @default(uuid()) @db.Uuid
+  authorId         String   @map("author_id") @db.Uuid
+  publisherId      String?  @map("publisher_id") @db.Uuid
+  itemType         String   @map("item_type")  // template, dataset
+  templateId       String?  @map("template_id")
+  name             String
+  slug             String   @unique
+  description      String
+  longDescription  String?  @map("long_description")
+  shortDescription String?  @map("short_description")
+  category         String
+  tags             String[]
+  domainPatterns   String[] @default([]) @map("domain_patterns")
+  version          String   @default("1.0.0")
+  currentVersion   String   @default("1.0.0") @map("current_version")
+  schema           Json?                        // extraction schema
+  sampleOutput     Json?    @map("sample_output")
+  config           Json?                        // template/dataset config
+  metadata         Json?    @map("metadata")
+  pricingModel     String   @default("free") @map("pricing_model") // free, credits, subscription
+  priceCredits     Int      @default(0) @map("price_credits")
+  creditCost       Int      @default(0) @map("credit_cost")
+  downloads        Int      @default(0)
+  installs         Int      @default(0)
+  installCount     Int      @default(0) @map("install_count")
+  purchaseCount    Int      @default(0) @map("purchase_count")
+  avgRating        Float    @default(0) @map("avg_rating")
+  ratingCount      Int      @default(0) @map("rating_count")
+  reviewCount      Int      @default(0) @map("review_count")
+  qualityScore     Float    @default(0) @map("quality_score")
+  staffPick        Boolean  @default(false) @map("staff_pick")
+  featured         Boolean  @default(false)
+  verified         Boolean  @default(false)
+  status           String   @default("draft")  // draft, published, deprecated, removed
+  publishedAt      DateTime? @map("published_at") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  reviews   MarketplaceReview[]
+  purchases MarketplacePurchase[]
+
+  @@index([authorId, createdAt(sort: Desc)])
+  @@index([itemType, category])
+  @@index([status, featured])
+  @@index([slug])
+  @@map("marketplace_items")
+}
+
+model MarketplaceReview {
+  id        String   @id @default(uuid()) @db.Uuid
+  itemId    String   @map("item_id") @db.Uuid
+  userId    String   @map("user_id") @db.Uuid
+  itemType  String   @map("item_type")  // template, dataset
+  rating    Int
+  title     String?
+  body      String?
+  helpful   Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  item MarketplaceItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, userId])
+  @@index([itemId, createdAt(sort: Desc)])
+  @@index([userId])
+  @@map("marketplace_reviews")
+}
+
+model MarketplacePurchase {
+  id           String   @id @default(uuid()) @db.Uuid
+  itemId       String   @map("item_id") @db.Uuid
+  userId       String   @map("user_id") @db.Uuid
+  itemType     String   @map("item_type")  // template, dataset
+  itemName     String   @map("item_name")
+  priceCredits Int      @map("price_credits")
+  creditCost   Int      @default(0) @map("credit_cost")
+  publisherId  String?  @map("publisher_id") @db.Uuid
+  status       String   @default("completed")  // pending, completed, refunded
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  item MarketplaceItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([itemId, userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([itemId])
+  @@map("marketplace_purchases")
+}
+
+model MarketplacePayout {
+  id          String   @id @default(uuid()) @db.Uuid
+  authorId    String   @map("author_id") @db.Uuid
+  publisherId String?  @map("publisher_id") @db.Uuid
+  amount      Int                              // credits
+  periodStart DateTime @map("period_start") @db.Timestamptz
+  periodEnd   DateTime @map("period_end") @db.Timestamptz
+  status      String   @default("pending")  // pending, processing, completed, failed
+  paidAt      DateTime? @map("paid_at") @db.Timestamptz
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([authorId, createdAt(sort: Desc)])
+  @@index([status])
+  @@map("marketplace_payouts")
+}
+
+model UserInstalledTemplate {
+  id                String   @id @default(uuid()) @db.Uuid
+  userId            String   @map("user_id") @db.Uuid
+  itemId            String   @map("item_id") @db.Uuid
+  templateListingId String?  @map("template_listing_id") @db.Uuid
+  version           String   @default("1.0.0")
+  active            Boolean  @default(true)
+  installedAt       DateTime @default(now()) @map("installed_at") @db.Timestamptz
+
+  @@unique([userId, itemId])
+  @@index([userId])
+  @@index([itemId])
+  @@map("user_installed_templates")
+}
+
+// ─── Recurring Jobs ────────────────────────────────────────────────────────────
+
+model RecurringJob {
+  id            String    @id @default(uuid()) @db.Uuid
+  userId        String    @map("user_id") @db.Uuid
+  apiKeyId      String    @map("api_key_id") @db.Uuid
+  name          String
+  url           String
+  domain        String
+  cronSchedule  String    @map("cron_schedule")
+  timezone      String    @default("UTC")
+  strategy      String?
+  proxyTier     String?   @map("proxy_tier")
+  proxyCountry  String?   @map("proxy_country")
+  templateId    String?   @map("template_id")
+  outputFormat  String?   @map("output_format")
+  webhookUrl    String?   @map("webhook_url")
+  maxRetries    Int       @default(3) @map("max_retries")
+  active        Boolean   @default(true)
+  lastRunAt     DateTime? @map("last_run_at") @db.Timestamptz
+  nextRunAt     DateTime? @map("next_run_at") @db.Timestamptz
+  runCount      Int       @default(0) @map("run_count")
+  failCount     Int       @default(0) @map("fail_count")
+  consecutiveFailures Int @default(0) @map("consecutive_failures")
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([active, nextRunAt])
+  @@index([domain])
+  @@map("recurring_jobs")
+}

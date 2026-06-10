@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://fly.io/docs/about/pricing",
+    "name": "Fly.io Resource Pricing · Fly Docs",
+    "snippet": "The price of a running Fly Machine VM is the price of a named CPU/RAM preset, plus about $5 per 30 days per GB of additional RAM.",
+    "host_name": "fly.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/elixir/comments/1h8ajm2/is_flyio_ridiculously_expensive",
+    "name": "Is fly.io ridiculously expensive? : r/elixir - Reddit",
+    "snippet": "The total cost, including Postgres, Redis, storage, and bandwidth, is around $50 per month. I was considering trying Fly.io, but when I saw ...",
+    "host_name": "www.reddit.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://fly.io/docs/about/cost-management",
+    "name": "Cost Management on Fly.io · Fly Docs",
+    "snippet": "Cost Management on Fly.io · Predicting your Fly.io bill and avoiding surprises · A few examples · Metrics-based autoscaling can affect costs · Other ...",
+    "host_name": "fly.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://community.fly.io/t/mpg-pricing/26513",
+    "name": "MPG Pricing - postgres - Fly.io Community",
+    "snippet": "Fly Postgres “Scale” (Performance-4x, 32GB): $962/month (1 replica); PlanetScale PS-320 (4 CPU, 32GB): $699/month (2 replicas included) ...",
+    "host_name": "community.fly.io",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://northflank.com/blog/flyio-vs-render",
+    "name": "Fly.io vs Render: How they handle jobs, scaling, and production",
+    "snippet": "Compare how Fly.io and Render handle background jobs, scaling, and production apps in 2026. See the key trade-offs, performance differences, ...",
+    "host_name": "northflank.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://community.fly.io/t/early-look-postgresql-on-fly-we-want-your-opinions/537",
+    "name": "Early look: PostgreSQL on Fly. We want your opinions.",
+    "snippet": "Total cost, about $7.50 per month. You can scale these like any Fly app, all the way up to 8 CPUs, 64GB RAM, 500GB disks. You will have admin ...",
+    "host_name": "community.fly.io",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.srvrlss.io/blog/fly-io-pay-as-you-go",
+    "name": "Fly.io's New 2024 Pricing Model: Pay As You Go | srvrlss",
+    "snippet": "This model allows for automatic scaling and more granular billing based on actual resource usage — key traits of Serverless computing. This ...",
+    "host_name": "www.srvrlss.io",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.saaspricepulse.com/tools/flyio",
+    "name": "Fly.io Free Tier 2026: What's Left After the Cuts? - SaaS Price Pulse",
+    "snippet": "Bottom Line. Fly.io removed free allowances for new users in 2024. New signups get a 2-hour trial (or 7 days, whichever comes first).",
+    "host_name": "www.saaspricepulse.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://community.fly.io/t/fly-io-plan-allowances/9402",
+    "name": "Fly.io plan allowances?",
+    "snippet": "Everyone gets the free allowances. You can use 3GB of volumes before we start charging you for usage; The Launch and Scale plans include usage ...",
+    "host_name": "community.fly.io",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.withorb.com/blog/flyio-pricing",
+    "name": "Fly.io pricing: Plans and cost breakdown for 2025 - Orb Billing",
+    "snippet": "Services like Fly Postgres, Redis, and object storage are charged separately. A small database may cost $2 to $5 per month. High-availability setups can ...",
+    "host_name": "www.withorb.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

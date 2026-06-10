@@ -1,0 +1,76 @@
+# ─── ScrapeSuite Engine — Cerebrium-Optimized Dockerfile ─────────────────────
+# Multi-stage build for Cerebrium deployment
+# Uses custom runtime with health checks on port 3001
+
+# ── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM node:20-slim AS builder
+
+# Install OpenSSL for Prisma
+RUN apt-get update && apt-get install -y --no-install-recommends openssl && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install build dependencies
+COPY package*.json ./
+RUN npm ci
+
+# Copy source and build
+COPY tsconfig.json ./
+COPY prisma ./prisma/
+COPY src ./src/
+RUN npx prisma generate && npm run build
+
+# ── Stage 2: Production ─────────────────────────────────────────────────────
+FROM node:20-slim
+
+# Install Playwright browser dependencies + OpenSSL for Prisma
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssl libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
+    libcups2 libdrm2 libxkbcommon0 libxcomposite1 \
+    libxdamage1 libxrandr2 libgbm1 libpango-1.0-0 \
+    libcairo2 libasound2 libxshmfence1 \
+    fonts-liberation fonts-noto-color-emoji \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install production dependencies only
+COPY package*.json ./
+RUN npm ci --only=production
+
+# Install prisma CLI for startup migrations
+RUN npm install prisma@^6.8.0
+
+# Copy Prisma schema and generate client
+COPY prisma ./prisma/
+RUN npx prisma generate
+
+# Copy built JavaScript from builder
+COPY --from=builder /app/dist ./dist/
+
+# Install Playwright Chromium (required for browser-based scraping)
+RUN npx playwright install chromium
+
+# Copy startup script
+COPY start.sh ./
+RUN chmod +x start.sh
+
+# Cerebrium persistent storage mount point
+RUN mkdir -p /persistent-storage
+
+# Environment
+ENV NODE_ENV=production
+ENV PORT=3001
+ENV HOST=0.0.0.0
+ENV MODE=api
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+  CMD curl -f http://localhost:3001/health || exit 1
+
+# Expose port
+EXPOSE 3001
+
+# Start with migration script
+CMD ["./start.sh"]

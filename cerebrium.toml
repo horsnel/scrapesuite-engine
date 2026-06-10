@@ -1,0 +1,53 @@
+# ─── ScrapeSuite Engine — Cerebrium Deployment Config ─────────────────────────
+# Deploy: cerebrium deploy
+# Docs: https://cerebrium.ai/docs
+
+[cerebrium.deployment]
+name = "scrapesuite-engine"
+# When using dockerfile_path, all dependencies.* and shell_commands are ignored
+include = [
+  "src/**",
+  "prisma/**",
+  "package*.json",
+  "tsconfig.json",
+  "start.sh",
+  "Dockerfile.cerebrium",
+  ".env.cerebrium",
+]
+exclude = [
+  ".*",
+  "node_modules",
+  "dist",
+  "test",
+  "sdk",
+  "scripts",
+  "docker-compose.yml",
+  "fly.toml",
+  "redis-fly.toml",
+  "tsconfig.tsbuildinfo",
+]
+
+[cerebrium.runtime.custom]
+port = 3001
+dockerfile_path = "./Dockerfile.cerebrium"
+healthcheck_endpoint = "/health"
+readycheck_endpoint = "/health"
+# Entryppoint is defined in the Dockerfile CMD
+
+[cerebrium.hardware]
+cpu = 4.0
+memory = 16.0
+compute = "CPU"
+provider = "aws"
+region = "us-east-1"
+
+[cerebrium.scaling]
+min_replicas = 1           # Always-on — no cold starts
+max_replicas = 5           # Scale up to 5 instances under load
+replica_concurrency = 50   # 50 concurrent requests per replica
+response_grace_period = 3600  # 1 hour max request lifespan (long-running scrapes)
+cooldown = 1800            # 30 min before scaling down
+scaling_metric = "concurrency_utilization"
+scaling_target = 70
+evaluation_interval_seconds = 30
+compute_tier = "interruptible"  # Spot instances for cost savings on Hobby plan

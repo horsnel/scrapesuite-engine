@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://techsy.io/en/blog/railway-vs-render-vs-fly-io",
+    "name": "Heroku's Dead — Railway vs Render vs Fly.io 2026 - TECHSY",
+    "snippet": "Heroku stopped shipping in 2026. We compared the 3 best replacements — Railway, Render, Fly.io — on real bills, deploys, and edge support.",
+    "host_name": "techsy.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webdev/comments/1j8vace/price_comparison_calculator_for_flyio_heroku",
+    "name": "Price comparison calculator for Fly.io, Heroku, Render, and Railway",
+    "snippet": "This is really helpful! I think this showcases how expensive things are, and also how consistently expensive the providers are compared to more effortful ...",
+    "host_name": "www.reddit.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://blog.boltops.com/2025/05/01/heroku-vs-render-vs-vercel-vs-fly-io-vs-railway-meet-blossom-an-alternative",
+    "name": "Heroku vs Render vs Vercel vs Fly.io vs Railway: Meet Blossom, an",
+    "snippet": "In this article, we'll cover Heroku, Render, Vercel, Fly.io, and Railway and introduce Blossom, a simple and refreshing alternative.",
+    "host_name": "blog.boltops.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=4T1rUkCfBFc",
+    "name": "Fly.io vs Railway vs Render (2026) - Which One Is BEST? - YouTube",
+    "snippet": "Fly.io vs Railway vs Render (2026) – Which One Is BEST? Choosing between Fly.io, Railway, and Render in 2026 isn't just about deploying apps ...\nFly.io vs Railway vs Render (2026) – Which One Is BEST ... Node.js and backend application hosting • Docker and container-based ...\n... vs developer-first PaaS platforms • Deployment workflows and developer experience • Node.js and backend application hosting • Docker and ...",
+    "host_name": "www.youtube.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.railway.com/platform/compare-to-fly",
+    "name": "Railway vs. Fly | Railway Docs",
+    "snippet": "Compare Railway and Fly.io on deployment model, scaling, pricing and developer workflow.",
+    "host_name": "docs.railway.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.13labs.au/compare/railway-vs-render",
+    "name": "Railway vs Render (2026): Pricing, Cold Starts, and When Each Wins",
+    "snippet": "Both platforms aim to simplify cloud deployment for developers, offering managed infrastructure for web applications, APIs, background workers, and databases.\nRailway wins on developer experience with instant deploys, a better CLI, and a cleaner dashboard. Render wins on configuration depth and has more options for ...\nRender supports Docker deployments as well but also offers native runtimes for popular languages, which can result in faster builds and smaller images. Render's ...",
+    "host_name": "www.13labs.au",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.kunalganglani.com/blog/fly-io-vs-railway",
+    "name": "Fly.io vs Railway in 2026: Which PaaS Actually Wins?",
+    "snippet": "Fly.io vs Railway in 2026: detailed comparison of pricing, performance, DX, and scaling. Railway wins for simplicity; Fly.io wins for global ...",
+    "host_name": "www.kunalganglani.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://northflank.com/blog/railway-alternatives",
+    "name": "6 best Railway alternatives in 2026: Pricing, flexibility & BYOC | Blog",
+    "snippet": "If you like Railway's clean UI and simple Git-based deploys, Render gives you that, but with fewer constraints around pricing and uptime.",
+    "host_name": "northflank.com",
+    "rank": 7,
+    "date": "Jun 1, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://dev.to/alex_aslam/deploy-nodejs-apps-like-a-boss-railway-vs-render-vs-heroku-zero-server-stress-5p3",
+    "name": "Deploy Node.js Apps Like a Boss: Railway vs. Render vs. Heroku",
+    "snippet": "Your Node.js backend is finally ready. But now comes the real challenge: choosing where to host it in 2025. With Heroku's free tier gone, ...\nFocus on Code: Ship features, not infrastructure. But the 2025 landscape has changed. Here's the real deal: Contender 1: Railway — The Developer ...\n2025 Advantages: ... Fly.io (powerful but steeper curve):. Super cool for global low-latency apps. Requires wrestling Dockerfiles & flyctl CLI.",
+    "host_name": "dev.to",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.aptible.com/heroku-alternatives/heroku-like-paas",
+    "name": "Heroku-Like PaaS Alternatives - Render, Fly.io, and Railway - Aptible",
+    "snippet": "Render, Fly.io, and Railway are the closest replacements for Heroku's developer experience. Here's how they compare on workflow maturity, pricing, ...",
+    "host_name": "www.aptible.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://browserbase.com/blog/best-web-scraping-headless-browsers",
+    "name": "Best Headless Browsers for Web Scraping: Tools and Examples",
+    "snippet": "Scraperapi. Cost-effective option with basic headless capabilities and proxy rotation. Suitable for budget-conscious projects with moderate ...",
+    "host_name": "browserbase.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.webshare.io/academy-article/scrape-google-serp",
+    "name": "How to Scrape Google SERP? (2025) - Webshare",
+    "snippet": "Learn how to scrape organic Google Search (SERP) results using Python, Playwright & Webshare proxies.",
+    "host_name": "www.webshare.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1n1r3me/where_to_host_a_headed_browser_scraper_playwright",
+    "name": "Where to host a headed browser scraper (playwright)? - Reddit",
+    "snippet": "I am kind of new to doing web scraping off my machine, so I need some advice. My intuition is that there's some kind of cheap service out there ...",
+    "host_name": "www.reddit.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.browsercat.com/hosted-playwright",
+    "name": "Playwright in the Cloud - BrowserCat",
+    "snippet": "We host the browsers, you write the code. You want to crawl, scrape, sync, download, generate, animate, automate, activate, test, track, and hack…",
+    "host_name": "www.browsercat.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrape.do/blog/the-10-best-rotating-proxy-service-for-web-scraping",
+    "name": "The 10 Best Rotating Proxy Service For Web Scraping",
+    "snippet": "Scrape.do provides rotating proxies for web scraping, search engine scraping, listing scraping, e-commerce price scraping, social media, any web pages scraping.",
+    "host_name": "scrape.do",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.zyte.com/blog/building-a-self-hosted-browser-scraping-service-is-it-more-hassle-than-its-worth",
+    "name": "Building a self-hosted browser scraping service (is it more hassle",
+    "snippet": "This article documents what that build required, the decisions behind each part of it, and the places where I would reach for Zyte API instead.",
+    "host_name": "www.zyte.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapingant.com/playwright-alternative-web-scraping-api",
+    "name": "Playwright Alternative for Web Scraping - ScrapingAnt",
+    "snippet": "ScrapingAnt handles browser rendering, proxy rotation, and anti-bot bypass — the same things you'd use Playwright for in scraping. If you need complex ...",
+    "host_name": "scrapingant.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://evomi.com/blog/playwright-web-scraping-proxies-2025",
+    "name": "Essential Playwright Web Scraping & Proxy Strategies (2025) - Evomi",
+    "snippet": "Its core mission is to provide a unified API for automating browsers built on Chromium (like Chrome & Edge), WebKit (like Safari), and Firefox.",
+    "host_name": "evomi.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://error404.atomseo.com/blog/best-proxies-for-web-scraping",
+    "name": "Top 6 Proxy Providers for Reliable Web Scraping in 2025 - Atomseo",
+    "snippet": "Discover 6 best proxies for web scraping in 2025, tested for speed, stability, and low CAPTCHA rates across global targets.",
+    "host_name": "error404.atomseo.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/glossary/web-scraping-apis/self-hosted-scraping-with-managed-proxy-rotation",
+    "name": "What platform allows me to host my own web scraping infrastructure",
+    "snippet": "TL;DR. Firecrawl lets you run the scraping engine on your own servers while still using managed proxy rotation from its cloud infrastructure.",
+    "host_name": "www.firecrawl.dev",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

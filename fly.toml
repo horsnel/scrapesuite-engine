@@ -1,0 +1,51 @@
+# ScrapeSuite Engine — Fly.io Configuration
+# Deploys API + Worker as separate Fly Machines
+
+app = "scrapesuite-engine"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "3001"
+  NODE_ENV = "production"
+
+# ── Processes ────────────────────────────────────────────────────────────────
+# Each process group runs start.sh with a MODE argument
+[processes]
+  api = "sh start.sh api"
+  worker = "sh start.sh worker"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["api"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+# ── API Machine (lightweight, just routes) ──────────────────────────────────
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+  processes = ["api"]
+
+# ── Worker Machine (runs Playwright/Chromium + BullMQ) ──────────────────────
+[[vm]]
+  memory = "2gb"
+  cpu_kind = "shared"
+  cpus = 2
+  processes = ["worker"]
+
+# ── Persistent Volume for Worker ────────────────────────────────────────────
+[[mounts]]
+  source = "scrapesuite_data"
+  destination = "/data"
+  processes = ["worker"]

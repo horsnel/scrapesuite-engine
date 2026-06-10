@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://www.hetzner.com/dedicated-rootserver/ex44",
+    "name": "EX44 - Hetzner",
+    "snippet": "Primary IPv4 required · /29 (6 usable IPs). - € 22.00 per month. / € 0.0353 per hour. + € 34.90 setup. /28 (14 usable IPs). - € 35.60 per month. / € 0.0571 per ...",
+    "host_name": "www.hetzner.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.hetzner.com/dedicated-rootserver",
+    "name": "Find cheap dedicated servers with AMD & Intel CPUs - Hetzner",
+    "snippet": "Get your own dedicated server at an unbeatable price. from € 44.00. AX ... per month. € 0.0705. € 0.0678. per hour. setup fee. € 109.00. Configure. excl. VAT ...",
+    "host_name": "www.hetzner.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/hetzner/comments/1pny5yl/hetzner_dedicated_server_setup_fee_has_increased",
+    "name": "Hetzner Dedicated Server setup fee has increased - Reddit",
+    "snippet": "Yesterday I ordered an AX102 for around €50, I think. Now: r/hetzner - Hetzner Dedicated Server setup fee has increased.",
+    "host_name": "www.reddit.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.hetzner.com/general/infrastructure-and-availability/price-adjustment",
+    "name": "Hetzner Price Adjustment",
+    "snippet": "0.0143 (per GB / monthly), 0.0130 (per GB / monthly), 0.0199 (per GB / monthly). Dedicated servers. Germany. All prices are monthly. Product ...",
+    "host_name": "docs.hetzner.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.achromatic.dev/blog/hetzner-server-comparison",
+    "name": "Hetzner Server Comparison 2025: Best Value Cloud & Dedicated",
+    "snippet": "RAM, Storage, Price / month ... At €49.00 per month it delivers 27882 PassMark points and matches the EX44's storage and RAM specifications.",
+    "host_name": "www.achromatic.dev",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  }
+]

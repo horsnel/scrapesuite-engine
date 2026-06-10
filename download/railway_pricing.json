@@ -1,0 +1,47 @@
+[
+  {
+    "url": "https://railway.com/pricing",
+    "name": "Pricing | Railway",
+    "snippet": "Free · Start with a 30-day free trial with $5 credits, then $1 per month · Up to 1 vCPU / 0.5 GB RAM per service · 0.5 GB of volume storage · Community support.",
+    "host_name": "railway.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://servercompass.app/blog/railway-pricing-what-youll-actually-pay",
+    "name": "Railway Costs $20+/mo. This Tool Costs $29 Once - Server Compass",
+    "snippet": "The key takeaways for understanding Railway pricing: CPU costs ~$20/month per full vCPU; memory costs ~$10/month per GB; Databases are ...",
+    "host_name": "servercompass.app",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.buildmvpfast.com/tools/api-pricing-estimator/railway",
+    "name": "Railway Pricing 2026: Free Tier, Postgres & Hobby Plan Costs",
+    "snippet": "Railway Usage Pricing ; Compute: $0.000231/vCPU-hour (~$0.17/vCPU/month) ; Memory: $0.000231/GB-hour (~$0.17/GB/month) ; Network egress: $0.10/GB ; Disk: $0.000231/ ...\nRailway Usage Pricing · Compute: $0.000231/vCPU-hour (~$0.17/vCPU/month) · Memory: $0.000231/GB-hour (~$0.17/GB/month) · Network egress: $0.10/GB · Disk: $0.000231/ ...",
+    "host_name": "www.buildmvpfast.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@kuberns/railway-free-tier-in-2026-what-you-get-and-when-it-runs-out-2101fdca0998",
+    "name": "Railway Free Tier in 2026: What You Get and When It Runs Out",
+    "snippet": "Based on Railway's usage rates, one minimal always-on service with 0.5 GB RAM and 0.5 vCPU costs roughly $0.80 to $1.00 per month. So you ...\nOption 2: Stay on the Free plan Your app restarts but with reduced limits: 1 vCPU, 0.5 GB RAM, 1 project, and only $1 per month in credits. If ...",
+    "host_name": "medium.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://northflank.com/blog/railway-vs-render",
+    "name": "Railway vs Render: which platform fits your workload in 2026? | Blog",
+    "snippet": "Railway uses usage-based billing billed by the second, with monthly minimum spend tiers. It suits teams that want flexible, consumption-based ...\nAfter the trial, the free plan continues at $1/month with limited resources (up to 1 vCPU and 0.5 GB RAM per service). The Hobby paid plan ...",
+    "host_name": "northflank.com",
+    "rank": 4,
+    "date": "Jun 1, 2026",
+    "favicon": ""
+  }
+]
