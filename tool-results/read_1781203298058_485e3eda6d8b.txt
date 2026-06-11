@@ -1,0 +1,849 @@
+     1→/**
+     2→ * Smart IP Pool Manager
+     3→ *
+     4→ * A unified "mega-pool" that aggregates ALL proxy sources -- database proxies,
+     5→ * residential provider APIs, and dynamically acquired IPs -- into a single
+     6→ * intelligent pool with:
+     7→ *
+     8→ *  - Unified selection: one API to get the best IP regardless of source
+     9→ *  - Reputation-aware selection: uses IPReputationTracker to avoid blacklisted IPs
+    10→ *  - Geographic optimization: smart allocation by country/city/ASN
+    11→ *  - IP cooling periods: recently used IPs get a cooldown to avoid detection
+    12→ *  - Demand-driven auto-scaling: pool grows when demand exceeds supply
+    13→ *  - Cost optimization: prefers cheaper providers when quality is similar
+    14→ *  - Pre-warming: proactively acquire IPs for known high-traffic domains
+    15→ *  - Pool health monitoring: continuous tracking of pool utilization
+    16→ *
+    17→ * This is the single entry point for all IP selection in the orchestrator,
+    18→ * replacing direct calls to proxyManager.getProxy() and
+    19→ * residentialProxyManager.getProxy().
+    20→ */
+    21→
+    22→import { db } from '../utils/db';
+    23→import { redis, cacheGet, cacheSet } from '../utils/redis';
+    24→import { createChildLogger } from '../utils/logger';
+    25→import { ipReputationTracker } from './reputation';
+    26→import { residentialProxyManager, type ProxyProvider } from './residential-providers';
+    27→import { testProxy } from '../utils/proxy-fetch';
+    28→
+    29→const logger = createChildLogger('ip-pool');
+    30→
+    31→// --- Constants ----------------------------------------------------------------
+    32→
+    33→/** How long an IP is "cooling" after use (ms). During cooling, it won't be
+    34→ *  returned for the same domain (but can be used for other domains). */
+    35→const IP_COOLDOWN_MS = 60_000; // 1 minute
+    36→
+    37→/** Minimum pool utilization before auto-scaling kicks in (0-1). */
+    38→const AUTO_SCALE_THRESHOLD = 0.8;
+    39→
+    40→/** Maximum concurrent proxy acquisitions from external providers. */
+    41→const MAX_CONCURRENT_ACQUISITIONS = 10;
+    42→
+    43→/** How often the pool monitor runs (ms). */
+    44→const POOL_MONITOR_INTERVAL_MS = 60_000; // 1 minute
+    45→
+    46→/** How many IPs to pre-warm for a high-traffic domain. */
+    47→const PREWARM_COUNT = 5;
+    48→
+    49→/** TTL for cached pool stats (seconds). */
+    50→const POOL_STATS_CACHE_TTL = 30;
+    51→
+    52→// --- Types --------------------------------------------------------------------
+    53→
+    54→export type ProxySource = 'database' | 'brightdata' | 'oxylabs' | 'smartproxy' | 'iproyal' | 'webshare' | 'generic';
+    55→
+    56→export interface IPPoolRequest {
+    57→  domain: string;
+    58→  tier?: 'residential' | 'mobile' | 'datacenter' | 'isp';
+    59→  country?: string;
+    60→  city?: string;
+    61→  asn?: string;
+    62→  sessionId?: string;
+    63→  /** If true, only return IPs with good reputation for this domain. */
+    64→  requireReputation?: boolean;
+    65→  /** Maximum cost per GB the user is willing to pay. */
+    66→  maxCostPerGb?: number;
+    67→}
+    68→
+    69→export interface IPPoolResult {
+    70→  proxyUrl: string;
+    71→  proxyId: string;
+    72→  source: ProxySource;
+    73→  country: string;
+    74→  city?: string;
+    75→  asn?: string;
+    76→  tier: string;
+    77→  reputationScore: number;
+    78→  isWarmed: boolean;
+    79→  costPerGb: number;
+    80→  sessionId?: string;
+    81→}
+    82→
+    83→export interface PoolStats {
+    84→  totalAvailable: number;
+    85→  totalInUse: number;
+    86→  totalCooling: number;
+    87→  totalBlacklisted: number;
+    88→  bySource: Record<ProxySource, { available: number; inUse: number; avgScore: number }>;
+    89→  byTier: Record<string, number>;
+    90→  byCountry: Record<string, number>;
+    91→  utilizationRate: number;
+    92→  autoScaleActive: boolean;
+    93→  demandQueueLength: number;
+    94→  lastUpdated: number;
+    95→}
+    96→
+    97→export interface PoolDemandSignal {
+    98→  domain: string;
+    99→  tier: string;
+   100→  country?: string;
+   101→  requestedAt: number;
+   102→  fulfilled: boolean;
+   103→}
+   104→
+   105→// --- SmartIPPoolManager ------------------------------------------------------
+   106→
+   107→export class SmartIPPoolManager {
+   108→  /** IPs currently "in use" (active requests). proxyId → { domain, acquiredAt } */
+   109→  private inUseMap = new Map<string, { domain: string; acquiredAt: number }>();
+   110→
+   111→  /** IPs in cooldown (recently used for a domain). proxyId+domain → cooldownUntil */
+   112→  private cooldownMap = new Map<string, number>();
+   113→
+   114→  /** Pending demand signals (requests waiting for IPs). */
+   115→  private demandQueue: PoolDemandSignal[] = [];
+   116→
+   117→  /** Pool monitor timer. */
+   118→  private monitorTimer: ReturnType<typeof setInterval> | null = null;
+   119→
+   120→  /** Auto-scaling state. */
+   121→  private autoScaleActive = false;
+   122→
+   123→  /** Number of external IPs acquired via auto-scaling. */
+   124→  private autoScaledCount = 0;
+   125→
+   126→  /** Pre-warmed IPs per domain. domain → Set of proxyIds. */
+   127→  private prewarmedMap = new Map<string, Set<string>>();
+   128→
+   129→  // --- Get Proxy (Main Entry Point) ---------------------------------------
+   130→
+   131→  /**
+   132→   * Get the best available IP for a given request.
+   133→   *
+   134→   * Selection algorithm:
+   135→   *  1. Check sticky session → return session IP if valid
+   136→   *  2. Check pre-warmed pool for this domain → return pre-warmed IP
+   137→   *  3. Check database proxies → rank by reputation, filter blacklisted
+   138→   *  4. Check residential providers → acquire from best provider
+   139→   *  5. If all sources exhausted → record demand signal for auto-scaling
+   140→   */
+   141→  async getProxy(request: IPPoolRequest): Promise<IPPoolResult | null> {
+   142→    const {
+   143→      domain,
+   144→      tier = 'residential',
+   145→      country,
+   146→      city,
+   147→      asn,
+   148→      sessionId,
+   149→      requireReputation = false,
+   150→      maxCostPerGb,
+   151→    } = request;
+   152→
+   153→    // -- Step 1: Check sticky session in Redis -----------------------------
+   154→    if (sessionId) {
+   155→      const stickyKey = `pool:sticky:${sessionId}`;
+   156→      const sticky = await cacheGet<{ proxyId: string; proxyUrl: string; source: ProxySource; country: string; tier: string; city?: string; asn?: string; costPerGb: number }>(stickyKey);
+   157→      if (sticky) {
+   158→        // Check if the sticky IP is still usable
+   159→        const verdict = await ipReputationTracker.getVerdict(sticky.proxyId, domain);
+   160→        if (verdict.usable) {
+   161→          this.markInUse(sticky.proxyId, domain);
+   162→          return {
+   163→            proxyUrl: sticky.proxyUrl,
+   164→            proxyId: sticky.proxyId,
+   165→            source: sticky.source,
+   166→            country: sticky.country,
+   167→            city: sticky.city,
+   168→            asn: sticky.asn,
+   169→            tier: sticky.tier,
+   170→            reputationScore: verdict.score,
+   171→            isWarmed: verdict.warm,
+   172→            costPerGb: sticky.costPerGb,
+   173→            sessionId,
+   174→          };
+   175→        }
+   176→        // Sticky IP is blacklisted -- clear and find a new one
+   177→        await redis.del(`cache:${stickyKey}`);
+   178→      }
+   179→    }
+   180→
+   181→    // -- Step 2: Check pre-warmed pool -------------------------------------
+   182→    const prewarmed = this.prewarmedMap.get(domain);
+   183→    if (prewarmed && prewarmed.size > 0) {
+   184→      for (const proxyId of prewarmed) {
+   185→        const verdict = await ipReputationTracker.getVerdict(proxyId, domain);
+   186→        if (verdict.usable && !this.isInUse(proxyId) && !this.isCooling(proxyId, domain)) {
+   187→          const proxy = await this.getProxyDetails(proxyId);
+   188→          if (proxy) {
+   189→            prewarmed.delete(proxyId);
+   190→            this.markInUse(proxyId, domain);
+   191→
+   192→            if (sessionId) {
+   193→              await this.setStickySession(sessionId, proxyId, proxy.url, proxy.source, proxy.country, proxy.tier, proxy.city, proxy.asn, 0);
+   194→            }
+   195→
+   196→            return {
+   197→              proxyUrl: proxy.url,
+   198→              proxyId,
+   199→              source: proxy.source,
+   200→              country: proxy.country,
+   201→              city: proxy.city,
+   202→              asn: proxy.asn,
+   203→              tier: proxy.tier,
+   204→              reputationScore: verdict.score,
+   205→              isWarmed: verdict.warm,
+   206→              costPerGb: 0,
+   207→              sessionId,
+   208→            };
+   209→          }
+   210→        }
+   211→      }
+   212→    }
+   213→
+   214→    // -- Step 3: Try database proxies --------------------------------------
+   215→    const dbResult = await this.tryDatabaseProxies(domain, tier, country, city, asn, requireReputation, maxCostPerGb);
+   216→    if (dbResult) {
+   217→      this.markInUse(dbResult.proxyId, domain);
+   218→      this.setCooldown(dbResult.proxyId, domain);
+   219→
+   220→      if (sessionId) {
+   221→        await this.setStickySession(sessionId, dbResult.proxyId, dbResult.proxyUrl, dbResult.source, dbResult.country, dbResult.tier, dbResult.city, dbResult.asn, dbResult.costPerGb);
+   222→      }
+   223→
+   224→      return dbResult;
+   225→    }
+   226→
+   227→    // -- Step 4: Try residential providers ---------------------------------
+   228→    const providerResult = await this.tryResidentialProviders(domain, tier, country, city, asn, maxCostPerGb);
+   229→    if (providerResult) {
+   230→      this.markInUse(providerResult.proxyId, domain);
+   231→
+   232→      if (sessionId) {
+   233→        await this.setStickySession(sessionId, providerResult.proxyId, providerResult.proxyUrl, providerResult.source, providerResult.country, providerResult.tier, providerResult.city, providerResult.asn, providerResult.costPerGb);
+   234→      }
+   235→
+   236→      return providerResult;
+   237→    }
+   238→
+   239→    // -- Step 5: Record demand signal for auto-scaling ---------------------
+   240→    this.demandQueue.push({
+   241→      domain,
+   242→      tier,
+   243→      country,
+   244→      requestedAt: Date.now(),
+   245→      fulfilled: false,
+   246→    });
+   247→
+   248→    logger.warn(
+   249→      { domain, tier, country, city, asn, demandQueueLength: this.demandQueue.length },
+   250→      'No IP available -- recorded demand signal for auto-scaling',
+   251→    );
+   252→
+   253→    return null;
+   254→  }
+   255→
+   256→  // --- Release Proxy ------------------------------------------------------
+   257→
+   258→  /**
+   259→   * Release a proxy back to the pool after use.
+   260→   * Records the outcome in the reputation tracker and puts the IP on cooldown.
+   261→   */
+   262→  async releaseProxy(
+   263→    proxyId: string,
+   264→    domain: string,
+   265→    success: boolean,
+   266→    statusCode?: number,
+   267→    source?: ProxySource,
+   268→  ): Promise<void> {
+   269→    // Remove from in-use map
+   270→    this.inUseMap.delete(proxyId);
+   271→
+   272→    // Record in reputation tracker
+   273→    await ipReputationTracker.recordOutcome(proxyId, domain, success, statusCode);
+   274→
+   275→    // If the request failed, put the IP on cooldown for this domain
+   276→    if (!success) {
+   277→      this.setCooldown(proxyId, domain);
+   278→
+   279→      // If it was a hard block (403/429), blacklist the IP for this domain
+   280→      if (statusCode === 403 || statusCode === 429) {
+   281→        const cooldownMs = statusCode === 429 ? 5 * 60 * 1000 : 10 * 60 * 1000;
+   282→        await ipReputationTracker.blacklistProxy(proxyId, domain, `http_${statusCode}`, cooldownMs);
+   283→      }
+   284→    } else {
+   285→      // If it was a residential provider, release back to provider
+   286→      if (source) {
+   287→        await residentialProxyManager.releaseProxy(source as ProxyProvider, success);
+   288→      }
+   289→    }
+   290→
+   291→    // Fulfill any pending demand signals
+   292→    this.fulfillDemand(domain);
+   293→  }
+   294→
+   295→  // --- Pool Stats ---------------------------------------------------------
+   296→
+   297→  /**
+   298→   * Get current pool statistics.
+   299→   */
+   300→  async getPoolStats(): Promise<PoolStats> {
+   301→    // Try cache first
+   302→    const cached = await cacheGet<PoolStats>('pool:stats');
+   303→    if (cached) return cached;
+   304→
+   305→    const [totalActive, totalRetired] = await Promise.all([
+   306→      db.proxy.count({ where: { retired: false } }),
+   307→      db.proxy.count({ where: { retired: true } }),
+   308→    ]);
+   309→
+   310→    const tierGroups = await db.proxy.groupBy({
+   311→      by: ['tier'],
+   312→      _count: { tier: true },
+   313→      where: { retired: false },
+   314→    });
+   315→
+   316→    const countryGroups = await db.proxy.groupBy({
+   317→      by: ['country'],
+   318→      _count: { country: true },
+   319→      where: { retired: false },
+   320→    });
+   321→
+   322→    const providerGroups = await db.proxy.groupBy({
+   323→      by: ['provider'],
+   324→      _count: { provider: true },
+   325→      where: { retired: false },
+   326→    });
+   327→
+   328→    const totalAvailable = totalActive;
+   329→    const totalInUse = this.inUseMap.size;
+   330→    const totalCooling = this.cooldownMap.size;
+   331→    const utilizationRate = totalAvailable > 0 ? totalInUse / totalAvailable : 0;
+   332→
+   333→    const bySource: Record<string, { available: number; inUse: number; avgScore: number }> = {};
+   334→    for (const g of providerGroups) {
+   335→      const source = g.provider as ProxySource;
+   336→      bySource[source] = { available: g._count.provider, inUse: 0, avgScore: 0.5 };
+   337→    }
+   338→    // Add residential provider stats
+   339→    const providerStats = residentialProxyManager.getProviderStats();
+   340→    for (const ps of providerStats) {
+   341→      if (!bySource[ps.provider]) {
+   342→        bySource[ps.provider] = { available: 0, inUse: ps.currentConcurrent, avgScore: ps.totalRequests > 0 ? ps.successRate : 0.5 };
+   343→      }
+   344→    }
+   345→
+   346→    const stats: PoolStats = {
+   347→      totalAvailable,
+   348→      totalInUse,
+   349→      totalCooling,
+   350→      totalBlacklisted: totalRetired,
+   351→      bySource: bySource as any,
+   352→      byTier: Object.fromEntries(tierGroups.map((g) => [g.tier, g._count.tier])),
+   353→      byCountry: Object.fromEntries(countryGroups.map((g) => [g.country, g._count.country])),
+   354→      utilizationRate: Math.round(utilizationRate * 1000) / 1000,
+   355→      autoScaleActive: this.autoScaleActive,
+   356→      demandQueueLength: this.demandQueue.filter((d) => !d.fulfilled).length,
+   357→      lastUpdated: Date.now(),
+   358→    };
+   359→
+   360→    await cacheSet('pool:stats', stats, POOL_STATS_CACHE_TTL);
+   361→    return stats;
+   362→  }
+   363→
+   364→  // --- Pre-warm -----------------------------------------------------------
+   365→
+   366→  /**
+   367→   * Pre-warm IPs for a high-traffic domain.
+   368→   * Acquires IPs from the pool and keeps them ready for immediate use.
+   369→   */
+   370→  async prewarmDomain(domain: string, tier: 'residential' | 'mobile' | 'datacenter' | 'isp' = 'residential', country?: string): Promise<number> {
+   371→    let warmed = 0;
+   372→
+   373→    logger.info({ domain, tier, country, target: PREWARM_COUNT }, 'Starting domain pre-warming');
+   374→
+   375→    for (let i = 0; i < PREWARM_COUNT; i++) {
+   376→      try {
+   377→        // Try database first
+   378→        const dbProxies = await db.proxy.findMany({
+   379→          where: {
+   380→            tier: tier as any,
+   381→            retired: false,
+   382→            ...(country ? { country: country.toUpperCase() } : {}),
+   383→            successRate: { gt: 0.5 },
+   384→          },
+   385→          orderBy: [{ successRate: 'desc' }, { p95Latency: 'asc' }],
+   386→          take: PREWARM_COUNT * 3, // Get more than needed for reputation filtering
+   387→        });
+   388→
+   389→        for (const proxy of dbProxies) {
+   390→          const verdict = await ipReputationTracker.getVerdict(proxy.id, domain);
+   391→          if (verdict.usable && verdict.score > 0.4 && !this.isInUse(proxy.id)) {
+   392→            if (!this.prewarmedMap.has(domain)) {
+   393→              this.prewarmedMap.set(domain, new Set());
+   394→            }
+   395→            this.prewarmedMap.get(domain)!.add(proxy.id);
+   396→            warmed++;
+   397→            break;
+   398→          }
+   399→        }
+   400→
+   401→        // If not enough from DB, try residential providers
+   402→        if (warmed <= i) {
+   403→          const providerResult = await residentialProxyManager.getProxy({
+   404→            country,
+   405→            tier,
+   406→          });
+   407→
+   408→          if (providerResult) {
+   409→            // Store the provider proxy in DB for future reuse
+   410→            await db.proxy.upsert({
+   411→              where: { id: providerResult.proxyId },
+   412→              update: { url: providerResult.proxyUrl, retired: false, lastUsed: new Date() },
+   413→              create: {
+   414→                id: providerResult.proxyId,
+   415→                url: providerResult.proxyUrl,
+   416→                tier: (providerResult.tier || tier) as any,
+   417→                country: providerResult.country,
+   418→                city: providerResult.city,
+   419→                asn: providerResult.asn,
+   420→                provider: providerResult.provider,
+   421→                successRate: 0.5,
+   422→              },
+   423→            });
+   424→
+   425→            if (!this.prewarmedMap.has(domain)) {
+   426→              this.prewarmedMap.set(domain, new Set());
+   427→            }
+   428→            this.prewarmedMap.get(domain)!.add(providerResult.proxyId);
+   429→            warmed++;
+   430→          }
+   431→        }
+   432→      } catch (err: any) {
+   433→        logger.warn({ domain, error: err.message }, 'Pre-warm acquisition failed');
+   434→      }
+   435→    }
+   436→
+   437→    logger.info({ domain, warmed, target: PREWARM_COUNT }, 'Domain pre-warming completed');
+   438→    return warmed;
+   439→  }
+   440→
+   441→  // --- Auto-Scaling -------------------------------------------------------
+   442→
+   443→  /**
+   444→   * Start the pool monitor that handles auto-scaling and maintenance.
+   445→   */
+   446→  startPoolMonitor(): void {
+   447→    if (this.monitorTimer) return;
+   448→
+   449→    this.monitorTimer = setInterval(async () => {
+   450→      await this.runPoolMonitor();
+   451→    }, POOL_MONITOR_INTERVAL_MS);
+   452→
+   453→    logger.info({ intervalMs: POOL_MONITOR_INTERVAL_MS }, 'IP pool monitor started');
+   454→  }
+   455→
+   456→  stopPoolMonitor(): void {
+   457→    if (this.monitorTimer) {
+   458→      clearInterval(this.monitorTimer);
+   459→      this.monitorTimer = null;
+   460→    }
+   461→  }
+   462→
+   463→  private async runPoolMonitor(): Promise<void> {
+   464→    try {
+   465→      const stats = await this.getPoolStats();
+   466→
+   467→      // -- Check utilization and auto-scale if needed ------------------------
+   468→      if (stats.utilizationRate > AUTO_SCALE_THRESHOLD && !this.autoScaleActive) {
+   469→        this.autoScaleActive = true;
+   470→        logger.info(
+   471→          { utilizationRate: stats.utilizationRate, threshold: AUTO_SCALE_THRESHOLD },
+   472→          'Pool utilization high -- activating auto-scaling',
+   473→        );
+   474→        await this.autoScale();
+   475→      } else if (stats.utilizationRate < AUTO_SCALE_THRESHOLD * 0.7) {
+   476→        this.autoScaleActive = false;
+   477→      }
+   478→
+   479→      // -- Process demand queue ----------------------------------------------
+   480→      await this.processDemandQueue();
+   481→
+   482→      // -- Clean up expired cooldowns ----------------------------------------
+   483→      this.cleanupExpiredCooldowns();
+   484→
+   485→      // -- Clean up fulfilled/old demand signals -----------------------------
+   486→      this.cleanupDemandQueue();
+   487→    } catch (err: any) {
+   488→      logger.warn({ error: err.message }, 'Pool monitor run failed');
+   489→    }
+   490→  }
+   491→
+   492→  private async autoScale(): Promise<void> {
+   493→    // Group demand signals by domain to find the most needy targets
+   494→    const domainDemand = new Map<string, { count: number; tier: string; country?: string }>();
+   495→    for (const signal of this.demandQueue.filter((d) => !d.fulfilled)) {
+   496→      const key = signal.domain;
+   497→      const existing = domainDemand.get(key);
+   498→      if (existing) {
+   499→        existing.count++;
+   500→      } else {
+   501→        domainDemand.set(key, { count: 1, tier: signal.tier, country: signal.country });
+   502→      }
+   503→    }
+   504→
+   505→    // Sort by demand count (highest first)
+   506→    const sortedDemand = Array.from(domainDemand.entries())
+   507→      .sort((a, b) => b[1].count - a[1].count);
+   508→
+   509→    // Acquire IPs for the top 3 most demanding domains
+   510→    const toAcquire = Math.min(sortedDemand.length, 3);
+   511→    for (let i = 0; i < toAcquire; i++) {
+   512→      const [domain, demand] = sortedDemand[i];
+   513→
+   514→      try {
+   515→        const providerResult = await residentialProxyManager.getProxy({
+   516→          country: demand.country,
+   517→          tier: demand.tier as any,
+   518→        });
+   519→
+   520→        if (providerResult) {
+   521→          // Store in DB for reuse
+   522→          await db.proxy.upsert({
+   523→            where: { id: providerResult.proxyId },
+   524→            update: { url: providerResult.proxyUrl, retired: false, lastUsed: new Date() },
+   525→            create: {
+   526→              id: providerResult.proxyId,
+   527→              url: providerResult.proxyUrl,
+   528→              tier: (providerResult.tier || demand.tier) as any,
+   529→              country: providerResult.country,
+   530→              city: providerResult.city,
+   531→              asn: providerResult.asn,
+   532→              provider: providerResult.provider,
+   533→              successRate: 0.5,
+   534→            },
+   535→          });
+   536→
+   537→          this.autoScaledCount++;
+   538→
+   539→          // Add to pre-warmed pool for this domain
+   540→          if (!this.prewarmedMap.has(domain)) {
+   541→            this.prewarmedMap.set(domain, new Set());
+   542→          }
+   543→          this.prewarmedMap.get(domain)!.add(providerResult.proxyId);
+   544→
+   545→          logger.info(
+   546→            { domain, proxyId: providerResult.proxyId, provider: providerResult.provider, totalAutoScaled: this.autoScaledCount },
+   547→            'Auto-scaled: acquired new IP for high-demand domain',
+   548→          );
+   549→        }
+   550→      } catch (err: any) {
+   551→        logger.warn({ domain, error: err.message }, 'Auto-scale acquisition failed');
+   552→      }
+   553→    }
+   554→  }
+   555→
+   556→  private async processDemandQueue(): Promise<void> {
+   557→    const pending = this.demandQueue.filter((d) => !d.fulfilled);
+   558→    if (pending.length === 0) return;
+   559→
+   560→    for (const signal of pending.slice(0, 10)) {
+   561→      const result = await this.tryDatabaseProxies(signal.domain, signal.tier as any, signal.country);
+   562→      if (result) {
+   563→        signal.fulfilled = true;
+   564→        if (!this.prewarmedMap.has(signal.domain)) {
+   565→          this.prewarmedMap.set(signal.domain, new Set());
+   566→        }
+   567→        this.prewarmedMap.get(signal.domain)!.add(result.proxyId);
+   568→      }
+   569→    }
+   570→  }
+   571→
+   572→  // --- Private: Database Proxy Selection ----------------------------------
+   573→
+   574→  private async tryDatabaseProxies(
+   575→    domain: string,
+   576→    tier: string,
+   577→    country?: string,
+   578→    city?: string,
+   579→    asn?: string,
+   580→    requireReputation?: boolean,
+   581→    maxCostPerGb?: number,
+   582→  ): Promise<IPPoolResult | null> {
+   583→    try {
+   584→      const where: any = { tier: tier as any, retired: false };
+   585→      if (country) where.country = country.toUpperCase();
+   586→      if (city) where.city = city;
+   587→      if (asn) where.asn = asn;
+   588→
+   589→      // Get candidates from DB
+   590→      const candidates = await db.proxy.findMany({
+   591→        where,
+   592→        orderBy: [
+   593→          { successRate: 'desc' },
+   594→          { p95Latency: 'asc' },
+   595→        ],
+   596→        take: 30, // Get top 30 candidates for reputation ranking
+   597→      });
+   598→
+   599→      if (candidates.length === 0) return null;
+   600→
+   601→      // Filter out in-use and cooling IPs
+   602→      const available = candidates.filter(
+   603→        (p) => !this.isInUse(p.id) && !this.isCooling(p.id, domain),
+   604→      );
+   605→
+   606→      if (available.length === 0) return null;
+   607→
+   608→      // Get proxy IDs for reputation ranking
+   609→      const proxyIds = available.map((p) => p.id);
+   610→      const ranked = await ipReputationTracker.rankProxiesForDomain(proxyIds, domain, 10);
+   611→
+   612→      if (ranked.length === 0) return null;
+   613→
+   614→      // If reputation is required, only use warm IPs
+   615→      const eligible = requireReputation
+   616→        ? ranked.filter((r) => r.warm && r.score > 0.6)
+   617→        : ranked;
+   618→
+   619→      if (eligible.length === 0 && requireReputation) return null;
+   620→
+   621→      // Pick the best ranked proxy
+   622→      const best = eligible[0] || ranked[0];
+   623→      const proxy = available.find((p) => p.id === best.proxyId);
+   624→      if (!proxy) return null;
+   625→
+   626→      // Determine source
+   627→      const source = this.inferSource(proxy.provider);
+   628→
+   629→      return {
+   630→        proxyUrl: proxy.url,
+   631→        proxyId: proxy.id,
+   632→        source,
+   633→        country: proxy.country,
+   634→        city: proxy.city || undefined,
+   635→        asn: proxy.asn || undefined,
+   636→        tier: proxy.tier,
+   637→        reputationScore: best.score,
+   638→        isWarmed: best.warm,
+   639→        costPerGb: 0, // Database proxies have no per-GB cost
+   640→      };
+   641→    } catch (err: any) {
+   642→      logger.warn({ domain, tier, error: err.message }, 'Database proxy selection failed');
+   643→      return null;
+   644→    }
+   645→  }
+   646→
+   647→  // --- Private: Residential Provider Selection ----------------------------
+   648→
+   649→  private async tryResidentialProviders(
+   650→    domain: string,
+   651→    tier: string,
+   652→    country?: string,
+   653→    city?: string,
+   654→    asn?: string,
+   655→    maxCostPerGb?: number,
+   656→  ): Promise<IPPoolResult | null> {
+   657→    try {
+   658→      const result = await residentialProxyManager.getProxy({
+   659→        country,
+   660→        city,
+   661→        asn,
+   662→        tier: tier as any,
+   663→      });
+   664→
+   665→      if (!result) return null;
+   666→
+   667→      // Check cost constraint
+   668→      if (maxCostPerGb && result.costPerGb > maxCostPerGb) {
+   669→        // This provider is too expensive -- try to find a cheaper one
+   670→        await residentialProxyManager.releaseProxy(result.provider, false);
+   671→        return null;
+   672→      }
+   673→
+   674→      // Store the acquired proxy in DB for reuse and tracking
+   675→      await db.proxy.upsert({
+   676→        where: { id: result.proxyId },
+   677→        update: {
+   678→          url: result.proxyUrl,
+   679→          retired: false,
+   680→          lastUsed: new Date(),
+   681→          ...(result.city ? { city: result.city } : {}),
+   682→          ...(result.asn ? { asn: result.asn } : {}),
+   683→        },
+   684→        create: {
+   685→          id: result.proxyId,
+   686→          url: result.proxyUrl,
+   687→          tier: (result.tier || tier) as any,
+   688→          country: result.country,
+   689→          city: result.city,
+   690→          asn: result.asn,
+   691→          provider: result.provider,
+   692→          successRate: 0.5,
+   693→        },
+   694→      });
+   695→
+   696→      return {
+   697→        proxyUrl: result.proxyUrl,
+   698→        proxyId: result.proxyId,
+   699→        source: result.provider as ProxySource,
+   700→        country: result.country,
+   701→        city: result.city,
+   702→        asn: result.asn,
+   703→        tier: result.tier,
+   704→        reputationScore: 0.5, // New IP from provider -- neutral reputation
+   705→        isWarmed: false,
+   706→        costPerGb: result.costPerGb,
+   707→        sessionId: result.sessionId,
+   708→      };
+   709→    } catch (err: any) {
+   710→      logger.warn({ domain, tier, error: err.message }, 'Residential provider selection failed');
+   711→      return null;
+   712→    }
+   713→  }
+   714→
+   715→  // --- Private: Helper Methods --------------------------------------------
+   716→
+   717→  private markInUse(proxyId: string, domain: string): void {
+   718→    this.inUseMap.set(proxyId, { domain, acquiredAt: Date.now() });
+   719→  }
+   720→
+   721→  private isInUse(proxyId: string): boolean {
+   722→    return this.inUseMap.has(proxyId);
+   723→  }
+   724→
+   725→  private setCooldown(proxyId: string, domain: string): void {
+   726→    this.cooldownMap.set(`${proxyId}:${domain}`, Date.now() + IP_COOLDOWN_MS);
+   727→  }
+   728→
+   729→  private isCooling(proxyId: string, domain: string): boolean {
+   730→    const key = `${proxyId}:${domain}`;
+   731→    const cooldownUntil = this.cooldownMap.get(key);
+   732→    if (!cooldownUntil) return false;
+   733→    if (Date.now() >= cooldownUntil) {
+   734→      this.cooldownMap.delete(key);
+   735→      return false;
+   736→    }
+   737→    return true;
+   738→  }
+   739→
+   740→  private cleanupExpiredCooldowns(): void {
+   741→    const now = Date.now();
+   742→    for (const [key, until] of this.cooldownMap) {
+   743→      if (now >= until) {
+   744→        this.cooldownMap.delete(key);
+   745→      }
+   746→    }
+   747→  }
+   748→
+   749→  private cleanupDemandQueue(): void {
+   750→    const now = Date.now();
+   751→    this.demandQueue = this.demandQueue.filter((d) => {
+   752→      // Remove fulfilled or older than 5 minutes
+   753→      return !d.fulfilled && (now - d.requestedAt < 5 * 60 * 1000);
+   754→    });
+   755→  }
+   756→
+   757→  private fulfillDemand(domain: string): void {
+   758→    for (const signal of this.demandQueue) {
+   759→      if (!signal.fulfilled && signal.domain === domain) {
+   760→        signal.fulfilled = true;
+   761→      }
+   762→    }
+   763→  }
+   764→
+   765→  private async setStickySession(
+   766→    sessionId: string,
+   767→    proxyId: string,
+   768→    proxyUrl: string,
+   769→    source: ProxySource,
+   770→    country: string,
+   771→    tier: string,
+   772→    city?: string,
+   773→    asn?: string,
+   774→    costPerGb: number = 0,
+   775→  ): Promise<void> {
+   776→    const key = `pool:sticky:${sessionId}`;
+   777→    await cacheSet(key, {
+   778→      proxyId,
+   779→      proxyUrl,
+   780→      source,
+   781→      country,
+   782→      tier,
+   783→      city,
+   784→      asn,
+   785→      costPerGb,
+   786→    }, 600); // 10 min TTL
+   787→  }
+   788→
+   789→  private async getProxyDetails(proxyId: string): Promise<{
+   790→    url: string;
+   791→    source: ProxySource;
+   792→    country: string;
+   793→    tier: string;
+   794→    city?: string;
+   795→    asn?: string;
+   796→  } | null> {
+   797→    try {
+   798→      const proxy = await db.proxy.findUnique({ where: { id: proxyId } });
+   799→      if (!proxy) return null;
+   800→      return {
+   801→        url: proxy.url,
+   802→        source: this.inferSource(proxy.provider),
+   803→        country: proxy.country,
+   804→        tier: proxy.tier,
+   805→        city: proxy.city || undefined,
+   806→        asn: proxy.asn || undefined,
+   807→      };
+   808→    } catch {
+   809→      return null;
+   810→    }
+   811→  }
+   812→
+   813→  private inferSource(provider: string): ProxySource {
+   814→    const knownProviders: Record<string, ProxySource> = {
+   815→      brightdata: 'brightdata',
+   816→      oxylabs: 'oxylabs',
+   817→      smartproxy: 'smartproxy',
+   818→      iproyal: 'iproyal',
+   819→      webshare: 'webshare',
+   820→    };
+   821→    return knownProviders[provider] || 'database';
+   822→  }
+   823→
+   824→  /**
+   825→   * Get a summary of the current pool state for monitoring dashboards.
+   826→   */
+   827→  getPoolState(): {
+   828→    inUseCount: number;
+   829→    coolingCount: number;
+   830→    prewarmedDomains: number;
+   831→    demandQueueLength: number;
+   832→    autoScaledCount: number;
+   833→    autoScaleActive: boolean;
+   834→  } {
+   835→    return {
+   836→      inUseCount: this.inUseMap.size,
+   837→      coolingCount: this.cooldownMap.size,
+   838→      prewarmedDomains: this.prewarmedMap.size,
+   839→      demandQueueLength: this.demandQueue.filter((d) => !d.fulfilled).length,
+   840→      autoScaledCount: this.autoScaledCount,
+   841→      autoScaleActive: this.autoScaleActive,
+   842→    };
+   843→  }
+   844→}
+   845→
+   846→// --- Singleton ----------------------------------------------------------------
+   847→
+   848→export const smartIPPool = new SmartIPPoolManager();
+   849→

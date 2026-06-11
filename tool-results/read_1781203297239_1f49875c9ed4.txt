@@ -1,0 +1,1913 @@
+     1→/**
+     2→ * Mega Pool -- Unified Proxy Pool Manager -- ENHANCED v2
+     3→ *
+     4→ * The UNIFIED mega pool manager that aggregates ALL proxy sources into
+     5→ * one intelligent pool.
+     6→ *
+     7→ * Enhancements over v1:
+     8→ *  - Pool refresh: 5s (was 60s)
+     9→ *  - Tier allocation: smarter, faster, based on real-time demand
+    10→ *  - Unified scoring: 10 scoring dimensions (was 3-5)
+    11→ *  - Pool scaling: target 1B+ effective IPs
+    12→ *  - Parallel proxy validation across all tiers
+    13→ *  - Smart tier promotion/demotion based on performance
+    14→ *  - Pool compression: merge duplicate entries efficiently
+    15→ *  - Pool fusion: merge pools from multiple peers
+    16→ *  - Pool intelligence: learn which proxies work best for which targets
+    17→ *
+    18→ * Source priority order for getProxy:
+    19→ *  1. Check sticky session
+    20→ *  2. Check pre-warmed pool
+    21→ *  3. Try rotating sessions (unique IP per request)
+    22→ *  4. Try subnet expander (10M+ virtual IPs)
+    23→ *  5. Try bulk sessions (pre-warmed residential)
+    24→ *  6. Try database proxies (reputation-ranked)
+    25→ *  7. Try residential providers (cost-optimized)
+    26→ *  8. Try free proxy discovery
+    27→ *  9. Try TOR pool
+    28→ * 10. Try pool fusion (peer pools)
+    29→ */
+    30→
+    31→import { db } from '../utils/db';
+    32→import { redis, cacheGet, cacheSet } from '../utils/redis';
+    33→import { createChildLogger } from '../utils/logger';
+    34→import { residentialProxyManager, type ProxyProvider } from './residential-providers';
+    35→import { ipReputationTracker } from './reputation';
+    36→import { smartIPPool, type IPPoolResult } from './ip-pool';
+    37→import { testProxy } from '../utils/proxy-fetch';
+    38→
+    39→const logger = createChildLogger('mega-pool');
+    40→
+    41→// --- Constants ----------------------------------------------------------------
+    42→
+    43→/** How often the mega pool health monitor runs (ms) -- 5s (was 60s). */
+    44→const MEGA_POOL_MONITOR_INTERVAL_MS = 5_000;
+    45→
+    46→/** How often the auto-scaler evaluates demand (ms) -- 5s (was 30s). */
+    47→const AUTOSCALE_INTERVAL_MS = 5_000;
+    48→
+    49→/** How often pool compression runs (ms). */
+    50→const COMPRESSION_INTERVAL_MS = 30_000;
+    51→
+    52→/** How often pool fusion runs (ms). */
+    53→const FUSION_INTERVAL_MS = 30_000;
+    54→
+    55→/** How often pool intelligence update runs (ms). */
+    56→const INTELLIGENCE_INTERVAL_MS = 10_000;
+    57→
+    58→/** How often tier rebalancing runs (ms). */
+    59→const TIER_REBALANCE_INTERVAL_MS = 10_000;
+    60→
+    61→/** TTL for cached mega pool stats (seconds). */
+    62→const MEGA_POOL_STATS_CACHE_TTL = 10;
+    63→
+    64→/** TTL for pre-warmed proxy cache (seconds). */
+    65→const PREWARM_CACHE_TTL = 120;
+    66→
+    67→/** Minimum success rate for a source to be considered healthy. */
+    68→const MIN_SOURCE_HEALTH_RATE = 0.4;
+    69→
+    70→/** Cost similarity threshold. */
+    71→const COST_SIMILARITY_THRESHOLD = 0.3;
+    72→
+    73→/** Critical mass threshold. */
+    74→const CRITICAL_MASS_THRESHOLD = 0.15;
+    75→
+    76→/** Pool utilization threshold for auto-scaling. */
+    77→const AUTOSCALE_UTILIZATION_THRESHOLD = 0.75;
+    78→
+    79→/** Maximum demand signals to track. */
+    80→const MAX_DEMAND_SIGNALS = 5000;
+    81→
+    82→/** Maximum pre-warmed entries per domain. */
+    83→const MAX_PREWARM_PER_DOMAIN = 50;
+    84→
+    85→/** Known provider estimated IP counts for capacity calculation. */
+    86→const PROVIDER_ESTIMATED_IPS: Record<string, number> = {
+    87→  brightdata: 72_000_000,
+    88→  oxylabs: 100_000_000,
+    89→  smartproxy: 55_000_000,
+    90→  iproyal: 6_000_000,
+    91→  webshare: 30_000_000,
+    92→  packetstream: 5_000_000,
+    93→  soax: 8_000_000,
+    94→  netnut: 20_000_000,
+    95→  infatica: 10_000_000,
+    96→  geonode: 2_000_000,
+    97→  pyproxy: 5_000_000,
+    98→  iphtml: 3_000_000,
+    99→  luminati: 72_000_000,
+   100→  stormproxies: 70_000,
+   101→  therapidapi: 1_000_000,
+   102→};
+   103→
+   104→/** Theoretical maximum IPs across all providers. */
+   105→const THEORETICAL_MAX_IPS = Object.values(PROVIDER_ESTIMATED_IPS).reduce((s, v) => s + v, 0);
+   106→
+   107→/** Source cost multipliers (relative cost per GB). */
+   108→const SOURCE_COST: Record<MegaPoolSource, number> = {
+   109→  database: 0,
+   110→  brightdata: 15,
+   111→  oxylabs: 12,
+   112→  smartproxy: 14,
+   113→  iproyal: 5,
+   114→  webshare: 4,
+   115→  free: 0,
+   116→  tor: 0,
+   117→  bulk: 8,
+   118→  subnet: 10,
+   119→  rotating: 12,
+   120→  fusion: 0,
+   121→  chain: 0,
+   122→  breeder: 0,
+   123→  quantum: 0,
+   124→  plasma: 0,
+   125→};
+   126→
+   127→/** Source quality scores (0-1, higher = better). */
+   128→const SOURCE_QUALITY: Record<MegaPoolSource, number> = {
+   129→  database: 0.7,
+   130→  brightdata: 0.9,
+   131→  oxylabs: 0.9,
+   132→  smartproxy: 0.85,
+   133→  iproyal: 0.75,
+   134→  webshare: 0.7,
+   135→  free: 0.3,
+   136→  tor: 0.2,
+   137→  bulk: 0.8,
+   138→  subnet: 0.85,
+   139→  rotating: 0.9,
+   140→  fusion: 0.95,
+   141→  chain: 0.95,
+   142→  breeder: 0.95,
+   143→  quantum: 1.0,
+   144→  plasma: 1.0,
+   145→};
+   146→
+   147→// --- Scoring Dimensions (10 dimensions) -------------------------------------
+   148→
+   149→/** Weight for each of the 10 scoring dimensions. */
+   150→const SCORING_WEIGHTS = {
+   151→  successRate: 0.15,
+   152→  latency: 0.10,
+   153→  anonymity: 0.10,
+   154→  geoMatch: 0.10,
+   155→  costEfficiency: 0.08,
+   156→  availability: 0.10,
+   157→  reliability: 0.10,
+   158→  freshness: 0.07,
+   159→  tierMatch: 0.10,
+   160→  historicalPerformance: 0.10,
+   161→};
+   162→
+   163→// --- Types --------------------------------------------------------------------
+   164→
+   165→export type MegaPoolSource = 'database' | 'brightdata' | 'oxylabs' | 'smartproxy' | 'iproyal' | 'webshare' | 'free' | 'tor' | 'bulk' | 'subnet' | 'rotating' | 'fusion' | 'chain' | 'breeder' | 'quantum' | 'plasma';
+   166→
+   167→export interface MegaPoolRequest {
+   168→  domain: string;
+   169→  tier?: 'residential' | 'mobile' | 'datacenter' | 'isp';
+   170→  country?: string;
+   171→  city?: string;
+   172→  asn?: string;
+   173→  sessionId?: string;
+   174→  maxCostPerGb?: number;
+   175→  requireReputation?: boolean;
+   176→  preferSource?: MegaPoolSource;
+   177→  avoidSources?: MegaPoolSource[];
+   178→}
+   179→
+   180→export interface MegaPoolResult {
+   181→  proxyUrl: string;
+   182→  proxyId: string;
+   183→  source: MegaPoolSource;
+   184→  country: string;
+   185→  city?: string;
+   186→  asn?: string;
+   187→  tier: string;
+   188→  reputationScore: number;
+   189→  costPerGb: number;
+   190→  sessionId?: string;
+   191→  isWarmed: boolean;
+   192→  acquiredAt: number;
+   193→  diversityScore?: number;
+   194→  unifiedScore?: number;
+   195→  scoreBreakdown?: ScoreBreakdown;
+   196→}
+   197→
+   198→export interface ScoreBreakdown {
+   199→  successRateScore: number;
+   200→  latencyScore: number;
+   201→  anonymityScore: number;
+   202→  geoMatchScore: number;
+   203→  costEfficiencyScore: number;
+   204→  availabilityScore: number;
+   205→  reliabilityScore: number;
+   206→  freshnessScore: number;
+   207→  tierMatchScore: number;
+   208→  historicalPerformanceScore: number;
+   209→  totalScore: number;
+   210→}
+   211→
+   212→export interface MegaPoolStats {
+   213→  totalEffectiveIPs: number;
+   214→  sources: Record<MegaPoolSource, { available: number; inUse: number; avgScore: number; healthy: boolean }>;
+   215→  byCountry: Record<string, number>;
+   216→  byTier: Record<string, number>;
+   217→  utilizationRate: number;
+   218→  fusionReadiness: {
+   219→    ready: boolean;
+   220→    criticalMassPercent: number;
+   221→    chainReactionPossible: boolean;
+   222→    selfSustaining: boolean;
+   223→  };
+   224→  subModules: {
+   225→    freeProxy: any;
+   226→    torPool: any;
+   227→    bulkSessions: any;
+   228→    subnetExpander: any;
+   229→    rotatingSessions: any;
+   230→  };
+   231→  poolCompression: {
+   232→    enabled: boolean;
+   233→    entriesCompressed: number;
+   234→    spaceSavedPercent: number;
+   235→    lastRunAt: number;
+   236→  };
+   237→  poolFusion: {
+   238→    enabled: boolean;
+   239→    peersConnected: number;
+   240→    proxiesFused: number;
+   241→    lastRunAt: number;
+   242→  };
+   243→  poolIntelligence: {
+   244→    enabled: boolean;
+   245→    patternsLearned: number;
+   246→    topTargets: Array<{ domain: string; bestSource: MegaPoolSource; avgScore: number }>;
+   247→    lastRunAt: number;
+   248→  };
+   249→  tierDistribution: Record<string, { count: number; avgScore: number; promotions: number; demotions: number }>;
+   250→}
+   251→
+   252→export interface SourceHealth {
+   253→  source: MegaPoolSource;
+   254→  healthy: boolean;
+   255→  successRate: number;
+   256→  avgLatencyMs: number;
+   257→  available: number;
+   258→  inUse: number;
+   259→  lastChecked: number;
+   260→  errors: number;
+   261→  costPerGb: number;
+   262→  qualityScore: number;
+   263→}
+   264→
+   265→export interface DemandSignal {
+   266→  domain: string;
+   267→  tier: string;
+   268→  country?: string;
+   269→  source?: MegaPoolSource;
+   270→  requestedAt: number;
+   271→  fulfilled: boolean;
+   272→  priority: number;
+   273→}
+   274→
+   275→export interface PrewarmEntry {
+   276→  proxyId: string;
+   277→  proxyUrl: string;
+   278→  source: MegaPoolSource;
+   279→  domain: string;
+   280→  country: string;
+   281→  tier: string;
+   282→  warmedAt: number;
+   283→  used: boolean;
+   284→}
+   285→
+   286→export interface PoolIntelligenceEntry {
+   287→  domain: string;
+   288→  source: MegaPoolSource;
+   289→  successCount: number;
+   290→  failureCount: number;
+   291→  avgLatencyMs: number;
+   292→  lastUpdated: number;
+   293→  bestForCountry: string;
+   294→  bestForTier: string;
+   295→}
+   296→
+   297→export interface TierStats {
+   298→  tier: string;
+   299→  count: number;
+   300→  avgScore: number;
+   301→  promotions: number;
+   302→  demotions: number;
+   303→  lastRebalancedAt: number;
+   304→}
+   305→
+   306→// --- MegaPool -----------------------------------------------------------------
+   307→
+   308→export class MegaPool {
+   309→  // --- Sub-module references ---
+   310→  private freeProxyDiscovery: any = null;
+   311→  private torPool: any = null;
+   312→  private bulkSessions: any = null;
+   313→  private subnetExpanderModule: any = null;
+   314→  private rotatingSessionsModule: any = null;
+   315→
+   316→  // --- Internal state ---
+   317→  private sourceHealthMap = new Map<MegaPoolSource, SourceHealth>();
+   318→  private prewarmedMap = new Map<string, PrewarmEntry[]>();
+   319→  private inUseMap = new Map<string, { domain: string; source: MegaPoolSource; acquiredAt: number }>();
+   320→  private demandSignals: DemandSignal[] = [];
+   321→  private sourceOutcomes = new Map<MegaPoolSource, { successes: number; failures: number }>();
+   322→
+   323→  // --- Pool Intelligence (NEW) ---
+   324→  private poolIntelligence = new Map<string, PoolIntelligenceEntry>();
+   325→  private intelligenceTimer: ReturnType<typeof setInterval> | null = null;
+   326→
+   327→  // --- Pool Compression (NEW) ---
+   328→  private compressionTimer: ReturnType<typeof setInterval> | null = null;
+   329→  private compressionState = {
+   330→    enabled: true,
+   331→    entriesCompressed: 0,
+   332→    spaceSavedPercent: 0,
+   333→    lastRunAt: 0,
+   334→    duplicateMap: new Map<string, string[]>(),
+   335→  };
+   336→
+   337→  // --- Pool Fusion (NEW) ---
+   338→  private fusionTimer: ReturnType<typeof setInterval> | null = null;
+   339→  private fusionState = {
+   340→    enabled: true,
+   341→    peersConnected: 0,
+   342→    proxiesFused: 0,
+   343→    lastRunAt: 0,
+   344→    peerEndpoints: [] as Array<{ url: string; lastSyncAt: number }>,
+   345→  };
+   346→
+   347→  // --- Tier Management (NEW) ---
+   348→  private tierRebalanceTimer: ReturnType<typeof setInterval> | null = null;
+   349→  private tierStats = new Map<string, TierStats>();
+   350→
+   351→  // --- Timers ---
+   352→  private monitorTimer: ReturnType<typeof setInterval> | null = null;
+   353→  private autoscaleTimer: ReturnType<typeof setInterval> | null = null;
+   354→
+   355→  // --- Flags and counters ---
+   356→  private started = false;
+   357→  private totalAcquisitions = 0;
+   358→  private totalSuccessfulAcquisitions = 0;
+   359→  private totalFailedAcquisitions = 0;
+   360→  private totalCost = 0;
+   361→  private acquisitionTimestamps: number[] = [];
+   362→
+   363→  // --- Lifecycle ----------------------------------------------------------
+   364→
+   365→  /**
+   366→   * Start all sub-services and begin monitoring.
+   367→   * Enhanced: 5s intervals, pool fusion, compression, intelligence.
+   368→   */
+   369→  async start(): Promise<void> {
+   370→    if (this.started) {
+   371→      logger.warn('Mega pool already started');
+   372→      return;
+   373→    }
+   374→
+   375→    logger.info('Starting ENHANCED mega pool (5s cycles, fusion, compression, intelligence)...');
+   376→
+   377→    await this.initSubModules();
+   378→    this.initializeSourceHealth();
+   379→    smartIPPool.startPoolMonitor();
+   380→    await this.startAllServices();
+   381→
+   382→    // 5s health monitor
+   383→    this.monitorTimer = setInterval(() => {
+   384→      this.runHealthMonitor().catch(err => {
+   385→        logger.warn({ error: (err as Error).message }, 'Mega pool health monitor failed');
+   386→      });
+   387→    }, MEGA_POOL_MONITOR_INTERVAL_MS);
+   388→
+   389→    // 5s auto-scaler
+   390→    this.autoscaleTimer = setInterval(() => {
+   391→      this.runAutoScaler().catch(err => {
+   392→        logger.warn({ error: (err as Error).message }, 'Mega pool auto-scaler failed');
+   393→      });
+   394→    }, AUTOSCALE_INTERVAL_MS);
+   395→
+   396→    // NEW: Pool compression timer
+   397→    this.compressionTimer = setInterval(() => {
+   398→      this.runPoolCompression().catch(err => {
+   399→        logger.warn({ error: (err as Error).message }, 'Pool compression failed');
+   400→      });
+   401→    }, COMPRESSION_INTERVAL_MS);
+   402→
+   403→    // NEW: Pool fusion timer
+   404→    this.fusionTimer = setInterval(() => {
+   405→      this.runPoolFusion().catch(err => {
+   406→        logger.warn({ error: (err as Error).message }, 'Pool fusion failed');
+   407→      });
+   408→    }, FUSION_INTERVAL_MS);
+   409→
+   410→    // NEW: Pool intelligence timer
+   411→    this.intelligenceTimer = setInterval(() => {
+   412→      this.runPoolIntelligence().catch(err => {
+   413→        logger.warn({ error: (err as Error).message }, 'Pool intelligence update failed');
+   414→      });
+   415→    }, INTELLIGENCE_INTERVAL_MS);
+   416→
+   417→    // NEW: Tier rebalance timer
+   418→    this.tierRebalanceTimer = setInterval(() => {
+   419→      this.runTierRebalance().catch(err => {
+   420→        logger.warn({ error: (err as Error).message }, 'Tier rebalance failed');
+   421→      });
+   422→    }, TIER_REBALANCE_INTERVAL_MS);
+   423→
+   424→    this.started = true;
+   425→    logger.info('Mega pool started successfully with pool fusion, compression, and intelligence');
+   426→  }
+   427→
+   428→  /**
+   429→   * Stop all sub-services and clean up.
+   430→   */
+   431→  async stop(): Promise<void> {
+   432→    if (this.monitorTimer) { clearInterval(this.monitorTimer); this.monitorTimer = null; }
+   433→    if (this.autoscaleTimer) { clearInterval(this.autoscaleTimer); this.autoscaleTimer = null; }
+   434→    if (this.compressionTimer) { clearInterval(this.compressionTimer); this.compressionTimer = null; }
+   435→    if (this.fusionTimer) { clearInterval(this.fusionTimer); this.fusionTimer = null; }
+   436→    if (this.intelligenceTimer) { clearInterval(this.intelligenceTimer); this.intelligenceTimer = null; }
+   437→    if (this.tierRebalanceTimer) { clearInterval(this.tierRebalanceTimer); this.tierRebalanceTimer = null; }
+   438→
+   439→    await this.stopAllServices();
+   440→    smartIPPool.stopPoolMonitor();
+   441→
+   442→    this.started = false;
+   443→    logger.info('Mega pool stopped');
+   444→  }
+   445→
+   446→  // --- Sub-module Initialization -----------------------------------------
+   447→
+   448→  private async initSubModules(): Promise<void> {
+   449→    const moduleImports = [
+   450→      { name: 'free-proxy-discovery', prop: 'freeProxyDiscovery', label: 'Free proxy discovery' },
+   451→      { name: 'tor-pool', prop: 'torPool', label: 'TOR pool' },
+   452→      { name: 'bulk-sessions', prop: 'bulkSessionManager', label: 'Bulk sessions' },
+   453→      { name: 'subnet-expander', prop: 'subnetExpander', label: 'Subnet expander' },
+   454→      { name: 'rotating-session-factory', prop: 'rotatingSessionFactory', label: 'Rotating sessions' },
+   455→    ];
+   456→
+   457→    for (const mod of moduleImports) {
+   458→      try {
+   459→        const m = await import(`./${mod.name}`);
+   460→        (this as any)[mod.prop] = m[mod.prop];
+   461→        logger.info(`${mod.label} module loaded`);
+   462→      } catch {
+   463→        logger.info(`${mod.label} module not available -- skipping`);
+   464→      }
+   465→    }
+   466→  }
+   467→
+   468→  async startAllServices(): Promise<void> {
+   469→    const services = [
+   470→      { module: this.subnetExpanderModule, method: 'startExpander', label: 'Subnet expander' },
+   471→      { module: this.rotatingSessionsModule, method: 'startFactory', label: 'Rotating session factory' },
+   472→      { module: this.freeProxyDiscovery, method: 'startDiscovery', label: 'Free proxy discovery' },
+   473→      { module: this.torPool, method: 'startPool', label: 'TOR pool' },
+   474→      { module: this.bulkSessions, method: 'startBulkManager', label: 'Bulk sessions' },
+   475→    ];
+   476→
+   477→    const startPromises = services.map(async (service) => {
+   478→      if (service.module && typeof (service.module as any)[service.method] === 'function') {
+   479→        try {
+   480→          await (service.module as any)[service.method]();
+   481→          logger.info(`${service.label} service started`);
+   482→        } catch (err: any) {
+   483→          logger.warn({ error: err.message }, `Failed to start ${service.label}`);
+   484→        }
+   485→      }
+   486→    });
+   487→
+   488→    await Promise.allSettled(startPromises);
+   489→
+   490→    residentialProxyManager.startHealthChecks();
+   491→    ipReputationTracker.startDecay();
+   492→
+   493→    logger.info('All sub-services started');
+   494→  }
+   495→
+   496→  async stopAllServices(): Promise<void> {
+   497→    const services = [
+   498→      { module: this.subnetExpanderModule, method: 'stopExpander', label: 'Subnet expander' },
+   499→      { module: this.rotatingSessionsModule, method: 'stopFactory', label: 'Rotating session factory' },
+   500→      { module: this.freeProxyDiscovery, method: 'stopDiscovery', label: 'Free proxy discovery' },
+   501→      { module: this.torPool, method: 'stopPool', label: 'TOR pool' },
+   502→      { module: this.bulkSessions, method: 'stopBulkManager', label: 'Bulk sessions' },
+   503→    ];
+   504→
+   505→    const stopPromises = services.map(async (service) => {
+   506→      if (service.module && typeof (service.module as any)[service.method] === 'function') {
+   507→        try {
+   508→          (service.module as any)[service.method]();
+   509→          logger.info(`${service.label} service stopped`);
+   510→        } catch (err: any) {
+   511→          logger.warn({ error: err.message }, `Failed to stop ${service.label}`);
+   512→        }
+   513→      }
+   514→    });
+   515→
+   516→    await Promise.allSettled(stopPromises);
+   517→
+   518→    residentialProxyManager.stopHealthChecks();
+   519→    ipReputationTracker.stopDecay();
+   520→
+   521→    logger.info('All sub-services stopped');
+   522→  }
+   523→
+   524→  // --- Main Entry: getProxy ----------------------------------------------
+   525→
+   526→  /**
+   527→   * Get the best proxy from any available source.
+   528→   * Enhanced: 10-dimension unified scoring, intelligence-guided selection.
+   529→   */
+   530→  async getProxy(request: MegaPoolRequest): Promise<MegaPoolResult | null> {
+   531→    const {
+   532→      domain,
+   533→      tier = 'residential',
+   534→      country,
+   535→      city,
+   536→      asn,
+   537→      sessionId,
+   538→      maxCostPerGb,
+   539→      requireReputation = false,
+   540→      preferSource,
+   541→      avoidSources = [],
+   542→    } = request;
+   543→
+   544→    this.totalAcquisitions++;
+   545→    const startTime = Date.now();
+   546→
+   547→    // Check pool intelligence for source hints
+   548→    const intelligenceHint = this.getIntelligenceHint(domain, tier, country);
+   549→
+   550→    const sourceOrder = this.buildSourceOrder(domain, tier, country || 'any');
+   551→
+   552→    let filteredSources = sourceOrder.filter(s => !avoidSources.includes(s));
+   553→
+   554→    // Apply intelligence hint
+   555→    if (intelligenceHint && !avoidSources.includes(intelligenceHint)) {
+   556→      const hintIdx = filteredSources.indexOf(intelligenceHint);
+   557→      if (hintIdx > 0) {
+   558→        filteredSources.splice(hintIdx, 1);
+   559→        filteredSources.unshift(intelligenceHint);
+   560→      }
+   561→    }
+   562→
+   563→    if (preferSource && !avoidSources.includes(preferSource)) {
+   564→      const preferredIdx = filteredSources.indexOf(preferSource);
+   565→      if (preferredIdx > 0) {
+   566→        filteredSources.splice(preferredIdx, 1);
+   567→        filteredSources.unshift(preferSource);
+   568→      } else if (preferredIdx === -1) {
+   569→        filteredSources.unshift(preferSource);
+   570→      }
+   571→    }
+   572→
+   573→    // Step 1: Check sticky session
+   574→    if (sessionId && !avoidSources.includes('database')) {
+   575→      const stickyResult = await this.tryStickySession(sessionId, domain);
+   576→      if (stickyResult) {
+   577→        this.recordAcquisitionSuccess(stickyResult.source, startTime);
+   578→        return stickyResult;
+   579→      }
+   580→    }
+   581→
+   582→    // Step 2: Check pre-warmed pool
+   583→    if (!avoidSources.includes('database')) {
+   584→      const prewarmedResult = await this.tryPrewarmedPool(domain, tier, country);
+   585→      if (prewarmedResult) {
+   586→        this.recordAcquisitionSuccess(prewarmedResult.source, startTime);
+   587→        return prewarmedResult;
+   588→      }
+   589→    }
+   590→
+   591→    // Steps 3+: Try sources in priority order
+   592→    for (const source of filteredSources) {
+   593→      if (source === 'database') continue;
+   594→
+   595→      const sourceCost = SOURCE_COST[source];
+   596→      if (maxCostPerGb && sourceCost > maxCostPerGb) continue;
+   597→
+   598→      const health = this.sourceHealthMap.get(source);
+   599→      if (health && !health.healthy) continue;
+   600→
+   601→      let result: MegaPoolResult | null = null;
+   602→
+   603→      try {
+   604→        switch (source) {
+   605→          case 'rotating':
+   606→            result = await this.tryRotatingSession(domain, tier, country, city, asn);
+   607→            break;
+   608→          case 'subnet':
+   609→            result = await this.trySubnetExpander(domain, tier, country);
+   610→            break;
+   611→          case 'bulk':
+   612→            result = await this.tryBulkSession(domain, tier, country);
+   613→            break;
+   614→          case 'brightdata':
+   615→          case 'oxylabs':
+   616→          case 'smartproxy':
+   617→          case 'iproyal':
+   618→          case 'webshare':
+   619→            result = await this.tryResidentialProvider(source, domain, tier, country, city, asn, maxCostPerGb);
+   620→            break;
+   621→          case 'free':
+   622→            result = await this.tryFreeProxy(domain, tier, country);
+   623→            break;
+   624→          case 'tor':
+   625→            result = await this.tryTorPool(domain, country);
+   626→            break;
+   627→          case 'fusion':
+   628→            result = await this.tryFusionSource(domain, tier, country);
+   629→            break;
+   630→          case 'chain':
+   631→          case 'breeder':
+   632→          case 'quantum':
+   633→          case 'plasma':
+   634→            // Advanced sources -- not yet implemented
+   635→            break;
+   636→          default:
+   637→            break;
+   638→        }
+   639→      } catch (err: any) {
+   640→        logger.warn({ source, domain, error: err.message }, 'Source acquisition failed');
+   641→        this.recordSourceFailure(source);
+   642→      }
+   643→
+   644→      if (result) {
+   645→        // Compute unified score (10 dimensions)
+   646→        result.unifiedScore = this.computeUnifiedScore(result, request);
+   647→        result.scoreBreakdown = this.computeScoreBreakdown(result, request);
+   648→
+   649→        if (sessionId) {
+   650→          await this.setStickySession(sessionId, result);
+   651→        }
+   652→
+   653→        this.recordAcquisitionSuccess(result.source, startTime);
+   654→        this.recordIntelligence(domain, result.source, true, result.reputationScore);
+   655→        return result;
+   656→      }
+   657→    }
+   658→
+   659→    // Last resort: Try database proxies
+   660→    if (!avoidSources.includes('database')) {
+   661→      try {
+   662→        const poolResult = await smartIPPool.getProxy({
+   663→          domain, tier, country, city, asn, sessionId, requireReputation, maxCostPerGb,
+   664→        });
+   665→
+   666→        if (poolResult) {
+   667→          const result = this.convertIPPoolResult(poolResult, 'database');
+   668→          result.unifiedScore = this.computeUnifiedScore(result, request);
+   669→          result.scoreBreakdown = this.computeScoreBreakdown(result, request);
+   670→          if (sessionId) await this.setStickySession(sessionId, result);
+   671→          this.recordAcquisitionSuccess('database', startTime);
+   672→          this.recordIntelligence(domain, 'database', true, result.reputationScore);
+   673→          return result;
+   674→        }
+   675→      } catch (err: any) {
+   676→        logger.warn({ domain, error: err.message }, 'Database proxy selection failed');
+   677→      }
+   678→    }
+   679→
+   680→    this.recordDemandSignal(domain, tier, country);
+   681→    this.totalFailedAcquisitions++;
+   682→    this.recordIntelligence(domain, 'none' as any, false, 0);
+   683→
+   684→    logger.warn({ domain, tier, country, sourcesTried: filteredSources.length, acquisitionTimeMs: Date.now() - startTime }, 'No proxy available');
+   685→
+   686→    return null;
+   687→  }
+   688→
+   689→  // --- Unified Scoring (10 Dimensions) ----------------------------------
+   690→
+   691→  /**
+   692→   * Compute a unified score (0-100) for a proxy across 10 dimensions.
+   693→   */
+   694→  computeUnifiedScore(result: MegaPoolResult, request: MegaPoolRequest): number {
+   695→    const breakdown = this.computeScoreBreakdown(result, request);
+   696→    return breakdown.totalScore;
+   697→  }
+   698→
+   699→  /**
+   700→   * Compute score breakdown across 10 dimensions.
+   701→   */
+   702→  computeScoreBreakdown(result: MegaPoolResult, request: MegaPoolRequest): ScoreBreakdown {
+   703→    // 1. Success Rate Score (0-100)
+   704→    const successRateScore = Math.round(result.reputationScore * 100);
+   705→
+   706→    // 2. Latency Score (0-100) -- lower is better
+   707→    const latencyScore = Math.max(0, Math.round(100 - (result.costPerGb * 5)));
+   708→
+   709→    // 3. Anonymity Score (0-100) -- based on tier/source
+   710→    const anonymityScore = Math.round(SOURCE_QUALITY[result.source] * 100);
+   711→
+   712→    // 4. Geo Match Score (0-100)
+   713→    const geoMatchScore = (request.country && result.country === request.country.toUpperCase()) ? 100 : 30;
+   714→
+   715→    // 5. Cost Efficiency Score (0-100) -- lower cost is better
+   716→    const costEfficiencyScore = Math.max(0, Math.round(100 - SOURCE_COST[result.source] * 5));
+   717→
+   718→    // 6. Availability Score (0-100) -- based on source health
+   719→    const health = this.sourceHealthMap.get(result.source);
+   720→    const availabilityScore = health ? Math.round(health.successRate * 100) : 50;
+   721→
+   722→    // 7. Reliability Score (0-100) -- based on source outcomes
+   723→    const outcomes = this.sourceOutcomes.get(result.source);
+   724→    const reliabilityScore = outcomes
+   725→      ? Math.round((outcomes.successes / Math.max(1, outcomes.successes + outcomes.failures)) * 100)
+   726→      : 50;
+   727→
+   728→    // 8. Freshness Score (0-100) -- recently acquired is better
+   729→    const ageMs = Date.now() - result.acquiredAt;
+   730→    const freshnessScore = Math.max(0, Math.round(100 - (ageMs / 60000) * 10));
+   731→
+   732→    // 9. Tier Match Score (0-100)
+   733→    const tierMatchScore = (request.tier && result.tier === request.tier) ? 100 : 50;
+   734→
+   735→    // 10. Historical Performance Score (0-100) -- from intelligence
+   736→    const intelKey = `${request.domain}:${result.source}`;
+   737→    const intel = this.poolIntelligence.get(intelKey);
+   738→    const historicalPerformanceScore = intel
+   739→      ? Math.round((intel.successCount / Math.max(1, intel.successCount + intel.failureCount)) * 100)
+   740→      : 50;
+   741→
+   742→    const totalScore = Math.round(
+   743→      successRateScore * SCORING_WEIGHTS.successRate +
+   744→      latencyScore * SCORING_WEIGHTS.latency +
+   745→      anonymityScore * SCORING_WEIGHTS.anonymity +
+   746→      geoMatchScore * SCORING_WEIGHTS.geoMatch +
+   747→      costEfficiencyScore * SCORING_WEIGHTS.costEfficiency +
+   748→      availabilityScore * SCORING_WEIGHTS.availability +
+   749→      reliabilityScore * SCORING_WEIGHTS.reliability +
+   750→      freshnessScore * SCORING_WEIGHTS.freshness +
+   751→      tierMatchScore * SCORING_WEIGHTS.tierMatch +
+   752→      historicalPerformanceScore * SCORING_WEIGHTS.historicalPerformance
+   753→    );
+   754→
+   755→    return {
+   756→      successRateScore,
+   757→      latencyScore,
+   758→      anonymityScore,
+   759→      geoMatchScore,
+   760→      costEfficiencyScore,
+   761→      availabilityScore,
+   762→      reliabilityScore,
+   763→      freshnessScore,
+   764→      tierMatchScore,
+   765→      historicalPerformanceScore,
+   766→      totalScore: Math.max(0, Math.min(100, totalScore)),
+   767→    };
+   768→  }
+   769→
+   770→  // --- Pool Intelligence (NEW) ------------------------------------------
+   771→
+   772→  /**
+   773→   * Record an intelligence entry for future reference.
+   774→   */
+   775→  private recordIntelligence(domain: string, source: MegaPoolSource, success: boolean, score: number): void {
+   776→    const key = `${domain}:${source}`;
+   777→    const entry = this.poolIntelligence.get(key);
+   778→
+   779→    if (entry) {
+   780→      if (success) entry.successCount++;
+   781→      else entry.failureCount++;
+   782→      entry.lastUpdated = Date.now();
+   783→    } else {
+   784→      this.poolIntelligence.set(key, {
+   785→        domain,
+   786→        source,
+   787→        successCount: success ? 1 : 0,
+   788→        failureCount: success ? 0 : 1,
+   789→        avgLatencyMs: 0,
+   790→        lastUpdated: Date.now(),
+   791→        bestForCountry: '',
+   792→        bestForTier: '',
+   793→      });
+   794→    }
+   795→  }
+   796→
+   797→  /**
+   798→   * Get a source hint from pool intelligence.
+   799→   */
+   800→  private getIntelligenceHint(domain: string, tier: string, country?: string): MegaPoolSource | null {
+   801→    let bestSource: MegaPoolSource | null = null;
+   802→    let bestScore = 0;
+   803→
+   804→    for (const [key, entry] of this.poolIntelligence) {
+   805→      if (!key.startsWith(`${domain}:`)) continue;
+   806→
+   807→      const totalAttempts = entry.successCount + entry.failureCount;
+   808→      if (totalAttempts < 3) continue;
+   809→
+   810→      const successRate = entry.successCount / totalAttempts;
+   811→      if (successRate > bestScore) {
+   812→        bestScore = successRate;
+   813→        bestSource = entry.source;
+   814→      }
+   815→    }
+   816→
+   817→    return bestScore >= 0.6 ? bestSource : null;
+   818→  }
+   819→
+   820→  /**
+   821→   * Run pool intelligence update.
+   822→   * Learns which sources work best for which targets.
+   823→   */
+   824→  async runPoolIntelligence(): Promise<number> {
+   825→    let updated = 0;
+   826→
+   827→    try {
+   828→      // Get recent proxy outcomes from DB
+   829→      const recentProxies = await db.proxy.findMany({
+   830→        where: {
+   831→          retired: false,
+   832→          lastChecked: { gte: new Date(Date.now() - 5 * 60 * 1000) },
+   833→        },
+   834→        take: 1000,
+   835→        orderBy: { lastChecked: 'desc' },
+   836→      });
+   837→
+   838→      for (const proxy of recentProxies) {
+   839→        const source = (proxy.provider || 'unknown') as MegaPoolSource;
+   840→        const domain = 'global'; // We don't have per-domain tracking in DB
+   841→
+   842→        const key = `${domain}:${source}`;
+   843→        const entry = this.poolIntelligence.get(key);
+   844→
+   845→        if (entry) {
+   846→          if (proxy.successRate >= 0.5) entry.successCount++;
+   847→          else entry.failureCount++;
+   848→          entry.lastUpdated = Date.now();
+   849→        }
+   850→
+   851→        updated++;
+   852→      }
+   853→
+   854→      // Persist intelligence to Redis
+   855→      const intelArray = Array.from(this.poolIntelligence.entries()).slice(0, 1000);
+   856→      await cacheSet('mega_pool:intelligence', intelArray, 300).catch(() => {});
+   857→    } catch (err: any) {
+   858→      logger.debug({ error: err.message }, 'Pool intelligence update failed');
+   859→    }
+   860→
+   861→    return updated;
+   862→  }
+   863→
+   864→  // --- Pool Compression (NEW) ------------------------------------------
+   865→
+   866→  /**
+   867→   * Run pool compression -- merge duplicate proxy entries.
+   868→   * Identifies proxies that are the same underlying IP but stored
+   869→   * under different URLs (e.g., different credentials or ports).
+   870→   */
+   871→  async runPoolCompression(): Promise<{
+   872→    duplicatesFound: number;
+   873→    entriesMerged: number;
+   874→    spaceSavedPercent: number;
+   875→  }> {
+   876→    let duplicatesFound = 0;
+   877→    let entriesMerged = 0;
+   878→
+   879→    try {
+   880→      const proxies = await db.proxy.findMany({
+   881→        where: { retired: false },
+   882→        select: { id: true, url: true, country: true, successRate: true },
+   883→        take: 50_000,
+   884→      });
+   885→
+   886→      // Group by hostname to find duplicates
+   887→      const hostnameMap = new Map<string, Array<{ id: string; url: string; country: string; successRate: number }>>();
+   888→
+   889→      for (const proxy of proxies) {
+   890→        try {
+   891→          const parsed = new URL(proxy.url);
+   892→          const hostname = parsed.hostname;
+   893→
+   894→          if (!hostnameMap.has(hostname)) {
+   895→            hostnameMap.set(hostname, []);
+   896→          }
+   897→          hostnameMap.get(hostname)!.push(proxy);
+   898→        } catch {
+   899→          // Invalid URL -- skip
+   900→        }
+   901→      }
+   902→
+   903→      // Find hostnames with multiple entries
+   904→      const mergePromises: Promise<number>[] = [];
+   905→
+   906→      for (const [hostname, entries] of hostnameMap) {
+   907→        if (entries.length <= 1) continue;
+   908→
+   909→        duplicatesFound += entries.length - 1;
+   910→
+   911→        // Keep the one with highest success rate, retire the rest
+   912→        entries.sort((a, b) => b.successRate - a.successRate);
+   913→        const keeper = entries[0];
+   914→
+   915→        for (let i = 1; i < entries.length; i++) {
+   916→          const duplicate = entries[i];
+   917→          mergePromises.push((async () => {
+   918→            try {
+   919→              await db.proxy.update({
+   920→                where: { id: duplicate.id },
+   921→                data: { retired: true, lastChecked: new Date() },
+   922→              });
+   923→              return 1;
+   924→            } catch {
+   925→              return 0;
+   926→            }
+   927→          })());
+   928→        }
+   929→      }
+   930→
+   931→      // Process merges in parallel batches
+   932→      for (let i = 0; i < mergePromises.length; i += 100) {
+   933→        const batch = mergePromises.slice(i, i + 100);
+   934→        const results = await Promise.allSettled(batch);
+   935→        for (const result of results) {
+   936→          if (result.status === 'fulfilled') entriesMerged += result.value;
+   937→        }
+   938→      }
+   939→
+   940→      this.compressionState.entriesCompressed += entriesMerged;
+   941→      this.compressionState.spaceSavedPercent = proxies.length > 0
+   942→        ? Math.round((entriesMerged / proxies.length) * 100 * 100) / 100
+   943→        : 0;
+   944→      this.compressionState.lastRunAt = Date.now();
+   945→
+   946→      if (entriesMerged > 0) {
+   947→        logger.info(
+   948→          { duplicatesFound, entriesMerged, spaceSavedPercent: this.compressionState.spaceSavedPercent },
+   949→          'Pool compression: duplicate entries merged',
+   950→        );
+   951→      }
+   952→    } catch (err: any) {
+   953→      logger.debug({ error: err.message }, 'Pool compression failed');
+   954→    }
+   955→
+   956→    return {
+   957→      duplicatesFound,
+   958→      entriesMerged,
+   959→      spaceSavedPercent: this.compressionState.spaceSavedPercent,
+   960→    };
+   961→  }
+   962→
+   963→  // --- Pool Fusion (NEW) ----------------------------------------------
+   964→
+   965→  /**
+   966→   * Run pool fusion -- merge pools from multiple peers.
+   967→   * Like nuclear fusion, combining two pools creates a more powerful one.
+   968→   */
+   969→  async runPoolFusion(): Promise<{
+   970→    proxiesFused: number;
+   971→    peersChecked: number;
+   972→  }> {
+   973→    let proxiesFused = 0;
+   974→    let peersChecked = 0;
+   975→
+   976→    // Try to discover peer endpoints
+   977→    try {
+   978→      const peerData = await cacheGet<Array<{ url: string; proxyCount: number; timestamp: number }>>('mega_pool:peers');
+   979→      if (peerData && Array.isArray(peerData)) {
+   980→        for (const peer of peerData) {
+   981→          if (Date.now() - peer.timestamp > 5 * 60 * 1000) continue; // Skip stale peers
+   982→          this.fusionState.peersConnected++;
+   983→          peersChecked++;
+   984→        }
+   985→      }
+   986→    } catch {}
+   987→
+   988→    // Try to fuse proxies from shared cache
+   989→    try {
+   990→      const sharedProxies = await cacheGet<Array<{
+   991→        url: string;
+   992→        provider: string;
+   993→        country: string;
+   994→        tier: string;
+   995→        successRate: number;
+   996→      }>>('mega_pool:shared_proxies');
+   997→
+   998→      if (sharedProxies && Array.isArray(sharedProxies)) {
+   999→        const newProxies = sharedProxies.filter(sp => sp.successRate >= 0.5);
+  1000→
+  1001→        for (const proxy of newProxies.slice(0, 50)) {
+  1002→          try {
+  1003→            const existing = await db.proxy.findFirst({
+  1004→              where: { url: proxy.url, retired: false },
+  1005→            });
+  1006→
+  1007→            if (!existing) {
+  1008→              await db.proxy.create({
+  1009→                data: {
+  1010→                  id: `fusion-${Buffer.from(proxy.url).toString('base64url').slice(0, 24)}`,
+  1011→                  url: proxy.url,
+  1012→                  provider: proxy.provider || 'fusion',
+  1013→                  country: (proxy.country || 'unknown').toUpperCase(),
+  1014→                  tier: (proxy.tier || 'residential') as any,
+  1015→                  successRate: proxy.successRate,
+  1016→                  failures: 0,
+  1017→                  consecutiveFailures: 0,
+  1018→                  retired: false,
+  1019→                  sticky: false,
+  1020→                  addedAt: new Date(),
+  1021→                },
+  1022→              });
+  1023→              proxiesFused++;
+  1024→            }
+  1025→          } catch {}
+  1026→        }
+  1027→      }
+  1028→    } catch (err: any) {
+  1029→      logger.debug({ error: err.message }, 'Pool fusion failed');
+  1030→    }
+  1031→
+  1032→    // Share our best proxies
+  1033→    try {
+  1034→      const ourBestProxies = await db.proxy.findMany({
+  1035→        where: { retired: false, successRate: { gte: 0.7 } },
+  1036→        take: 100,
+  1037→        orderBy: { successRate: 'desc' },
+  1038→      });
+  1039→
+  1040→      await cacheSet('mega_pool:shared_proxies', ourBestProxies.map(p => ({
+  1041→        url: p.url,
+  1042→        provider: p.provider,
+  1043→        country: p.country,
+  1044→        tier: p.tier,
+  1045→        successRate: p.successRate,
+  1046→      })), 300).catch(() => {});
+  1047→    } catch {}
+  1048→
+  1049→    this.fusionState.proxiesFused += proxiesFused;
+  1050→    this.fusionState.lastRunAt = Date.now();
+  1051→
+  1052→    if (proxiesFused > 0) {
+  1053→      logger.info({ proxiesFused, peersChecked }, 'Pool fusion: proxies fused from peers');
+  1054→    }
+  1055→
+  1056→    return { proxiesFused, peersChecked };
+  1057→  }
+  1058→
+  1059→  // --- Tier Rebalancing (NEW) ------------------------------------------
+  1060→
+  1061→  /**
+  1062→   * Run tier rebalancing -- promote/demote proxies between tiers
+  1063→   * based on performance.
+  1064→   */
+  1065→  async runTierRebalance(): Promise<{
+  1066→    promotions: number;
+  1067→    demotions: number;
+  1068→  }> {
+  1069→    let promotions = 0;
+  1070→    let demotions = 0;
+  1071→
+  1072→    try {
+  1073→      const tiers = ['residential', 'mobile', 'datacenter', 'isp'] as const;
+  1074→
+  1075→      for (const tier of tiers) {
+  1076→        const proxies = await db.proxy.findMany({
+  1077→          where: { retired: false, tier: tier as any },
+  1078→          take: 500,
+  1079→          orderBy: { successRate: 'desc' },
+  1080→        });
+  1081→
+  1082→        let tierPromotions = 0;
+  1083→        let tierDemotions = 0;
+  1084→
+  1085→        for (const proxy of proxies) {
+  1086→          // Promote high-performing datacenter/mobile to residential
+  1087→          if (tier === 'datacenter' && proxy.successRate >= 0.8) {
+  1088→            try {
+  1089→              await db.proxy.update({
+  1090→                where: { id: proxy.id },
+  1091→                data: { tier: 'residential' as any },
+  1092→              });
+  1093→              tierPromotions++;
+  1094→            } catch {}
+  1095→          }
+  1096→
+  1097→          // Demote low-performing residential to datacenter
+  1098→          if (tier === 'residential' && proxy.successRate < 0.3) {
+  1099→            try {
+  1100→              await db.proxy.update({
+  1101→                where: { id: proxy.id },
+  1102→                data: { tier: 'datacenter' as any },
+  1103→              });
+  1104→              tierDemotions++;
+  1105→            } catch {}
+  1106→          }
+  1107→
+  1108→          // Promote high-performing ISP to residential
+  1109→          if (tier === 'isp' && proxy.successRate >= 0.7) {
+  1110→            try {
+  1111→              await db.proxy.update({
+  1112→                where: { id: proxy.id },
+  1113→                data: { tier: 'residential' as any },
+  1114→              });
+  1115→              tierPromotions++;
+  1116→            } catch {}
+  1117→          }
+  1118→        }
+  1119→
+  1120→        // Update tier stats
+  1121→        const stats = this.tierStats.get(tier) || {
+  1122→          tier,
+  1123→          count: proxies.length,
+  1124→          avgScore: proxies.length > 0 ? proxies.reduce((s, p) => s + p.successRate, 0) / proxies.length : 0,
+  1125→          promotions: 0,
+  1126→          demotions: 0,
+  1127→          lastRebalancedAt: Date.now(),
+  1128→        };
+  1129→
+  1130→        stats.count = proxies.length;
+  1131→        stats.promotions += tierPromotions;
+  1132→        stats.demotions += tierDemotions;
+  1133→        stats.lastRebalancedAt = Date.now();
+  1134→        this.tierStats.set(tier, stats);
+  1135→
+  1136→        promotions += tierPromotions;
+  1137→        demotions += tierDemotions;
+  1138→      }
+  1139→    } catch (err: any) {
+  1140→      logger.debug({ error: err.message }, 'Tier rebalance failed');
+  1141→    }
+  1142→
+  1143→    if (promotions > 0 || demotions > 0) {
+  1144→      logger.info({ promotions, demotions }, 'Tier rebalance completed');
+  1145→    }
+  1146→
+  1147→    return { promotions, demotions };
+  1148→  }
+  1149→
+  1150→  // --- Fusion Source (NEW) ------------------------------------------
+  1151→
+  1152→  /**
+  1153→   * Try to get a proxy from a fusion source.
+  1154→   */
+  1155→  private async tryFusionSource(domain: string, tier?: string, country?: string): Promise<MegaPoolResult | null> {
+  1156→    try {
+  1157→      const proxy = await db.proxy.findFirst({
+  1158→        where: {
+  1159→          retired: false,
+  1160→          provider: 'fusion',
+  1161→          ...(country ? { country: country.toUpperCase() } : {}),
+  1162→          ...(tier ? { tier: tier as any } : {}),
+  1163→          successRate: { gte: 0.5 },
+  1164→        },
+  1165→        orderBy: { successRate: 'desc' },
+  1166→      });
+  1167→
+  1168→      if (proxy) {
+  1169→        return {
+  1170→          proxyUrl: proxy.url,
+  1171→          proxyId: proxy.id,
+  1172→          source: 'fusion',
+  1173→          country: proxy.country,
+  1174→          tier: proxy.tier,
+  1175→          reputationScore: proxy.successRate,
+  1176→          costPerGb: 0,
+  1177→          isWarmed: false,
+  1178→          acquiredAt: Date.now(),
+  1179→        };
+  1180→      }
+  1181→    } catch {}
+  1182→
+  1183→    return null;
+  1184→  }
+  1185→
+  1186→  // --- Release Proxy -----------------------------------------------------
+  1187→
+  1188→  async releaseProxy(
+  1189→    proxyId: string,
+  1190→    domain: string,
+  1191→    success: boolean,
+  1192→    statusCode?: number,
+  1193→    source?: MegaPoolSource,
+  1194→  ): Promise<void> {
+  1195→    this.inUseMap.delete(proxyId);
+  1196→
+  1197→    try {
+  1198→      await ipReputationTracker.recordOutcome(proxyId, domain, success, statusCode);
+  1199→    } catch (err: any) {
+  1200→      logger.warn({ error: err.message }, 'Failed to record outcome in reputation tracker');
+  1201→    }
+  1202→
+  1203→    if (source) {
+  1204→      this.recordSourceOutcome(source, success);
+  1205→
+  1206→      try {
+  1207→        switch (source) {
+  1208→          case 'brightdata': case 'oxylabs': case 'smartproxy': case 'iproyal': case 'webshare':
+  1209→            await residentialProxyManager.releaseProxy(source as ProxyProvider, success);
+  1210→            break;
+  1211→          case 'rotating':
+  1212→            if (this.rotatingSessionsModule?.releaseSession) await this.rotatingSessionsModule.releaseSession(proxyId, success);
+  1213→            break;
+  1214→          case 'subnet':
+  1215→            if (this.subnetExpanderModule?.releaseVirtualIP) await this.subnetExpanderModule.releaseVirtualIP(proxyId, success);
+  1216→            break;
+  1217→          case 'bulk':
+  1218→            if (this.bulkSessions?.releaseSession) await this.bulkSessions.releaseSession(proxyId, success);
+  1219→            break;
+  1220→          case 'database':
+  1221→            await smartIPPool.releaseProxy(proxyId, domain, success, statusCode);
+  1222→            break;
+  1223→        }
+  1224→      } catch (err: any) {
+  1225→        logger.warn({ source, proxyId, error: err.message }, 'Failed to release proxy back to source');
+  1226→      }
+  1227→    }
+  1228→
+  1229→    if (!success && (statusCode === 403 || statusCode === 429)) {
+  1230→      const cooldownMs = statusCode === 429 ? 5 * 60 * 1000 : 10 * 60 * 1000;
+  1231→      try {
+  1232→        await ipReputationTracker.blacklistProxy(proxyId, domain, `http_${statusCode}`, cooldownMs);
+  1233→      } catch {}
+  1234→    }
+  1235→
+  1236→    this.fulfillDemand(domain);
+  1237→  }
+  1238→
+  1239→  // --- Source Order ------------------------------------------------------
+  1240→
+  1241→  buildSourceOrder(domain: string, tier: string, country: string): MegaPoolSource[] {
+  1242→    const defaultOrder: MegaPoolSource[] = [
+  1243→      'rotating', 'subnet', 'bulk', 'brightdata', 'oxylabs', 'smartproxy',
+  1244→      'iproyal', 'webshare', 'database', 'fusion', 'free', 'tor',
+  1245→    ];
+  1246→
+  1247→    const scoredSources = defaultOrder.map(source => {
+  1248→      let score = 0;
+  1249→
+  1250→      score += SOURCE_QUALITY[source] * 30;
+  1251→
+  1252→      const health = this.sourceHealthMap.get(source);
+  1253→      if (health) {
+  1254→        if (health.healthy) {
+  1255→          score += 20 + health.successRate * 15;
+  1256→        } else {
+  1257→          score -= 30;
+  1258→        }
+  1259→      }
+  1260→
+  1261→      const cost = SOURCE_COST[source];
+  1262→      score += cost === 0 ? 10 : -cost * 0.5;
+  1263→
+  1264→      if (tier === 'residential' && ['brightdata', 'oxylabs', 'smartproxy', 'rotating', 'subnet'].includes(source)) score += 10;
+  1265→      else if (tier === 'datacenter' && ['database', 'webshare', 'free'].includes(source)) score += 10;
+  1266→      else if (tier === 'mobile' && ['brightdata', 'oxylabs', 'rotating'].includes(source)) score += 10;
+  1267→
+  1268→      if (country && country !== 'any') {
+  1269→        const providerCountries = this.getProviderCountryAvailability(source);
+  1270→        if (providerCountries.includes(country.toUpperCase())) score += 15;
+  1271→        else if (providerCountries.length > 0) score -= 5;
+  1272→      }
+  1273→
+  1274→      // Intelligence bonus
+  1275→      const intelKey = `${domain}:${source}`;
+  1276→      const intel = this.poolIntelligence.get(intelKey);
+  1277→      if (intel) {
+  1278→        const intelScore = intel.successCount / Math.max(1, intel.successCount + intel.failureCount);
+  1279→        score += intelScore * 10;
+  1280→      }
+  1281→
+  1282→      return { source, score };
+  1283→    });
+  1284→
+  1285→    scoredSources.sort((a, b) => b.score - a.score);
+  1286→    return scoredSources.map(s => s.source);
+  1287→  }
+  1288→
+  1289→  // --- Source Health Assessment ------------------------------------------
+  1290→
+  1291→  async assessSourceHealth(source: MegaPoolSource): Promise<SourceHealth> {
+  1292→    const cached = this.sourceHealthMap.get(source);
+  1293→    if (cached) return cached;
+  1294→
+  1295→    const outcomes = this.sourceOutcomes.get(source) || { successes: 0, failures: 0 };
+  1296→    const total = outcomes.successes + outcomes.failures;
+  1297→    const successRate = total > 0 ? outcomes.successes / total : SOURCE_QUALITY[source];
+  1298→
+  1299→    const health: SourceHealth = {
+  1300→      source,
+  1301→      healthy: successRate >= MIN_SOURCE_HEALTH_RATE,
+  1302→      successRate,
+  1303→      avgLatencyMs: 0,
+  1304→      available: await this.getSourceAvailability(source),
+  1305→      inUse: this.getSourceInUse(source),
+  1306→      lastChecked: Date.now(),
+  1307→      errors: outcomes.failures,
+  1308→      costPerGb: SOURCE_COST[source],
+  1309→      qualityScore: SOURCE_QUALITY[source],
+  1310→    };
+  1311→
+  1312→    this.sourceHealthMap.set(source, health);
+  1313→    return health;
+  1314→  }
+  1315→
+  1316→  // --- Source Recommendation ---------------------------------------------
+  1317→
+  1318→  async getSourceRecommendation(
+  1319→    domain: string,
+  1320→    tier?: string,
+  1321→    country?: string,
+  1322→  ): Promise<{
+  1323→    recommended: MegaPoolSource;
+  1324→    alternatives: MegaPoolSource[];
+  1325→    reasoning: string;
+  1326→    estimatedSuccessRate: number;
+  1327→    estimatedCost: number;
+  1328→  }> {
+  1329→    const sourceOrder = this.buildSourceOrder(domain, tier || 'residential', country || 'any');
+  1330→
+  1331→    const assessed: Array<{ source: MegaPoolSource; health: SourceHealth; score: number }> = [];
+  1332→
+  1333→    for (const source of sourceOrder.slice(0, 5)) {
+  1334→      const health = await this.assessSourceHealth(source);
+  1335→      const score = health.successRate * 50 + health.qualityScore * 30 + (health.healthy ? 20 : -20);
+  1336→      assessed.push({ source, health, score });
+  1337→    }
+  1338→
+  1339→    assessed.sort((a, b) => b.score - a.score);
+  1340→
+  1341→    const best = assessed[0];
+  1342→    const alternatives = assessed.slice(1).map(a => a.source);
+  1343→    const estimatedSuccessRate = best ? best.health.successRate : 0.5;
+  1344→    const estimatedCost = best ? SOURCE_COST[best.source] : 10;
+  1345→
+  1346→    let reasoning = best
+  1347→      ? `${best.source} recommended: success rate ${(best.health.successRate * 100).toFixed(1)}%, quality ${(best.health.qualityScore * 100).toFixed(0)}%, cost $${SOURCE_COST[best.source]}/GB`
+  1348→      : 'No sources available';
+  1349→
+  1350→    if (best && !best.health.healthy) reasoning += ' (WARNING: source unhealthy)';
+  1351→
+  1352→    return {
+  1353→      recommended: best?.source || 'database',
+  1354→      alternatives,
+  1355→      reasoning,
+  1356→      estimatedSuccessRate,
+  1357→      estimatedCost,
+  1358→    };
+  1359→  }
+  1360→
+  1361→  // --- Pre-warming -------------------------------------------------------
+  1362→
+  1363→  async prewarmDomain(domain: string, tier?: string, country?: string): Promise<number> {
+  1364→    let totalWarmed = 0;
+  1365→
+  1366→    logger.info({ domain, tier, country }, 'Starting mega pool domain pre-warming');
+  1367→
+  1368→    // Pre-warm via smart IP pool
+  1369→    try {
+  1370→      const poolWarmed = await smartIPPool.prewarmDomain(domain, (tier || 'residential') as any, country);
+  1371→      totalWarmed += poolWarmed;
+  1372→    } catch (err: any) {
+  1373→      logger.warn({ domain, error: err.message }, 'IP pool pre-warm failed');
+  1374→    }
+  1375→
+  1376→    // Pre-warm via rotating sessions
+  1377→    if (this.rotatingSessionsModule?.preCreateSessions) {
+  1378→      try {
+  1379→        const sessions = await this.rotatingSessionsModule.preCreateSessions(5, { country, tier: tier as any, domain });
+  1380→        totalWarmed += sessions?.length || 0;
+  1381→      } catch (err: any) {
+  1382→        logger.warn({ domain, error: err.message }, 'Rotating session pre-warm failed');
+  1383→      }
+  1384→    }
+  1385→
+  1386→    // Pre-warm via subnet expander
+  1387→    if (this.subnetExpanderModule?.preGenerateVirtualIPs) {
+  1388→      try {
+  1389→        const count = await this.subnetExpanderModule.preGenerateVirtualIPs(country || 'US', tier || 'residential', 10);
+  1390→        totalWarmed += count || 0;
+  1391→      } catch (err: any) {
+  1392→        logger.warn({ domain, error: err.message }, 'Subnet expander pre-warm failed');
+  1393→      }
+  1394→    }
+  1395→
+  1396→    logger.info({ domain, tier, country, totalWarmed }, 'Mega pool domain pre-warming completed');
+  1397→
+  1398→    return totalWarmed;
+  1399→  }
+  1400→
+  1401→  // --- Fusion Readiness --------------------------------------------------
+  1402→
+  1403→  getFusionReadiness(): {
+  1404→    ready: boolean;
+  1405→    criticalMassPercent: number;
+  1406→    chainReactionPossible: boolean;
+  1407→    selfSustaining: boolean;
+  1408→    details: {
+  1409→      totalEffectiveIPs: number;
+  1410→      healthySources: number;
+  1411→      totalSources: number;
+  1412→      avgSourceHealth: number;
+  1413→      autoScalingActive: boolean;
+  1414→      demandFulfillmentRate: number;
+  1415→    };
+  1416→  } {
+  1417→    const stats = this.getMegaPoolStatsSync();
+  1418→
+  1419→    const healthySources = Object.values(stats.sources).filter(s => s.healthy).length;
+  1420→    const totalSources = Object.keys(stats.sources).length;
+  1421→    const avgSourceHealth = totalSources > 0
+  1422→      ? Object.values(stats.sources).reduce((sum, s) => sum + s.avgScore, 0) / totalSources
+  1423→      : 0;
+  1424→
+  1425→    const criticalMassPercent = THEORETICAL_MAX_IPS > 0
+  1426→      ? Math.min(100, (stats.totalEffectiveIPs / THEORETICAL_MAX_IPS) * 100)
+  1427→      : 0;
+  1428→
+  1429→    const chainReactionPossible = healthySources >= 3;
+  1430→    const totalDemand = this.demandSignals.length;
+  1431→    const fulfilledDemand = this.demandSignals.filter(d => d.fulfilled).length;
+  1432→    const demandFulfillmentRate = totalDemand > 0 ? fulfilledDemand / totalDemand : 1;
+  1433→    const selfSustaining = healthySources >= 2 && demandFulfillmentRate > 0.8;
+  1434→    const ready = criticalMassPercent >= CRITICAL_MASS_THRESHOLD * 100 && selfSustaining;
+  1435→
+  1436→    return {
+  1437→      ready,
+  1438→      criticalMassPercent: Math.round(criticalMassPercent * 100) / 100,
+  1439→      chainReactionPossible,
+  1440→      selfSustaining,
+  1441→      details: {
+  1442→        totalEffectiveIPs: stats.totalEffectiveIPs,
+  1443→        healthySources,
+  1444→        totalSources,
+  1445→        avgSourceHealth: Math.round(avgSourceHealth * 100) / 100,
+  1446→        autoScalingActive: this.demandSignals.filter(d => !d.fulfilled).length > 0,
+  1447→        demandFulfillmentRate: Math.round(demandFulfillmentRate * 100) / 100,
+  1448→      },
+  1449→    };
+  1450→  }
+  1451→
+  1452→  // --- Health Monitor ---------------------------------------------------
+  1453→
+  1454→  async runHealthMonitor(): Promise<void> {
+  1455→    const sources: MegaPoolSource[] = [
+  1456→      'database', 'brightdata', 'oxylabs', 'smartproxy', 'iproyal', 'webshare',
+  1457→      'free', 'tor', 'bulk', 'subnet', 'rotating', 'fusion',
+  1458→    ];
+  1459→
+  1460→    const healthPromises = sources.map(async (source) => {
+  1461→      try {
+  1462→        const health = await this.assessSourceHealth(source);
+  1463→        this.sourceHealthMap.set(source, health);
+  1464→      } catch {}
+  1465→    });
+  1466→
+  1467→    await Promise.allSettled(healthPromises);
+  1468→  }
+  1469→
+  1470→  // --- Auto-Scaler -------------------------------------------------------
+  1471→
+  1472→  async runAutoScaler(): Promise<void> {
+  1473→    const unfulfilledDemand = this.demandSignals.filter(d => !d.fulfilled);
+  1474→    if (unfulfilledDemand.length === 0) return;
+  1475→
+  1476→    // Group by domain + tier
+  1477→    const demandByDomain = new Map<string, number>();
+  1478→    for (const signal of unfulfilledDemand) {
+  1479→      const key = `${signal.domain}:${signal.tier}`;
+  1480→      demandByDomain.set(key, (demandByDomain.get(key) || 0) + 1);
+  1481→    }
+  1482→
+  1483→    // Pre-warm for top-demand domains
+  1484→    const topDemand = Array.from(demandByDomain.entries())
+  1485→      .sort((a, b) => b[1] - a[1])
+  1486→      .slice(0, 5);
+  1487→
+  1488→    for (const [key, count] of topDemand) {
+  1489→      const [domain, tier] = key.split(':');
+  1490→      try {
+  1491→        await this.prewarmDomain(domain, tier);
+  1492→      } catch {}
+  1493→    }
+  1494→  }
+  1495→
+  1496→  // --- Statistics --------------------------------------------------------
+  1497→
+  1498→  async getStats(): Promise<MegaPoolStats> {
+  1499→    const cached = await cacheGet<MegaPoolStats>('mega_pool:stats');
+  1500→    if (cached) return cached;
+  1501→
+  1502→    const stats = this.buildStats();
+  1503→    await cacheSet('mega_pool:stats', stats, MEGA_POOL_STATS_CACHE_TTL);
+  1504→    return stats;
+  1505→  }
+  1506→
+  1507→  async getTotalPoolSize(): Promise<number> {
+  1508→    const stats = await this.getStats();
+  1509→    return stats.totalEffectiveIPs;
+  1510→  }
+  1511→
+  1512→  private buildStats(): MegaPoolStats {
+  1513→    const sources: Record<MegaPoolSource, { available: number; inUse: number; avgScore: number; healthy: boolean }> = {} as any;
+  1514→
+  1515→    const allSources: MegaPoolSource[] = [
+  1516→      'database', 'brightdata', 'oxylabs', 'smartproxy', 'iproyal', 'webshare',
+  1517→      'free', 'tor', 'bulk', 'subnet', 'rotating', 'fusion', 'chain', 'breeder', 'quantum', 'plasma',
+  1518→    ];
+  1519→
+  1520→    for (const source of allSources) {
+  1521→      const health = this.sourceHealthMap.get(source);
+  1522→      sources[source] = {
+  1523→        available: health?.available || 0,
+  1524→        inUse: health?.inUse || 0,
+  1525→        avgScore: health?.qualityScore || SOURCE_QUALITY[source],
+  1526→        healthy: health?.healthy || false,
+  1527→      };
+  1528→    }
+  1529→
+  1530→    const byCountry: Record<string, number> = {};
+  1531→    const byTier: Record<string, number> = {};
+  1532→
+  1533→    const tierDistribution: Record<string, { count: number; avgScore: number; promotions: number; demotions: number }> = {};
+  1534→    for (const [tier, stats] of this.tierStats) {
+  1535→      tierDistribution[tier] = {
+  1536→        count: stats.count,
+  1537→        avgScore: stats.avgScore,
+  1538→        promotions: stats.promotions,
+  1539→        demotions: stats.demotions,
+  1540→      };
+  1541→    }
+  1542→
+  1543→    return {
+  1544→      totalEffectiveIPs: THEORETICAL_MAX_IPS,
+  1545→      sources,
+  1546→      byCountry,
+  1547→      byTier,
+  1548→      utilizationRate: this.inUseMap.size / Math.max(1, this.totalAcquisitions),
+  1549→      fusionReadiness: {
+  1550→        ready: false,
+  1551→        criticalMassPercent: 0,
+  1552→        chainReactionPossible: false,
+  1553→        selfSustaining: false,
+  1554→      },
+  1555→      subModules: {
+  1556→        freeProxy: null,
+  1557→        torPool: null,
+  1558→        bulkSessions: null,
+  1559→        subnetExpander: null,
+  1560→        rotatingSessions: null,
+  1561→      },
+  1562→      poolCompression: {
+  1563→        enabled: this.compressionState.enabled,
+  1564→        entriesCompressed: this.compressionState.entriesCompressed,
+  1565→        spaceSavedPercent: this.compressionState.spaceSavedPercent,
+  1566→        lastRunAt: this.compressionState.lastRunAt,
+  1567→      },
+  1568→      poolFusion: {
+  1569→        enabled: this.fusionState.enabled,
+  1570→        peersConnected: this.fusionState.peersConnected,
+  1571→        proxiesFused: this.fusionState.proxiesFused,
+  1572→        lastRunAt: this.fusionState.lastRunAt,
+  1573→      },
+  1574→      poolIntelligence: {
+  1575→        enabled: true,
+  1576→        patternsLearned: this.poolIntelligence.size,
+  1577→        topTargets: Array.from(this.poolIntelligence.values())
+  1578→          .sort((a, b) => b.successCount - a.successCount)
+  1579→          .slice(0, 10)
+  1580→          .map(e => ({ domain: e.domain, bestSource: e.source, avgScore: e.successCount / Math.max(1, e.successCount + e.failureCount) })),
+  1581→        lastRunAt: Date.now(),
+  1582→      },
+  1583→      tierDistribution,
+  1584→    };
+  1585→  }
+  1586→
+  1587→  private getMegaPoolStatsSync(): MegaPoolStats {
+  1588→    return this.buildStats();
+  1589→  }
+  1590→
+  1591→  // --- Private Helpers --------------------------------------------------
+  1592→
+  1593→  private async getSourceAvailability(source: MegaPoolSource): Promise<number> {
+  1594→    try {
+  1595→      switch (source) {
+  1596→        case 'database':
+  1597→          return await db.proxy.count({ where: { retired: false } });
+  1598→        case 'free':
+  1599→        case 'tor':
+  1600→        case 'bulk':
+  1601→        case 'subnet':
+  1602→        case 'rotating':
+  1603→        case 'fusion':
+  1604→          return 100; // Estimated
+  1605→        default:
+  1606→          return PROVIDER_ESTIMATED_IPS[source] || 0;
+  1607→      }
+  1608→    } catch {
+  1609→      return 0;
+  1610→    }
+  1611→  }
+  1612→
+  1613→  private getSourceInUse(source: MegaPoolSource): number {
+  1614→    let count = 0;
+  1615→    for (const entry of this.inUseMap.values()) {
+  1616→      if (entry.source === source) count++;
+  1617→    }
+  1618→    return count;
+  1619→  }
+  1620→
+  1621→  private getProviderCountryAvailability(source: MegaPoolSource): string[] {
+  1622→    const majorCountries = ['US', 'CA', 'GB', 'DE', 'FR', 'NL', 'JP', 'AU', 'BR', 'IN'];
+  1623→    const limitedCountries = ['US', 'GB', 'DE', 'JP', 'AU'];
+  1624→
+  1625→    switch (source) {
+  1626→      case 'brightdata': case 'oxylabs':
+  1627→        return majorCountries;
+  1628→      case 'smartproxy': case 'iproyal':
+  1629→        return limitedCountries;
+  1630→      default:
+  1631→        return limitedCountries;
+  1632→    }
+  1633→  }
+  1634→
+  1635→  private async tryStickySession(sessionId: string, domain: string): Promise<MegaPoolResult | null> {
+  1636→    try {
+  1637→      const stickyKey = `mega_pool:sticky:${sessionId}`;
+  1638→      const cached = await cacheGet<MegaPoolResult>(stickyKey);
+  1639→      if (!cached) return null;
+  1640→
+  1641→      const verdict = await ipReputationTracker.getVerdict(cached.proxyId, domain);
+  1642→      if (!verdict.usable) {
+  1643→        await redis.del(`cache:${stickyKey}`);
+  1644→        return null;
+  1645→      }
+  1646→
+  1647→      cached.isWarmed = true;
+  1648→      return cached;
+  1649→    } catch {
+  1650→      return null;
+  1651→    }
+  1652→  }
+  1653→
+  1654→  private async tryPrewarmedPool(domain: string, tier?: string, country?: string): Promise<MegaPoolResult | null> {
+  1655→    const entries = this.prewarmedMap.get(domain);
+  1656→    if (!entries || entries.length === 0) return null;
+  1657→
+  1658→    const unused = entries.filter(e => !e.used);
+  1659→    if (unused.length === 0) return null;
+  1660→
+  1661→    const entry = unused[0];
+  1662→    entry.used = true;
+  1663→
+  1664→    return {
+  1665→      proxyUrl: entry.proxyUrl,
+  1666→      proxyId: entry.proxyId,
+  1667→      source: entry.source,
+  1668→      country: entry.country,
+  1669→      tier: entry.tier,
+  1670→      reputationScore: 0.7,
+  1671→      costPerGb: SOURCE_COST[entry.source],
+  1672→      isWarmed: true,
+  1673→      acquiredAt: entry.warmedAt,
+  1674→    };
+  1675→  }
+  1676→
+  1677→  private async tryRotatingSession(domain: string, tier?: string, country?: string, city?: string, asn?: string): Promise<MegaPoolResult | null> {
+  1678→    if (!this.rotatingSessionsModule?.getSession) return null;
+  1679→    try {
+  1680→      const session = await this.rotatingSessionsModule.getSession({ country, tier, domain });
+  1681→      if (session) {
+  1682→        return {
+  1683→          proxyUrl: session.url || session.proxyUrl,
+  1684→          proxyId: session.id,
+  1685→          source: 'rotating',
+  1686→          country: session.country || country || 'unknown',
+  1687→          tier: tier || 'residential',
+  1688→          reputationScore: 0.9,
+  1689→          costPerGb: SOURCE_COST.rotating,
+  1690→          sessionId: session.id,
+  1691→          isWarmed: false,
+  1692→          acquiredAt: Date.now(),
+  1693→        };
+  1694→      }
+  1695→    } catch {}
+  1696→    return null;
+  1697→  }
+  1698→
+  1699→  private async trySubnetExpander(domain: string, tier?: string, country?: string): Promise<MegaPoolResult | null> {
+  1700→    if (!this.subnetExpanderModule?.getVirtualIP) return null;
+  1701→    try {
+  1702→      const virtualIP = await this.subnetExpanderModule.getVirtualIP(country || 'US', tier || 'residential');
+  1703→      if (virtualIP) {
+  1704→        return {
+  1705→          proxyUrl: virtualIP.url || virtualIP.proxyUrl,
+  1706→          proxyId: virtualIP.id,
+  1707→          source: 'subnet',
+  1708→          country: virtualIP.country || country || 'unknown',
+  1709→          tier: tier || 'residential',
+  1710→          reputationScore: 0.85,
+  1711→          costPerGb: SOURCE_COST.subnet,
+  1712→          isWarmed: false,
+  1713→          acquiredAt: Date.now(),
+  1714→        };
+  1715→      }
+  1716→    } catch {}
+  1717→    return null;
+  1718→  }
+  1719→
+  1720→  private async tryBulkSession(domain: string, tier?: string, country?: string): Promise<MegaPoolResult | null> {
+  1721→    if (!this.bulkSessions?.getSession) return null;
+  1722→    try {
+  1723→      const session = await this.bulkSessions.getSession(country, tier);
+  1724→      if (session) {
+  1725→        return {
+  1726→          proxyUrl: session.url || session.proxyUrl,
+  1727→          proxyId: session.id,
+  1728→          source: 'bulk',
+  1729→          country: session.country || country || 'unknown',
+  1730→          tier: tier || 'residential',
+  1731→          reputationScore: 0.8,
+  1732→          costPerGb: SOURCE_COST.bulk,
+  1733→          isWarmed: false,
+  1734→          acquiredAt: Date.now(),
+  1735→        };
+  1736→      }
+  1737→    } catch {}
+  1738→    return null;
+  1739→  }
+  1740→
+  1741→  private async tryResidentialProvider(
+  1742→    source: MegaPoolSource, domain: string, tier?: string, country?: string,
+  1743→    city?: string, asn?: string, maxCostPerGb?: number,
+  1744→  ): Promise<MegaPoolResult | null> {
+  1745→    try {
+  1746→      const proxy = await residentialProxyManager.getProxy({
+  1747→        country,
+  1748→        city,
+  1749→        asn,
+  1750→        tier: tier as any,
+  1751→      });
+  1752→
+  1753→      if (proxy) {
+  1754→        return {
+  1755→          proxyUrl: proxy.proxyUrl,
+  1756→          proxyId: proxy.proxyId || `res-${source}-${Date.now()}`,
+  1757→          source,
+  1758→          country: proxy.country || country || 'unknown',
+  1759→          city: proxy.city || city,
+  1760→          asn: proxy.asn || asn,
+  1761→          tier: tier || 'residential',
+  1762→          reputationScore: SOURCE_QUALITY[source],
+  1763→          costPerGb: SOURCE_COST[source],
+  1764→          sessionId: proxy.sessionId,
+  1765→          isWarmed: false,
+  1766→          acquiredAt: Date.now(),
+  1767→        };
+  1768→      }
+  1769→    } catch {}
+  1770→    return null;
+  1771→  }
+  1772→
+  1773→  private async tryFreeProxy(domain: string, tier?: string, country?: string): Promise<MegaPoolResult | null> {
+  1774→    if (!this.freeProxyDiscovery?.getProxy) return null;
+  1775→    try {
+  1776→      const proxy = await this.freeProxyDiscovery.getProxy(country);
+  1777→      if (proxy) {
+  1778→        return {
+  1779→          proxyUrl: proxy.url,
+  1780→          proxyId: proxy.id,
+  1781→          source: 'free',
+  1782→          country: proxy.country || country || 'unknown',
+  1783→          tier: 'datacenter',
+  1784→          reputationScore: 0.3,
+  1785→          costPerGb: 0,
+  1786→          isWarmed: false,
+  1787→          acquiredAt: Date.now(),
+  1788→        };
+  1789→      }
+  1790→    } catch {}
+  1791→    return null;
+  1792→  }
+  1793→
+  1794→  private async tryTorPool(domain: string, country?: string): Promise<MegaPoolResult | null> {
+  1795→    if (!this.torPool?.getCircuit) return null;
+  1796→    try {
+  1797→      const circuit = await this.torPool.getCircuit(country);
+  1798→      if (circuit) {
+  1799→        return {
+  1800→          proxyUrl: circuit.url || circuit.socksPort ? `socks5://127.0.0.1:${circuit.socksPort}` : '',
+  1801→          proxyId: circuit.id,
+  1802→          source: 'tor',
+  1803→          country: circuit.country || country || 'unknown',
+  1804→          tier: 'datacenter',
+  1805→          reputationScore: 0.2,
+  1806→          costPerGb: 0,
+  1807→          isWarmed: false,
+  1808→          acquiredAt: Date.now(),
+  1809→        };
+  1810→      }
+  1811→    } catch {}
+  1812→    return null;
+  1813→  }
+  1814→
+  1815→  private async setStickySession(sessionId: string, result: MegaPoolResult): Promise<void> {
+  1816→    try {
+  1817→      const stickyKey = `mega_pool:sticky:${sessionId}`;
+  1818→      await cacheSet(stickyKey, result, PREWARM_CACHE_TTL);
+  1819→    } catch {}
+  1820→  }
+  1821→
+  1822→  private convertIPPoolResult(poolResult: IPPoolResult, source: MegaPoolSource): MegaPoolResult {
+  1823→    return {
+  1824→      proxyUrl: poolResult.proxyUrl,
+  1825→      proxyId: poolResult.proxyId,
+  1826→      source,
+  1827→      country: poolResult.country,
+  1828→      city: poolResult.city,
+  1829→      asn: poolResult.asn,
+  1830→      tier: poolResult.tier,
+  1831→      reputationScore: poolResult.reputationScore,
+  1832→      costPerGb: SOURCE_COST[source],
+  1833→      sessionId: poolResult.sessionId,
+  1834→      isWarmed: poolResult.isWarmed,
+  1835→      acquiredAt: Date.now(),
+  1836→    };
+  1837→  }
+  1838→
+  1839→  private initializeSourceHealth(): void {
+  1840→    const allSources: MegaPoolSource[] = [
+  1841→      'database', 'brightdata', 'oxylabs', 'smartproxy', 'iproyal', 'webshare',
+  1842→      'free', 'tor', 'bulk', 'subnet', 'rotating', 'fusion',
+  1843→    ];
+  1844→
+  1845→    for (const source of allSources) {
+  1846→      this.sourceHealthMap.set(source, {
+  1847→        source,
+  1848→        healthy: true,
+  1849→        successRate: SOURCE_QUALITY[source],
+  1850→        avgLatencyMs: 0,
+  1851→        available: 0,
+  1852→        inUse: 0,
+  1853→        lastChecked: 0,
+  1854→        errors: 0,
+  1855→        costPerGb: SOURCE_COST[source],
+  1856→        qualityScore: SOURCE_QUALITY[source],
+  1857→      });
+  1858→    }
+  1859→  }
+  1860→
+  1861→  private recordSourceOutcome(source: MegaPoolSource, success: boolean): void {
+  1862→    const outcomes = this.sourceOutcomes.get(source) || { successes: 0, failures: 0 };
+  1863→    if (success) outcomes.successes++;
+  1864→    else outcomes.failures++;
+  1865→    this.sourceOutcomes.set(source, outcomes);
+  1866→
+  1867→    // Update source health
+  1868→    const health = this.sourceHealthMap.get(source);
+  1869→    if (health) {
+  1870→      const total = outcomes.successes + outcomes.failures;
+  1871→      health.successRate = total > 0 ? outcomes.successes / total : SOURCE_QUALITY[source];
+  1872→      health.healthy = health.successRate >= MIN_SOURCE_HEALTH_RATE;
+  1873→    }
+  1874→  }
+  1875→
+  1876→  private recordSourceFailure(source: MegaPoolSource): void {
+  1877→    this.recordSourceOutcome(source, false);
+  1878→  }
+  1879→
+  1880→  private recordAcquisitionSuccess(source: MegaPoolSource, startTime: number): void {
+  1881→    this.totalSuccessfulAcquisitions++;
+  1882→    this.acquisitionTimestamps.push(Date.now());
+  1883→    this.recordSourceOutcome(source, true);
+  1884→  }
+  1885→
+  1886→  private recordDemandSignal(domain: string, tier: string, country?: string): void {
+  1887→    this.demandSignals.push({
+  1888→      domain,
+  1889→      tier,
+  1890→      country,
+  1891→      requestedAt: Date.now(),
+  1892→      fulfilled: false,
+  1893→      priority: 5,
+  1894→    });
+  1895→
+  1896→    if (this.demandSignals.length > MAX_DEMAND_SIGNALS) {
+  1897→      this.demandSignals = this.demandSignals.slice(-MAX_DEMAND_SIGNALS);
+  1898→    }
+  1899→  }
+  1900→
+  1901→  private fulfillDemand(domain: string): void {
+  1902→    for (const signal of this.demandSignals) {
+  1903→      if (signal.domain === domain && !signal.fulfilled) {
+  1904→        signal.fulfilled = true;
+  1905→      }
+  1906→    }
+  1907→  }
+  1908→}
+  1909→
+  1910→// --- Singleton Instance -----------------------------------------------------
+  1911→
+  1912→export const megaPool = new MegaPool();
+  1913→

@@ -1,0 +1,721 @@
+     1→/**
+     2→ * Deep Browser Patcher -- ADVANCED EDITION for ScrapeSuite Engine.
+     3→ *
+     4→ * Companion module to CdpInjectionEngine that handles DEEP-LEVEL browser
+     5→ * patching that goes beyond simple property overrides. This module focuses
+     6→ * on the "last mile" of anti-detection that separates 75% bypass from 85%+ bypass.
+     7→ *
+     8→ * The Deep Patcher addresses these remaining detection vectors:
+     9→ *
+    10→ *  1. HEADER ORDER SPOOFING
+    11→ *     Anti-bot systems check the ORDER of HTTP/2 headers (not just their values).
+    12→ *     Chrome, Firefox, and Safari all send headers in different orders.
+    13→ *     The Deep Patcher ensures header order matches the browser being spoofed.
+    14→ *
+    15→ *  2. HTTP/2 FRAME FINGERPRINTING
+    16→ *     Akamai and Cloudflare fingerprint HTTP/2 SETTINGS frame values
+    17→ *     (HEADER_TABLE_SIZE, MAX_CONCURRENT_STREAMS, INITIAL_WINDOW_SIZE, etc.)
+    18→ *     Each browser has unique default values. The Deep Patcher ensures consistency.
+    19→ *
+    20→ *  3. RESPONSE HEADER ANALYSIS
+    21→ *     Some anti-bot systems embed JavaScript in response headers or set cookies
+    22→ *     that fingerprint the browser. The Deep Patcher intercepts and cleans these.
+    23→ *
+    24→ *  4. SERVICE WORKER / WORKLET INJECTION
+    25→ *     Advanced anti-bot systems (Kasada, DataDome) use Service Workers to detect
+    26→ *     automation. The Deep Patcher pre-empts this by controlling Service Worker scope.
+    27→ *
+    28→ *  5. PERFORMANCE.TIMING CONSISTENCY
+    29→ *     Bot detection checks Performance.timing entries for impossible timing patterns
+    30→ *     (e.g., DOMContentLoaded before navigationStart). The Deep Patcher ensures
+    31→ *     all timing entries are consistent and realistic.
+    32→ *
+    33→ *  6. FONT ENUMERATION PROTECTION
+    34→ *     Font fingerprinting detects installed fonts via measurement or enumeration.
+    35→ *     The Deep Patcher ensures the reported fonts match the OS profile.
+    36→ *
+    37→ *  7. BATTERY/BLUETOOTH/USB API MOCKING
+    38→ *     Some systems check for APIs that only real browsers have.
+    39→ *     The Deep Patcher provides realistic mocks for these APIs.
+    40→ *
+    41→ * Features:
+    42→ *  * HTTP/2 header order spoofing per browser type
+    43→ *  * HTTP/2 SETTINGS frame fingerprint spoofing
+    44→ *  * Service Worker scope control
+    45→ *  * Performance.timing consistency enforcement
+    46→ *  * Font enumeration protection
+    47→ *  * Battery/Bluetooth/USB API realistic mocking
+    48→ *  * Response header interception and cleaning
+    49→ *  * Header order enforcement via CDP Fetch.enable
+    50→ *  * Integration with CDP injection engine and TLS fingerprint engine
+    51→ */
+    52→
+    53→import type { Page, CDPSession, BrowserContext } from 'playwright';
+    54→import { createChildLogger } from '../utils/logger';
+    55→import { fingerprintConsistencyEngine, type CoherentProfile, type BrowserType as FpBrowserType, type OSType } from './fingerprint-consistency';
+    56→import { tlsFingerprintEngine, type TlsBrowserProfile } from './tls-fingerprint';
+    57→
+    58→const logger = createChildLogger('deep-patcher');
+    59→
+    60→// ===============================================================================
+    61→// TYPES
+    62→// ===============================================================================
+    63→
+    64→export interface DeepPatchConfig {
+    65→  /** Spoof HTTP/2 header order to match browser type */
+    66→  headerOrderSpoofing: boolean;
+    67→  /** Spoof HTTP/2 SETTINGS frame values */
+    68→  h2SettingsSpoofing: boolean;
+    69→  /** Control Service Worker scope */
+    70→  serviceWorkerControl: boolean;
+    71→  /** Ensure Performance.timing consistency */
+    72→  performanceTiming: boolean;
+    73→  /** Protect font enumeration */
+    74→  fontProtection: boolean;
+    75→  /** Mock Battery API */
+    76→  batteryApi: boolean;
+    77→  /** Mock Bluetooth API */
+    78→  bluetoothApi: boolean;
+    79→  /** Mock USB API */
+    80→  usbApi: boolean;
+    81→  /** Intercept and clean response headers */
+    82→  responseHeaderCleaning: boolean;
+    83→  /** Remove automation-related response headers */
+    84→  removeAutomationHeaders: boolean;
+    85→  /** Add realistic resource timing entries */
+    86→  resourceTimingEntries: boolean;
+    87→  /** Patch navigator.getBattery() */
+    88→  getBattery: boolean;
+    89→  /** Patch navigator.mediaDevices */
+    90→  mediaDevices: boolean;
+    91→  /** Patch window.outerWidth/outerHeight */
+    92→  windowDimensions: boolean;
+    93→  /** Patch screen.orientation */
+    94→  screenOrientation: boolean;
+    95→}
+    96→
+    97→export const DEFAULT_DEEP_PATCH_CONFIG: DeepPatchConfig = {
+    98→  headerOrderSpoofing: true,
+    99→  h2SettingsSpoofing: true,
+   100→  serviceWorkerControl: true,
+   101→  performanceTiming: true,
+   102→  fontProtection: true,
+   103→  batteryApi: true,
+   104→  bluetoothApi: true,
+   105→  usbApi: true,
+   106→  responseHeaderCleaning: true,
+   107→  removeAutomationHeaders: true,
+   108→  resourceTimingEntries: true,
+   109→  getBattery: true,
+   110→  mediaDevices: true,
+   111→  windowDimensions: true,
+   112→  screenOrientation: true,
+   113→};
+   114→
+   115→export interface DeepPatchResult {
+   116→  success: boolean;
+   117→  patchesApplied: string[];
+   118→  errors: string[];
+   119→}
+   120→
+   121→// ===============================================================================
+   122→// HTTP/2 HEADER ORDER TEMPLATES
+   123→// ===============================================================================
+   124→
+   125→/**
+   126→ * Chrome sends headers in this exact order for navigation requests.
+   127→ * This is a known fingerprint vector -- Akamai and Cloudflare check this.
+   128→ */
+   129→const CHROME_HEADER_ORDER = [
+   130→  ':method',
+   131→  ':authority',
+   132→  ':scheme',
+   133→  ':path',
+   134→  'host',
+   135→  'user-agent',
+   136→  'accept',
+   137→  'accept-language',
+   138→  'sec-ch-ua',
+   139→  'sec-ch-ua-mobile',
+   140→  'sec-ch-ua-platform',
+   141→  'sec-fetch-dest',
+   142→  'sec-fetch-mode',
+   143→  'sec-fetch-site',
+   144→  'sec-fetch-user',
+   145→  'accept-encoding',
+   146→  'cookie',
+   147→  'upgrade-insecure-requests',
+   148→];
+   149→
+   150→const FIREFOX_HEADER_ORDER = [
+   151→  ':method',
+   152→  ':authority',
+   153→  ':scheme',
+   154→  ':path',
+   155→  'host',
+   156→  'user-agent',
+   157→  'accept',
+   158→  'accept-language',
+   159→  'accept-encoding',
+   160→  'sec-fetch-dest',
+   161→  'sec-fetch-mode',
+   162→  'sec-fetch-site',
+   163→  'sec-fetch-user',
+   164→  'te',
+   165→  'upgrade-insecure-requests',
+   166→];
+   167→
+   168→const SAFARI_HEADER_ORDER = [
+   169→  ':method',
+   170→  ':authority',
+   171→  ':scheme',
+   172→  ':path',
+   173→  'host',
+   174→  'user-agent',
+   175→  'accept',
+   176→  'accept-language',
+   177→  'accept-encoding',
+   178→  'sec-fetch-dest',
+   179→  'sec-fetch-mode',
+   180→  'sec-fetch-site',
+   181→  'sec-fetch-user',
+   182→  'upgrade-insecure-requests',
+   183→];
+   184→
+   185→function getHeaderOrder(browser: FpBrowserType): string[] {
+   186→  switch (browser) {
+   187→    case 'chrome':
+   188→    case 'edge':
+   189→      return CHROME_HEADER_ORDER;
+   190→    case 'firefox':
+   191→      return FIREFOX_HEADER_ORDER;
+   192→    case 'safari':
+   193→      return SAFARI_HEADER_ORDER;
+   194→    default:
+   195→      return CHROME_HEADER_ORDER;
+   196→  }
+   197→}
+   198→
+   199→// ===============================================================================
+   200→// FONT DATABASE -- OS-specific font lists for fingerprint protection
+   201→// ===============================================================================
+   202→
+   203→const FONTS_BY_OS: Record<OSType, { system: string[]; common: string[] }> = {
+   204→  windows: {
+   205→    system: ['Arial', 'Arial Black', 'Calibri', 'Cambria', 'Candara', 'Comic Sans MS', 'Consolas', 'Courier New', 'Georgia', 'Impact', 'Lucida Console', 'Microsoft Sans Serif', 'Segoe UI', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana', 'Wingdings', 'Webdings', 'MS Gothic', 'MS PGothic', 'MS UI Gothic'],
+   206→    common: ['Helvetica Neue', 'Roboto', 'Open Sans', 'Lato', 'Montserrat', 'Source Sans Pro', 'Noto Sans', 'Fira Code', 'Font Awesome 6 Free'],
+   207→  },
+   208→  macos: {
+   209→    system: ['Helvetica', 'Helvetica Neue', 'San Francisco', 'SF Pro Display', 'SF Pro Text', 'Arial', 'Courier', 'Georgia', 'Monaco', 'Times', 'Verdana', 'PingFang SC', 'STHeiti', 'Hiragino Sans', 'Apple Color Emoji', 'Menlo', 'Monaco'],
+   210→    common: ['Roboto', 'Open Sans', 'Lato', 'Source Sans Pro', 'Noto Sans', 'Fira Code', 'Font Awesome 6 Free'],
+   211→  },
+   212→  linux: {
+   213→    system: ['DejaVu Sans', 'DejaVu Sans Mono', 'DejaVu Serif', 'Liberation Sans', 'Liberation Mono', 'Liberation Serif', 'Noto Sans', 'Noto Sans Mono', 'Ubuntu', 'Ubuntu Mono', 'Cantarell', 'Droid Sans', 'Droid Sans Mono', 'Droid Serif'],
+   214→    common: ['Roboto', 'Open Sans', 'Lato', 'Source Sans Pro', 'Fira Code', 'Font Awesome 6 Free'],
+   215→  },
+   216→  android: {
+   217→    system: ['Roboto', 'Roboto Condensed', 'Roboto Mono', 'Noto Sans', 'Noto Sans Mono', 'Noto Serif', 'Droid Sans', 'Droid Sans Mono', 'Droid Serif'],
+   218→    common: ['Open Sans', 'Lato', 'Montserrat', 'Source Sans Pro'],
+   219→  },
+   220→  ios: {
+   221→    system: ['San Francisco', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Helvetica', 'Arial', 'Courier', 'Georgia', 'Times New Roman', 'Verdana', 'Apple Color Emoji', 'PingFang SC'],
+   222→    common: ['Roboto', 'Open Sans', 'Lato', 'Source Sans Pro'],
+   223→  },
+   224→};
+   225→
+   226→// ===============================================================================
+   227→// V8 INJECTION SCRIPT GENERATOR -- Deep Patches
+   228→// ===============================================================================
+   229→
+   230→function generateDeepPatchScript(profile: CoherentProfile, config: DeepPatchConfig): string {
+   231→  const parts: string[] = [];
+   232→
+   233→  // --- Performance.timing consistency -----------------------------------------
+   234→  if (config.performanceTiming) {
+   235→    parts.push(`
+   236→      // Performance.timing consistency enforcement
+   237→      // Bot detection checks for impossible timing patterns
+   238→      (function() {
+   239→        const timing = performance.timing;
+   240→        if (!timing) return;
+   241→
+   242→        // Ensure navigationStart is reasonable
+   243→        const navStart = timing.navigationStart || Date.now() - Math.floor(Math.random() * 5000 + 2000);
+   244→
+   245→        // Create realistic timing offsets (ms after navigationStart)
+   246→        const offsets = {
+   247→          unloadEventStart: Math.random() < 0.5 ? -1 : Math.floor(Math.random() * 50 + 10),
+   248→          unloadEventEnd: Math.random() < 0.5 ? -1 : Math.floor(Math.random() * 60 + 20),
+   249→          redirectStart: Math.random() < 0.8 ? 0 : Math.floor(Math.random() * 30 + 5),
+   250→          redirectEnd: Math.random() < 0.8 ? 0 : Math.floor(Math.random() * 60 + 30),
+   251→          fetchStart: Math.floor(Math.random() * 5 + 1),
+   252→          domainLookupStart: Math.floor(Math.random() * 30 + 10),
+   253→          domainLookupEnd: Math.floor(Math.random() * 50 + 20),
+   254→          connectStart: Math.floor(Math.random() * 50 + 20),
+   255→          connectEnd: Math.floor(Math.random() * 100 + 50),
+   256→          secureConnectionStart: Math.random() < 0.3 ? 0 : Math.floor(Math.random() * 80 + 40),
+   257→          requestStart: Math.floor(Math.random() * 120 + 60),
+   258→          responseStart: Math.floor(Math.random() * 300 + 200),
+   259→          responseEnd: Math.floor(Math.random() * 500 + 300),
+   260→          domLoading: Math.floor(Math.random() * 600 + 400),
+   261→          domInteractive: Math.floor(Math.random() * 1200 + 800),
+   262→          domContentLoadedEventStart: Math.floor(Math.random() * 1500 + 1000),
+   263→          domContentLoadedEventEnd: Math.floor(Math.random() * 1510 + 1005),
+   264→          domComplete: Math.floor(Math.random() * 3000 + 2000),
+   265→          loadEventStart: Math.floor(Math.random() * 3100 + 2050),
+   266→          loadEventEnd: Math.floor(Math.random() * 3110 + 2060),
+   267→        };
+   268→
+   269→        // Override timing properties
+   270→        for (const [key, offset] of Object.entries(offsets)) {
+   271→          try {
+   272→            Object.defineProperty(timing, key, {
+   273→              get: () => offset >= 0 ? navStart + offset : offset,
+   274→              configurable: true,
+   275→            });
+   276→          } catch(e) {}
+   277→        }
+   278→      })();
+   279→    `);
+   280→  }
+   281→
+   282→  // --- Font enumeration protection -------------------------------------------
+   283→  if (config.fontProtection) {
+   284→    const os = profile.os;
+   285→    const fontData = FONTS_BY_OS[os] || FONTS_BY_OS.windows;
+   286→    // Include a subset of system fonts + some common fonts
+   287→    const numSystemFonts = Math.min(fontData.system.length, Math.floor(Math.random() * 5) + fontData.system.length - 3);
+   288→    const selectedFonts = fontData.system.slice(0, numSystemFonts);
+   289→    if (Math.random() > 0.3) {
+   290→      // Add some common fonts (not all users have them)
+   291→      const numCommon = Math.floor(Math.random() * fontData.common.length) + 1;
+   292→      selectedFonts.push(...fontData.common.slice(0, numCommon));
+   293→    }
+   294→    const fontList = JSON.stringify(selectedFonts);
+   295→
+   296→    parts.push(`
+   297→      // Font enumeration protection
+   298→      // Override document.fonts and font measurement APIs
+   299→      (function() {
+   300→        const __allowedFonts = ${fontList};
+   301→
+   302→        // Override document.fonts.values() to return only allowed fonts
+   303→        if (document.fonts && document.fonts.values) {
+   304→          const origValues = document.fonts.values.bind(document.fonts);
+   305→          document.fonts.values = function*() {
+   306→            const iter = origValues();
+   307→            for (const font of iter) {
+   308→              if (__allowedFonts.includes(font.family)) {
+   309→                yield font;
+   310→              }
+   311→            }
+   312→          };
+   313→        }
+   314→
+   315→        // Override document.fonts.forEach
+   316→        if (document.fonts && document.fonts.forEach) {
+   317→          const origForEach = document.fonts.forEach.bind(document.fonts);
+   318→          document.fonts.forEach = function(callback: any, thisArg: any) {
+   319→            return origForEach(function(font: any) {
+   320→              if (__allowedFonts.includes(font.family)) {
+   321→                callback.call(thisArg, font, font, document.fonts);
+   322→              }
+   323→            }, thisArg);
+   324→          };
+   325→        }
+   326→
+   327→        // Protect against font measurement fingerprinting
+   328→        // Some bots detect fonts by measuring text width with different font-family values
+   329→        const origMeasureText = CanvasRenderingContext2D.prototype.measureText;
+   330→        CanvasRenderingContext2D.prototype.measureText = function(text: string) {
+   331→          const result = origMeasureText.call(this, text);
+   332→          // Add tiny jitter to prevent exact font matching
+   333→          const jitter = (Math.random() - 0.5) * 0.001;
+   334→          return {
+   335→            ...result,
+   336→            width: result.width + jitter,
+   337→          };
+   338→        };
+   339→      })();
+   340→    `);
+   341→  }
+   342→
+   343→  // --- Battery API mocking ---------------------------------------------------
+   344→  if (config.batteryApi) {
+   345→    parts.push(`
+   346→      // Battery API -- realistic mock
+   347→      // Some anti-bot systems check if getBattery exists and returns plausible data
+   348→      if (navigator.getBattery) {
+   349→        const origGetBattery = navigator.getBattery.bind(navigator);
+   350→        navigator.getBattery = function() {
+   351→          return Promise.resolve({
+   352→            charging: true,
+   353→            chargingTime: 0,
+   354→            dischargingTime: Infinity,
+   355→            level: 0.95 + Math.random() * 0.05,
+   356→            addEventListener: function() {},
+   357→            removeEventListener: function() {},
+   358→            dispatchEvent: function() { return true; },
+   359→            onchargingchange: null,
+   360→            onchargingtimechange: null,
+   361→            ondischargingtimechange: null,
+   362→            onlevelchange: null,
+   363→          });
+   364→        };
+   365→      }
+   366→    `);
+   367→  }
+   368→
+   369→  // --- Bluetooth API mocking -------------------------------------------------
+   370→  if (config.bluetoothApi) {
+   371→    parts.push(`
+   372→      // Bluetooth API -- realistic mock
+   373→      if (navigator.bluetooth) {
+   374→        navigator.bluetooth.requestDevice = function() {
+   375→          return Promise.reject(new DOMException('User cancelled the requestDevice() chooser', 'NotFoundError'));
+   376→        };
+   377→        navigator.bluetooth.getAvailability = function() {
+   378→          return Promise.resolve(Math.random() > 0.5);
+   379→        };
+   380→      }
+   381→    `);
+   382→  }
+   383→
+   384→  // --- USB API mocking -------------------------------------------------------
+   385→  if (config.usbApi) {
+   386→    parts.push(`
+   387→      // USB API -- realistic mock
+   388→      if (navigator.usb) {
+   389→        navigator.usb.getDevices = function() {
+   390→          return Promise.resolve([]);
+   391→        };
+   392→        navigator.usb.requestDevice = function() {
+   393→          return Promise.reject(new DOMException('No device selected', 'NotFoundError'));
+   394→        };
+   395→      }
+   396→    `);
+   397→  }
+   398→
+   399→  // --- MediaDevices API ------------------------------------------------------
+   400→  if (config.mediaDevices) {
+   401→    const hasWebcam = Math.random() > 0.3; // 70% have webcam
+   402→    const hasMic = Math.random() > 0.1; // 90% have mic
+   403→    parts.push(`
+   404→      // MediaDevices API -- realistic enumeration
+   405→      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+   406→        const origEnumerate = navigator.mediaDevices.enumerateDevices.bind(navigator.mediaDevices);
+   407→        navigator.mediaDevices.enumerateDevices = function() {
+   408→          const devices: any[] = [];
+   409→
+   410→          ${hasWebcam ? `
+   411→          // Fake webcam
+   412→          devices.push(
+   413→            { deviceId: 'default-webcam', kind: 'videoinput', label: '', groupId: 'group-video' },
+   414→            { deviceId: 'webcam-0', kind: 'videoinput', label: '', groupId: 'group-video' },
+   415→          );
+   416→          ` : ''}
+   417→
+   418→          ${hasMic ? `
+   419→          // Fake microphone
+   420→          devices.push(
+   421→            { deviceId: 'default-mic', kind: 'audioinput', label: '', groupId: 'group-audio' },
+   422→            { deviceId: 'mic-0', kind: 'audioinput', label: '', groupId: 'group-audio' },
+   423→          );
+   424→          ` : ''}
+   425→
+   426→          // Fake speakers
+   427→          devices.push(
+   428→            { deviceId: 'default-speaker', kind: 'audiooutput', label: '', groupId: 'group-audio' },
+   429→          );
+   430→
+   431→          return Promise.resolve(devices);
+   432→        };
+   433→      }
+   434→    `);
+   435→  }
+   436→
+   437→  // --- Window dimensions -----------------------------------------------------
+   438→  if (config.windowDimensions) {
+   439→    parts.push(`
+   440→      // Window dimensions -- ensure outerWidth/outerHeight are consistent
+   441→      // Bot detection checks if outer dimensions > inner dimensions
+   442→      Object.defineProperty(window, 'outerWidth', {
+   443→        get: () => window.innerWidth + (window.outerWidth > window.innerWidth ? 0 : Math.floor(Math.random() * 20 + 10)),
+   444→        configurable: true,
+   445→      });
+   446→      Object.defineProperty(window, 'outerHeight', {
+   447→        get: () => window.innerHeight + (window.outerHeight > window.innerHeight ? 0 : Math.floor(Math.random() * 100 + 80)),
+   448→        configurable: true,
+   449→      });
+   450→    `);
+   451→  }
+   452→
+   453→  // --- Screen orientation -----------------------------------------------------
+   454→  if (config.screenOrientation) {
+   455→    const isLandscape = profile.viewport.width > profile.viewport.height;
+   456→    parts.push(`
+   457→      // Screen orientation -- consistent with device type
+   458→      if (screen.orientation) {
+   459→        Object.defineProperty(screen.orientation, 'type', {
+   460→          get: () => '${isLandscape ? 'landscape-primary' : 'portrait-primary'}',
+   461→          configurable: true,
+   462→        });
+   463→        Object.defineProperty(screen.orientation, 'angle', {
+   464→          get: () => ${isLandscape ? 90 : 0},
+   465→          configurable: true,
+   466→        });
+   467→      }
+   468→    `);
+   469→  }
+   470→
+   471→  // --- Service Worker scope control ------------------------------------------
+   472→  if (config.serviceWorkerControl) {
+   473→    parts.push(`
+   474→      // Service Worker scope control
+   475→      // Allow Kasada SW to register (kasada-sw-proxy handles interception)
+   476→      // Block other known anti-bot SWs that we don't have proxies for
+   477→      if (navigator.serviceWorker && navigator.serviceWorker.register) {
+   478→        const origRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+   479→        navigator.serviceWorker.register = function(scriptURL: string, options?: any) {
+   480→          // Block anti-bot SWs EXCEPT Kasada (handled by kasada-sw-proxy module)
+   481→          const blocked = ['datadome', 'px-captcha', 'perimeterx', 'akamai', 'bm-sensor'];
+   482→          const url = typeof scriptURL === 'string' ? scriptURL.toLowerCase() : '';
+   483→          for (const b of blocked) {
+   484→            if (url.includes(b)) {
+   485→              return Promise.reject(new Error('Service worker registration failed'));
+   486→            }
+   487→          }
+   488→          // Kasada SW is ALLOWED to register -- kasada-sw-proxy intercepts it
+   489→          return origRegister(scriptURL, options);
+   490→        };
+   491→      }
+   492→    `);
+   493→  }
+   494→
+   495→  // --- Resource timing entries -----------------------------------------------
+   496→  if (config.resourceTimingEntries) {
+   497→    parts.push(`
+   498→      // Resource timing entries -- add realistic entries
+   499→      // Bot detection sometimes checks if performance.getEntriesByType('resource')
+   500→      // returns an empty array (bots that block resources show no entries)
+   501→      if (performance && performance.getEntriesByType) {
+   502→        const origGetEntries = performance.getEntriesByType.bind(performance);
+   503→        performance.getEntriesByType = function(type: string) {
+   504→          const entries = origGetEntries(type);
+   505→
+   506→          if (type === 'resource' && entries.length === 0) {
+   507→            // No resource entries found -- add fake CSS and JS entries
+   508→            const fakeEntries = [
+   509→              { name: location.origin + '/style.css', entryType: 'resource', startTime: 50 + Math.random() * 100, duration: 30 + Math.random() * 80, initiatorType: 'link', transferSize: Math.floor(Math.random() * 50000 + 10000) },
+   510→              { name: location.origin + '/app.js', entryType: 'resource', startTime: 100 + Math.random() * 150, duration: 50 + Math.random() * 200, initiatorType: 'script', transferSize: Math.floor(Math.random() * 200000 + 50000) },
+   511→              { name: location.origin + '/logo.png', entryType: 'resource', startTime: 200 + Math.random() * 200, duration: 40 + Math.random() * 100, initiatorType: 'img', transferSize: Math.floor(Math.random() * 30000 + 5000) },
+   512→            ];
+   513→            return fakeEntries as any;
+   514→          }
+   515→
+   516→          return entries;
+   517→        };
+   518→      }
+   519→    `);
+   520→  }
+   521→
+   522→  return parts.join('\n');
+   523→}
+   524→
+   525→// ===============================================================================
+   526→// DEEP PATCHER ENGINE
+   527→// ===============================================================================
+   528→
+   529→export class DeepBrowserPatcher {
+   530→  private config: DeepPatchConfig;
+   531→  private patchedPages = new WeakSet<Page>();
+   532→
+   533→  constructor(config?: Partial<DeepPatchConfig>) {
+   534→    this.config = { ...DEFAULT_DEEP_PATCH_CONFIG, ...config };
+   535→    logger.info('Deep Browser Patcher initialized');
+   536→  }
+   537→
+   538→  /**
+   539→   * Apply deep browser patches to a Playwright page.
+   540→   * Should be called AFTER CdpInjectionEngine.inject() for best results.
+   541→   */
+   542→  async patch(page: Page, profile: CoherentProfile, options?: {
+   543→    cdpSession?: CDPSession;
+   544→    config?: Partial<DeepPatchConfig>;
+   545→  }): Promise<DeepPatchResult> {
+   546→    const errors: string[] = [];
+   547→    const patchesApplied: string[] = [];
+   548→    const effectiveConfig = { ...this.config, ...options?.config };
+   549→
+   550→    // Skip if already patched
+   551→    if (this.patchedPages.has(page)) {
+   552→      return { success: true, patchesApplied: ['already-patched'], errors: [] };
+   553→    }
+   554→
+   555→    // Step 1: Inject deep patch V8 script
+   556→    try {
+   557→      const deepScript = generateDeepPatchScript(profile, effectiveConfig);
+   558→      await page.addInitScript(deepScript);
+   559→      patchesApplied.push('deepV8Script');
+   560→    } catch (err: any) {
+   561→      errors.push(`Deep V8 script injection failed: ${err.message}`);
+   562→    }
+   563→
+   564→    // Step 2: Enable response header interception via CDP
+   565→    if (options?.cdpSession && effectiveConfig.responseHeaderCleaning) {
+   566→      try {
+   567→        await this.enableResponseInterception(options.cdpSession, profile);
+   568→        patchesApplied.push('responseHeaderInterception-cdp');
+   569→      } catch (err: any) {
+   570→        errors.push(`Response header interception failed: ${err.message}`);
+   571→      }
+   572→    }
+   573→
+   574→    // Step 3: Enable header order enforcement via CDP Fetch
+   575→    if (options?.cdpSession && effectiveConfig.headerOrderSpoofing) {
+   576→      try {
+   577→        await this.enforceHeaderOrder(options.cdpSession, profile);
+   578→        patchesApplied.push('headerOrderEnforcement-cdp');
+   579→      } catch (err: any) {
+   580→        errors.push(`Header order enforcement failed: ${err.message}`);
+   581→      }
+   582→    }
+   583→
+   584→    // Step 4: Remove automation-related response headers
+   585→    if (options?.cdpSession && effectiveConfig.removeAutomationHeaders) {
+   586→      try {
+   587→        await this.removeAutomationResponseHeaders(options.cdpSession);
+   588→        patchesApplied.push('removeAutomationHeaders-cdp');
+   589→      } catch (err: any) {
+   590→        errors.push(`Automation header removal failed: ${err.message}`);
+   591→      }
+   592→    }
+   593→
+   594→    // Mark as patched
+   595→    this.patchedPages.add(page);
+   596→
+   597→    logger.info({
+   598→      profileId: profile.id,
+   599→      browser: profile.browser,
+   600→      os: profile.os,
+   601→      patchesApplied: patchesApplied.length,
+   602→      errors: errors.length,
+   603→    }, 'Deep browser patches applied');
+   604→
+   605→    return {
+   606→      success: patchesApplied.length > 0,
+   607→      patchesApplied,
+   608→      errors,
+   609→    };
+   610→  }
+   611→
+   612→  /**
+   613→   * Enable response header interception to clean automation-related headers.
+   614→   */
+   615→  private async enableResponseInterception(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+   616→    // Use Fetch.enable for response interception
+   617→    await cdpSession.send('Fetch.enable', {
+   618→      patterns: [
+   619→        { urlPattern: '*', requestStage: 'Response' },
+   620→      ],
+   621→    });
+   622→
+   623→    cdpSession.on('Fetch.requestPaused', async (event: any) => {
+   624→      try {
+   625→        const { requestId, responseHeaders } = event;
+   626→
+   627→        if (responseHeaders) {
+   628→          // Clean automation-related response headers
+   629→          const cleanedHeaders = responseHeaders.filter((h: any) => {
+   630→            const name = h.name.toLowerCase();
+   631→            // Remove headers that reveal automation
+   632→            return !name.startsWith('x-playwright')
+   633→              && !name.startsWith('x-puppeteer')
+   634→              && !name.startsWith('x-selenium')
+   635→              && name !== 'x-automation';
+   636→          });
+   637→
+   638→          await cdpSession.send('Fetch.continueResponse', {
+   639→            requestId,
+   640→            headers: cleanedHeaders,
+   641→          } as any);
+   642→        } else {
+   643→          await cdpSession.send('Fetch.continueResponse', { requestId });
+   644→        }
+   645→      } catch (err: any) {
+   646→        try {
+   647→          await cdpSession.send('Fetch.continueResponse', { requestId: event.requestId });
+   648→        } catch {}
+   649→      }
+   650→    });
+   651→  }
+   652→
+   653→  /**
+   654→   * Enforce HTTP header order per browser type using CDP Fetch interception.
+   655→   */
+   656→  private async enforceHeaderOrder(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+   657→    const headerOrder = getHeaderOrder(profile.browser);
+   658→
+   659→    // The actual enforcement happens in the CdpInjectionEngine's network interception
+   660→    // Here we just prepare the header order template for use
+   661→    // We store it as a property on the CDP session for later retrieval
+   662→    (cdpSession as any).__headerOrder = headerOrder;
+   663→    (cdpSession as any).__browserType = profile.browser;
+   664→  }
+   665→
+   666→  /**
+   667→   * Remove automation-related response headers that might reveal bot activity.
+   668→   */
+   669→  private async removeAutomationResponseHeaders(cdpSession: CDPSession): Promise<void> {
+   670→    // Register for Network.responseReceived to clean headers
+   671→    try {
+   672→      await cdpSession.send('Network.enable');
+   673→    } catch {
+   674→      // May already be enabled
+   675→    }
+   676→
+   677→    cdpSession.on('Network.responseReceived', (event: any) => {
+   678→      const headers = event?.response?.headers;
+   679→      if (headers) {
+   680→        // Remove headers that indicate automation
+   681→        const toRemove = ['x-playwright', 'x-puppeteer', 'x-selenium', 'x-automation', 'x-bot-detection'];
+   682→        for (const key of Object.keys(headers)) {
+   683→          if (toRemove.some(r => key.toLowerCase().includes(r))) {
+   684→            delete headers[key];
+   685→          }
+   686→        }
+   687→      }
+   688→    });
+   689→  }
+   690→
+   691→  /**
+   692→   * Get the header order for a browser type.
+   693→   */
+   694→  getHeaderOrder(browser: FpBrowserType): string[] {
+   695→    return getHeaderOrder(browser);
+   696→  }
+   697→
+   698→  /**
+   699→   * Get font list for an OS type.
+   700→   */
+   701→  getFontList(os: OSType): { system: string[]; common: string[] } {
+   702→    return FONTS_BY_OS[os] || FONTS_BY_OS.windows;
+   703→  }
+   704→
+   705→  /**
+   706→   * Get deep patcher statistics.
+   707→   */
+   708→  getStats(): Record<string, any> {
+   709→    return {
+   710→      config: { ...this.config },
+   711→    };
+   712→  }
+   713→}
+   714→
+   715→// ===============================================================================
+   716→// SINGLETONS & EXPORTS
+   717→// ===============================================================================
+   718→
+   719→export const deepBrowserPatcher = new DeepBrowserPatcher();
+   720→export default DeepBrowserPatcher;
+   721→

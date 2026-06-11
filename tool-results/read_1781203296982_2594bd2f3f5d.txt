@@ -1,0 +1,2002 @@
+     1→// ===============================================================================
+     2→// PROXY MANAGER -- The Ultimate Proxy Orchestration Engine
+     3→// ===============================================================================
+     4→// Central orchestrator that ties ALL proxy modules together into a unified API.
+     5→// Supports: smart selection, auto-failover, CAPTCHA-aware routing, Web Unlocker,
+     6→// fusion reactor management, domain intelligence, cost optimization, and more.
+     7→// ===============================================================================
+     8→
+     9→import { db } from '../utils/db';
+    10→import { redis, cacheGet, cacheSet } from '../utils/redis';
+    11→import { createChildLogger } from '../utils/logger';
+    12→import { testProxy } from '../utils/proxy-fetch';
+    13→
+    14→// --- Core Module Imports ------------------------------------------------------
+    15→import { residentialProxyManager, type ProxyProvider, type ProxyResult } from './residential-providers';
+    16→import { smartIPPool, type IPPoolResult } from './ip-pool';
+    17→import { ipReputationTracker, type ReputationVerdict } from './reputation';
+    18→import { proxyAggregator } from './aggregator';
+    19→import { megaPool, type MegaPoolResult } from './mega-pool';
+    20→import type { ProxyInfo, ProxyOutcome } from '../types';
+    21→
+    22→const logger = createChildLogger('proxy-manager');
+    23→
+    24→// --- Constants ----------------------------------------------------------------
+    25→
+    26→const PROXY_CACHE_TTL = 10;              // Reduced from 60s to 10s for faster cache refresh
+    27→const MAX_CONSECUTIVE_FAILURES = 5;
+    28→const RETIRE_THRESHOLD = 0.2;
+    29→const HEALTH_CHECK_INTERVAL = 5_000;      // 5s health check interval (was 300s)
+    30→const DOMAIN_INTEL_TTL = 600_000;         // 10 minutes for domain intelligence
+    31→const STICKY_SESSION_TTL = 600_000;       // 10 minutes for sticky sessions
+    32→const STATS_AGGREGATION_INTERVAL = 10_000; // 10s stats aggregation
+    33→const ADAPTIVE_STRATEGY_INTERVAL = 10_000; // 10s adaptive strategy check
+    34→const COST_OPTIMIZATION_INTERVAL = 10_000; // 10s cost optimization cycle
+    35→const MODULE_HEALTH_CHECK_INTERVAL = 5_000; // 5s module health ping
+    36→const DOMAIN_INTELLIGENCE_SAMPLE_SIZE = 100;
+    37→const MAX_FAILBACK_ATTEMPTS = 3;
+    38→const CAPTCHA_DETECTION_PATTERNS = [
+    39→  'recaptcha', 'g-recaptcha', 'hcaptcha', 'h-captcha',
+    40→  'cf-turnstile', 'captcha', 'funcaptcha', 'arkose',
+    41→  'challenge-platform', 'px-captcha', 'geetest',
+    42→];
+    43→const ANTIBOT_DETECTION_PATTERNS = [
+    44→  'cloudflare', 'akamai', 'perimeterx', 'kasada',
+    45→  'datadome', 'shape', 'f5', 'imperva', 'distil',
+    46→  'incapsula', 'silverline', 'bot-manager',
+    47→];
+    48→const STEALTH_DOMAINS = new Set([
+    49→  'amazon.com', 'amazon.co.uk', 'amazon.de', 'amazon.fr', 'amazon.co.jp',
+    50→  'ticketmaster.com', 'livenation.com', 'axs.com',
+    51→  'nike.com', 'adidas.com', 'footlocker.com',
+    52→  'zillow.com', 'redfin.com', 'realtor.com',
+    53→  'linkedin.com', 'indeed.com', 'glassdoor.com',
+    54→  'yelp.com', 'tripadvisor.com', 'airbnb.com',
+    55→]);
+    56→
+    57→// --- Rotation Strategies -----------------------------------------------------
+    58→
+    59→export type RotationStrategy =
+    60→  | 'round-robin'
+    61→  | 'random'
+    62→  | 'least-failures'
+    63→  | 'fastest'
+    64→  | 'sticky'
+    65→  | 'weighted-random'
+    66→  | 'adaptive'
+    67→  | 'cost-optimized'
+    68→  | 'reputation-weighted'
+    69→  | 'domain-intelligent';
+    70→
+    71→// --- Tier Types ---------------------------------------------------------------
+    72→
+    73→export type ProxyTier = 'residential' | 'mobile' | 'datacenter' | 'isp';
+    74→
+    75→// --- Proxy Selection ---------------------------------------------------------
+    76→
+    77→export interface ProxySelection {
+    78→  proxyUrl: string;
+    79→  proxyId: string;
+    80→  country: string;
+    81→  tier: string;
+    82→  city?: string;
+    83→  asn?: string;
+    84→}
+    85→
+    86→// --- Domain Intelligence -----------------------------------------------------
+    87→
+    88→interface DomainIntelligenceEntry {
+    89→  domain: string;
+    90→  bestProxyIds: string[];            // Top N proxy IDs that work for this domain
+    91→  worstProxyIds: string[];           // Proxy IDs that have failed for this domain
+    92→  requiresStealth: boolean;          // Domain needs stealth/anti-bot bypass
+    93→  requiresCaptcha: boolean;          // Domain typically requires CAPTCHA solving
+    94→  preferredTier: ProxyTier;          // Which tier works best for this domain
+    95→  preferredCountry: string;          // Which country proxy works best
+    96→  averageLatency: number;            // Average latency for this domain
+    97→  successRate: number;               // Overall success rate for this domain
+    98→  captchaFrequency: number;          // 0-1 how often CAPTCHA is encountered
+    99→  antibotFrequency: number;          // 0-1 how often anti-bot is encountered
+   100→  costPerRequest: number;            // Average cost per successful request
+   101→  lastUpdated: number;               // Timestamp of last update
+   102→  requestCount: number;              // Total requests made to this domain
+   103→  failoverChain: ProxyTier[];        // Preferred failover tier chain
+   104→}
+   105→
+   106→// --- Adaptive Strategy State -------------------------------------------------
+   107→
+   108→interface AdaptiveStrategyState {
+   109→  domain: string;
+   110→  currentStrategy: RotationStrategy;
+   111→  previousStrategies: Array<{ strategy: RotationStrategy; successRate: number; timestamp: number }>;
+   112→  lastRotation: number;
+   113→  rotationCount: number;
+   114→  performanceWindow: Array<{ timestamp: number; success: boolean; latency: number }>;
+   115→  optimalStrategy: RotationStrategy | null;
+   116→}
+   117→
+   118→// --- Cost Optimization State -------------------------------------------------
+   119→
+   120→interface CostOptimizationState {
+   121→  domain: string;
+   122→  costHistory: Array<{ timestamp: number; cost: number; success: boolean; source: string }>;
+   123→  cheapestSource: string | null;
+   124→  costEfficiencyScore: number;       // Success rate per dollar
+   125→  recommendedTier: ProxyTier | null;
+   126→  recommendedSource: string | null;
+   127→  lastOptimized: number;
+   128→}
+   129→
+   130→// --- Module Health State -----------------------------------------------------
+   131→
+   132→interface ModuleHealthState {
+   133→  moduleName: string;
+   134→  available: boolean;
+   135→  lastCheck: number;
+   136→  consecutiveFailures: number;
+   137→  latencyMs: number;
+   138→  errorCount: number;
+   139→  lastError: string | null;
+   140→}
+   141→
+   142→// --- Unified Pool Statistics -------------------------------------------------
+   143→
+   144→export interface UnifiedPoolStats {
+   145→  // Legacy pool stats
+   146→  legacy: {
+   147→    total: number;
+   148→    active: number;
+   149→    retired: number;
+   150→    byTier: Record<string, number>;
+   151→    byCountry: Record<string, number>;
+   152→    byProvider: Record<string, number>;
+   153→    avgSuccessRate: number;
+   154→    avgP95Latency: number;
+   155→    geoCoverage: { countries: number; cities: number; asns: number };
+   156→  } | null;
+   157→  // Smart IP Pool stats
+   158→  smartPool: any;
+   159→  // Aggregator composition
+   160→  aggregator: any;
+   161→  // Mega pool stats (fusion system)
+   162→  megaPool: any;
+   163→  // Reputation system state
+   164→  reputation: { decayRunning: boolean; stats: any };
+   165→  // Fusion core status
+   166→  fusion: any;
+   167→  // Chain reaction stats
+   168→  chainReaction: any;
+   169→  // Breeder reactor stats
+   170→  breederReactor: any;
+   171→  // Quantum tunnel stats
+   172→  quantumTunnel: any;
+   173→  // Plasma state stats
+   174→  plasmaState: any;
+   175→  // Containment shield stats
+   176→  containment: any;
+   177→  // Validation pipeline stats
+   178→  validationPipeline: any;
+   179→  // Rotating session factory stats
+   180→  rotatingSessionFactory: any;
+   181→  // Free proxy discovery stats
+   182→  freeProxyDiscovery: any;
+   183→  // Tor pool stats
+   184→  torPool: any;
+   185→  // Bulk session stats
+   186→  bulkSessions: any;
+   187→  // Subnet expander stats
+   188→  subnetExpander: any;
+   189→  // CAPTCHA solver stats
+   190→  captchaSolver: any;
+   191→  // Web Unlocker stats
+   192→  webUnlocker: any;
+   193→  // CDP Injection Engine stats
+   194→  cdpInjection: any;
+   195→  // Deep Browser Patcher stats
+   196→  deepPatcher: any;
+   197→  // Mobile Proxy Engine stats
+   198→  mobileProxy: any;
+   199→  // Geo Expander stats
+   200→  geoExpander: any;
+   201→  // DNS Shield stats
+   202→  dnsShield: any;
+   203→  // Stealth Browser Engine stats
+   204→  stealthBrowser: any;
+   205→  // Request Pacer stats
+   206→  requestPacer: any;
+   207→  // Structured Extractor stats
+   208→  structuredExtractor: any;
+   209→  // Anti-Bot Monitor stats
+   210→  antiBotMonitor: any;
+   211→  // Fingerprint Calibrator stats
+   212→  fingerprintCalibrator: any;
+   213→  // Kasada Challenger stats
+   214→  kasadaChallenger: any;
+   215→  // Kasada SW Proxy stats
+   216→  kasadaSWProxy: any;
+   217→  // Kasada Behavior stats
+   218→  kasadaBehavior: any;
+   219→  // Kasada Fingerprint stats
+   220→  kasadaFingerprint: any;
+   221→  // Residential providers stats
+   222→  residentialProviders: any;
+   223→  // Domain intelligence summary
+   224→  domainIntelligence: {
+   225→    trackedDomains: number;
+   226→    stealthDomains: number;
+   227→    captchaDomains: number;
+   228→    avgSuccessRate: number;
+   229→  };
+   230→  // Module health summary
+   231→  moduleHealth: {
+   232→    totalModules: number;
+   233→    healthyModules: number;
+   234→    degradedModules: number;
+   235→    offlineModules: number;
+   236→    modules: Array<{ name: string; status: 'healthy' | 'degraded' | 'offline' }>;
+   237→  };
+   238→  // Cost optimization summary
+   239→  costOptimization: {
+   240→    totalCostSaved: number;
+   241→    optimizedDomains: number;
+   242→    avgCostEfficiency: number;
+   243→  };
+   244→  // Timestamp
+   245→  collectedAt: number;
+   246→}
+   247→
+   248→// --- CAPTCHA Detection Result ------------------------------------------------
+   249→
+   250→interface CaptchaDetectionResult {
+   251→  detected: boolean;
+   252→  type: string | null;
+   253→  confidence: number;
+   254→}
+   255→
+   256→// --- Anti-Bot Detection Result -----------------------------------------------
+   257→
+   258→interface AntibotDetectionResult {
+   259→  detected: boolean;
+   260→  system: string | null;
+   261→  confidence: number;
+   262→}
+   263→
+   264→// ===============================================================================
+   265→// PROXY MANAGER -- The Ultimate Proxy Orchestration Engine
+   266→// ===============================================================================
+   267→
+   268→export class ProxyManager {
+   269→
+   270→  // --- Core State ----------------------------------------------------------
+   271→
+   272→  private roundRobinIndex = new Map<string, number>();
+   273→  private stickySessions = new Map<string, { proxyId: string; expires: number }>();
+   274→  private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
+   275→  private domainProxyMap = new Map<string, string>();
+   276→
+   277→  // --- Domain Intelligence -------------------------------------------------
+   278→
+   279→  private domainIntelligence = new Map<string, DomainIntelligenceEntry>();
+   280→
+   281→  // --- Adaptive Strategy ---------------------------------------------------
+   282→
+   283→  private adaptiveStrategies = new Map<string, AdaptiveStrategyState>();
+   284→  private adaptiveStrategyTimer: ReturnType<typeof setInterval> | null = null;
+   285→
+   286→  // --- Cost Optimization ---------------------------------------------------
+   287→
+   288→  private costOptimizationStates = new Map<string, CostOptimizationState>();
+   289→  private costOptimizationTimer: ReturnType<typeof setInterval> | null = null;
+   290→
+   291→  // --- Module Health Tracking ----------------------------------------------
+   292→
+   293→  private moduleHealth = new Map<string, ModuleHealthState>();
+   294→  private moduleHealthTimer: ReturnType<typeof setInterval> | null = null;
+   295→
+   296→  // --- Stats Aggregation ---------------------------------------------------
+   297→
+   298→  private statsAggregationTimer: ReturnType<typeof setInterval> | null = null;
+   299→  private lastAggregatedStats: UnifiedPoolStats | null = null;
+   300→
+   301→  // --- Lazy Module References ----------------------------------------------
+   302→
+   303→  private _fusionCore: any = null;
+   304→  private _chainReaction: any = null;
+   305→  private _breederReactor: any = null;
+   306→  private _quantumTunnel: any = null;
+   307→  private _plasmaState: any = null;
+   308→  private _containmentShield: any = null;
+   309→  private _validationPipeline: any = null;
+   310→  private _rotatingSessionFactory: any = null;
+   311→  private _freeProxyDiscovery: any = null;
+   312→  private _torPool: any = null;
+   313→  private _bulkSessionManager: any = null;
+   314→  private _subnetExpander: any = null;
+   315→  private _captchaSolver: any = null;
+   316→  private _webUnlocker: any = null;
+   317→  private _cdpInjection: any = null;
+   318→  private _deepPatcher: any = null;
+   319→  private _mobileProxy: any = null;
+   320→  private _geoExpander: any = null;
+   321→  private _dnsShield: any = null;
+   322→  private _stealthBrowser: any = null;
+   323→  private _requestPacer: any = null;
+   324→  private _structuredExtractor: any = null;
+   325→  private _antiBotMonitor: any = null;
+   326→  private _fingerprintCalibrator: any = null;
+   327→  private _kasadaChallenger: any = null;
+   328→  private _kasadaSWProxy: any = null;
+   329→  private _kasadaBehavior: any = null;
+   330→  private _kasadaFingerprint: any = null;
+   331→
+   332→  // --- Lifecycle State -----------------------------------------------------
+   333→
+   334→  private started = false;
+   335→  private shutdownRequested = false;
+   336→
+   337→  // ===========================================================================
+   338→  // LAZY MODULE LOADERS
+   339→  // ===========================================================================
+   340→
+   341→  private async getFusionCore(): Promise<any> {
+   342→    if (!this._fusionCore) {
+   343→      try {
+   344→        const mod = await import('./fusion-core');
+   345→        this._fusionCore = mod.fusionCore;
+   346→      } catch (err: any) {
+   347→        logger.debug({ error: err.message }, 'Fusion core module not available');
+   348→        return null;
+   349→      }
+   350→    }
+   351→    return this._fusionCore;
+   352→  }
+   353→
+   354→  private async getChainReaction(): Promise<any> {
+   355→    if (!this._chainReaction) {
+   356→      try {
+   357→        const mod = await import('./chain-reaction');
+   358→        this._chainReaction = mod.chainReaction;
+   359→      } catch (err: any) {
+   360→        logger.debug({ error: err.message }, 'Chain reaction module not available');
+   361→        return null;
+   362→      }
+   363→    }
+   364→    return this._chainReaction;
+   365→  }
+   366→
+   367→  private async getBreederReactor(): Promise<any> {
+   368→    if (!this._breederReactor) {
+   369→      try {
+   370→        const mod = await import('./breeder-reactor');
+   371→        this._breederReactor = mod.breederReactor;
+   372→      } catch (err: any) {
+   373→        logger.debug({ error: err.message }, 'Breeder reactor module not available');
+   374→        return null;
+   375→      }
+   376→    }
+   377→    return this._breederReactor;
+   378→  }
+   379→
+   380→  private async getQuantumTunnel(): Promise<any> {
+   381→    if (!this._quantumTunnel) {
+   382→      try {
+   383→        const mod = await import('./quantum-tunnel');
+   384→        this._quantumTunnel = mod.quantumTunnel;
+   385→      } catch (err: any) {
+   386→        logger.debug({ error: err.message }, 'Quantum tunnel module not available');
+   387→        return null;
+   388→      }
+   389→    }
+   390→    return this._quantumTunnel;
+   391→  }
+   392→
+   393→  private async getPlasmaState(): Promise<any> {
+   394→    if (!this._plasmaState) {
+   395→      try {
+   396→        const mod = await import('./plasma-state');
+   397→        this._plasmaState = mod.plasmaState;
+   398→      } catch (err: any) {
+   399→        logger.debug({ error: err.message }, 'Plasma state module not available');
+   400→        return null;
+   401→      }
+   402→    }
+   403→    return this._plasmaState;
+   404→  }
+   405→
+   406→  private async getContainmentShield(): Promise<any> {
+   407→    if (!this._containmentShield) {
+   408→      try {
+   409→        const mod = await import('./containment');
+   410→        this._containmentShield = mod.containmentShield;
+   411→      } catch (err: any) {
+   412→        logger.debug({ error: err.message }, 'Containment shield module not available');
+   413→        return null;
+   414→      }
+   415→    }
+   416→    return this._containmentShield;
+   417→  }
+   418→
+   419→  private async getValidationPipeline(): Promise<any> {
+   420→    if (!this._validationPipeline) {
+   421→      try {
+   422→        const mod = await import('./validation-pipeline');
+   423→        this._validationPipeline = mod.validationPipeline;
+   424→      } catch (err: any) {
+   425→        logger.debug({ error: err.message }, 'Validation pipeline module not available');
+   426→        return null;
+   427→      }
+   428→    }
+   429→    return this._validationPipeline;
+   430→  }
+   431→
+   432→  private async getRotatingSessionFactory(): Promise<any> {
+   433→    if (!this._rotatingSessionFactory) {
+   434→      try {
+   435→        const mod = await import('./rotating-session-factory');
+   436→        this._rotatingSessionFactory = mod.rotatingSessionFactory;
+   437→      } catch (err: any) {
+   438→        logger.debug({ error: err.message }, 'Rotating session factory module not available');
+   439→        return null;
+   440→      }
+   441→    }
+   442→    return this._rotatingSessionFactory;
+   443→  }
+   444→
+   445→  private async getFreeProxyDiscovery(): Promise<any> {
+   446→    if (!this._freeProxyDiscovery) {
+   447→      try {
+   448→        const mod = await import('./free-proxy-discovery');
+   449→        this._freeProxyDiscovery = mod.freeProxyDiscovery;
+   450→      } catch (err: any) {
+   451→        logger.debug({ error: err.message }, 'Free proxy discovery module not available');
+   452→        return null;
+   453→      }
+   454→    }
+   455→    return this._freeProxyDiscovery;
+   456→  }
+   457→
+   458→  private async getTorPool(): Promise<any> {
+   459→    if (!this._torPool) {
+   460→      try {
+   461→        const mod = await import('./tor-pool');
+   462→        this._torPool = mod.torPool;
+   463→      } catch (err: any) {
+   464→        logger.debug({ error: err.message }, 'Tor pool module not available');
+   465→        return null;
+   466→      }
+   467→    }
+   468→    return this._torPool;
+   469→  }
+   470→
+   471→  private async getBulkSessionManager(): Promise<any> {
+   472→    if (!this._bulkSessionManager) {
+   473→      try {
+   474→        const mod = await import('./bulk-sessions');
+   475→        this._bulkSessionManager = mod.bulkSessionManager;
+   476→      } catch (err: any) {
+   477→        logger.debug({ error: err.message }, 'Bulk session manager module not available');
+   478→        return null;
+   479→      }
+   480→    }
+   481→    return this._bulkSessionManager;
+   482→  }
+   483→
+   484→  private async getSubnetExpander(): Promise<any> {
+   485→    if (!this._subnetExpander) {
+   486→      try {
+   487→        const mod = await import('./subnet-expander');
+   488→        this._subnetExpander = mod.subnetExpander;
+   489→      } catch (err: any) {
+   490→        logger.debug({ error: err.message }, 'Subnet expander module not available');
+   491→        return null;
+   492→      }
+   493→    }
+   494→    return this._subnetExpander;
+   495→  }
+   496→
+   497→  private async getCaptchaSolver(): Promise<any> {
+   498→    if (!this._captchaSolver) {
+   499→      try {
+   500→        const mod = await import('./captcha-solver');
+   501→        this._captchaSolver = mod.captchaSolver;
+   502→      } catch (err: any) {
+   503→        logger.debug({ error: err.message }, 'CAPTCHA solver module not available');
+   504→        return null;
+   505→      }
+   506→    }
+   507→    return this._captchaSolver;
+   508→  }
+   509→
+   510→  private async getWebUnlocker(): Promise<any> {
+   511→    if (!this._webUnlocker) {
+   512→      try {
+   513→        const mod = await import('./web-unlocker');
+   514→        this._webUnlocker = mod.webUnlocker;
+   515→      } catch (err: any) {
+   516→        logger.debug({ error: err.message }, 'Web Unlocker module not available');
+   517→        return null;
+   518→      }
+   519→    }
+   520→    return this._webUnlocker;
+   521→  }
+   522→
+   523→  private async getCdpInjection(): Promise<any> {
+   524→    if (!this._cdpInjection) {
+   525→      try {
+   526→        const mod = await import('../anti-bot/cdp-injection');
+   527→        this._cdpInjection = mod.cdpInjectionEngine;
+   528→      } catch (err: any) {
+   529→        logger.debug({ error: err.message }, 'CDP Injection module not available');
+   530→        return null;
+   531→      }
+   532→    }
+   533→    return this._cdpInjection;
+   534→  }
+   535→
+   536→  private async getDeepPatcher(): Promise<any> {
+   537→    if (!this._deepPatcher) {
+   538→      try {
+   539→        const mod = await import('../anti-bot/deep-patcher');
+   540→        this._deepPatcher = mod.deepBrowserPatcher;
+   541→      } catch (err: any) {
+   542→        logger.debug({ error: err.message }, 'Deep Patcher module not available');
+   543→        return null;
+   544→      }
+   545→    }
+   546→    return this._deepPatcher;
+   547→  }
+   548→
+   549→  private async getMobileProxy(): Promise<any> {
+   550→    if (!this._mobileProxy) {
+   551→      try {
+   552→        const mod = await import('./mobile-proxy');
+   553→        this._mobileProxy = mod.mobileProxyEngine;
+   554→      } catch (err: any) {
+   555→        logger.debug({ error: err.message }, 'Mobile Proxy module not available');
+   556→        return null;
+   557→      }
+   558→    }
+   559→    return this._mobileProxy;
+   560→  }
+   561→
+   562→  private async getGeoExpander(): Promise<any> {
+   563→    if (!this._geoExpander) {
+   564→      try {
+   565→        const mod = await import('./geo-expander');
+   566→        this._geoExpander = mod.geoExpander;
+   567→      } catch (err: any) {
+   568→        logger.debug({ error: err.message }, 'Geo Expander module not available');
+   569→        return null;
+   570→      }
+   571→    }
+   572→    return this._geoExpander;
+   573→  }
+   574→
+   575→  private async getDnsShield(): Promise<any> {
+   576→    if (!this._dnsShield) {
+   577→      try {
+   578→        const mod = await import('./dns-shield');
+   579→        this._dnsShield = mod.dnsShield;
+   580→      } catch (err: any) {
+   581→        logger.debug({ error: err.message }, 'DNS Shield module not available');
+   582→        return null;
+   583→      }
+   584→    }
+   585→    return this._dnsShield;
+   586→  }
+   587→
+   588→  private async getStealthBrowser(): Promise<any> {
+   589→    if (!this._stealthBrowser) {
+   590→      try {
+   591→        const mod = await import('../anti-bot/stealth-browser');
+   592→        this._stealthBrowser = mod.stealthBrowserEngine;
+   593→      } catch (err: any) {
+   594→        logger.debug({ error: err.message }, 'Stealth Browser module not available');
+   595→        return null;
+   596→      }
+   597→    }
+   598→    return this._stealthBrowser;
+   599→  }
+   600→
+   601→  private async getRequestPacer(): Promise<any> {
+   602→    if (!this._requestPacer) {
+   603→      try {
+   604→        const mod = await import('../anti-bot/request-pacer');
+   605→        this._requestPacer = mod.requestPacer;
+   606→      } catch (err: any) {
+   607→        logger.debug({ error: err.message }, 'Request Pacer module not available');
+   608→        return null;
+   609→      }
+   610→    }
+   611→    return this._requestPacer;
+   612→  }
+   613→
+   614→  private async getStructuredExtractor(): Promise<any> {
+   615→    if (!this._structuredExtractor) {
+   616→      try {
+   617→        const mod = await import('../extractor/structured-extractor');
+   618→        this._structuredExtractor = mod.structuredExtractor;
+   619→      } catch (err: any) {
+   620→        logger.debug({ error: err.message }, 'Structured Extractor module not available');
+   621→        return null;
+   622→      }
+   623→    }
+   624→    return this._structuredExtractor;
+   625→  }
+   626→
+   627→  private async getAntiBotMonitor(): Promise<any> {
+   628→    if (!this._antiBotMonitor) {
+   629→      try {
+   630→        const mod = await import('../intelligence/anti-bot-monitor');
+   631→        this._antiBotMonitor = mod.antiBotMonitor;
+   632→      } catch (err: any) {
+   633→        logger.debug({ error: err.message }, 'Anti-Bot Monitor module not available');
+   634→        return null;
+   635→      }
+   636→    }
+   637→    return this._antiBotMonitor;
+   638→  }
+   639→
+   640→  private async getFingerprintCalibrator(): Promise<any> {
+   641→    if (!this._fingerprintCalibrator) {
+   642→      try {
+   643→        const mod = await import('../intelligence/fingerprint-calibrator');
+   644→        this._fingerprintCalibrator = mod.fingerprintCalibrator;
+   645→      } catch (err: any) {
+   646→        logger.debug({ error: err.message }, 'Fingerprint Calibrator module not available');
+   647→        return null;
+   648→      }
+   649→    }
+   650→    return this._fingerprintCalibrator;
+   651→  }
+   652→
+   653→  private async getKasadaChallenger(): Promise<any> {
+   654→    if (!this._kasadaChallenger) {
+   655→      try {
+   656→        const mod = await import('../anti-bot/kasada-challenger');
+   657→        this._kasadaChallenger = mod.kasadaChallenger;
+   658→      } catch (err: any) {
+   659→        logger.debug({ error: err.message }, 'Kasada Challenger module not available');
+   660→        return null;
+   661→      }
+   662→    }
+   663→    return this._kasadaChallenger;
+   664→  }
+   665→
+   666→  private async getKasadaSWProxy(): Promise<any> {
+   667→    if (!this._kasadaSWProxy) {
+   668→      try {
+   669→        const mod = await import('../anti-bot/kasada-sw-proxy');
+   670→        this._kasadaSWProxy = mod.kasadaSWProxy;
+   671→      } catch (err: any) {
+   672→        logger.debug({ error: err.message }, 'Kasada SW Proxy module not available');
+   673→        return null;
+   674→      }
+   675→    }
+   676→    return this._kasadaSWProxy;
+   677→  }
+   678→
+   679→  private async getKasadaBehavior(): Promise<any> {
+   680→    if (!this._kasadaBehavior) {
+   681→      try {
+   682→        const mod = await import('../anti-bot/kasada-behavior');
+   683→        this._kasadaBehavior = mod.kasadaBehavior;
+   684→      } catch (err: any) {
+   685→        logger.debug({ error: err.message }, 'Kasada Behavior module not available');
+   686→        return null;
+   687→      }
+   688→    }
+   689→    return this._kasadaBehavior;
+   690→  }
+   691→
+   692→  private async getKasadaFingerprint(): Promise<any> {
+   693→    if (!this._kasadaFingerprint) {
+   694→      try {
+   695→        const mod = await import('../anti-bot/kasada-fingerprint');
+   696→        this._kasadaFingerprint = mod.kasadaFingerprint;
+   697→      } catch (err: any) {
+   698→        logger.debug({ error: err.message }, 'Kasada Fingerprint module not available');
+   699→        return null;
+   700→      }
+   701→    }
+   702→    return this._kasadaFingerprint;
+   703→  }
+   704→
+   705→  // ===========================================================================
+   706→  // PUBLIC API -- CORE PROXY SELECTION
+   707→  // ===========================================================================
+   708→
+   709→  /**
+   710→   * Get the best proxy for a given domain and tier.
+   711→   * Supports: ASN targeting, city-level targeting, sticky sessions,
+   712→   * weighted random, domain-optimized selection, adaptive strategy,
+   713→   * cost optimization, and reputation-weighted selection.
+   714→   *
+   715→   * This is the BACKWARD-COMPATIBLE entry point.
+   716→   */
+   717→  async getProxy(
+   718→    domain: string,
+   719→    tier: ProxyTier = 'residential',
+   720→    country?: string,
+   721→    strategy: RotationStrategy = 'least-failures',
+   722→    options?: {
+   723→      city?: string;
+   724→      asn?: string;
+   725→      sessionId?: string;
+   726→      requireStealth?: boolean;
+   727→      maxCostPerGb?: number;
+   728→      preferredProvider?: ProxyProvider;
+   729→    },
+   730→  ): Promise<ProxySelection | null> {
+   731→    try {
+   732→      // -- Step 1: Check sticky session by ID ------------------------------
+   733→      if (options?.sessionId) {
+   734→        const stickyResult = await this.checkStickySession(
+   735→          options.sessionId, tier, domain,
+   736→        );
+   737→        if (stickyResult) return stickyResult;
+   738→      }
+   739→
+   740→      // -- Step 2: Check domain-optimized proxy ----------------------------
+   741→      if (!options?.sessionId) {
+   742→        const domainResult = await this.checkDomainOptimizedProxy(domain, tier);
+   743→        if (domainResult) return domainResult;
+   744→      }
+   745→
+   746→      // -- Step 3: Check domain intelligence for adaptive selection --------
+   747→      const intel = this.getDomainIntelligence(domain);
+   748→      const effectiveStrategy = this.resolveStrategy(domain, strategy, intel);
+   749→
+   750→      // -- Step 4: Determine if stealth or CAPTCHA routing is needed -------
+   751→      const needsStealth = options?.requireStealth || intel?.requiresStealth || this.isStealthDomain(domain);
+   752→      const needsCaptcha = intel?.requiresCaptcha || false;
+   753→
+   754→      // -- Step 5: Get available proxies with advanced filtering -----------
+   755→      const effectiveTier = intel?.preferredTier || tier;
+   756→      const effectiveCountry = intel?.preferredCountry || country;
+   757→
+   758→      const proxies = await this.getAvailableProxies(
+   759→        effectiveTier, effectiveCountry, options?.city, options?.asn,
+   760→      );
+   761→
+   762→      // -- Step 6: If stealth required, prefer residential/mobile ----------
+   763→      if (needsStealth && proxies.length > 0) {
+   764→        const stealthProxies = proxies.filter(
+   765→          (p: any) => p.tier === 'residential' || p.tier === 'mobile' || p.tier === 'isp',
+   766→        );
+   767→        if (stealthProxies.length > 0) {
+   768→          const selected = this.selectProxy(stealthProxies, domain, effectiveStrategy);
+   769→          if (selected) {
+   770→            await this.finalizeProxySelection(selected, domain, options);
+   771→            return this.toSelection(selected);
+   772→          }
+   773→        }
+   774→      }
+   775→
+   776→      // -- Step 7: If no internal proxies, try external sources ------------
+   777→      if (proxies.length === 0) {
+   778→        logger.warn(
+   779→          { tier: effectiveTier, country: effectiveCountry, domain, city: options?.city, asn: options?.asn },
+   780→          'No available proxies for criteria -- trying external sources',
+   781→        );
+   782→
+   783→        // Try multiple external sources in parallel
+   784→        const externalResult = await this.tryExternalSourcesWithFailover(
+   785→          effectiveTier, effectiveCountry, options?.city, options?.asn, domain,
+   786→        );
+   787→        if (externalResult) return externalResult;
+   788→      }
+   789→
+   790→      // -- Step 8: Select proxy based on resolved strategy -----------------
+   791→      const selected = this.selectProxy(proxies, domain, effectiveStrategy);
+   792→      if (!selected) return null;
+   793→
+   794→      // -- Step 9: Finalize selection --------------------------------------
+   795→      await this.finalizeProxySelection(selected, domain, options);
+   796→
+   797→      return this.toSelection(selected);
+   798→    } catch (err: any) {
+   799→      logger.error(
+   800→        { domain, tier, country, strategy, error: err.message },
+   801→        'Proxy selection failed -- degrading gracefully',
+   802→      );
+   803→
+   804→      // Emergency fallback: try to get any proxy at all
+   805→      return this.emergencyFallback(domain, tier, country);
+   806→    }
+   807→  }
+   808→
+   809→  /**
+   810→   * Get a proxy using the Smart IP Pool Manager (recommended for v3.1+).
+   811→   * Uses the unified mega-pool with reputation tracking, IP cooling,
+   812→   * auto-scaling, and multi-provider aggregation.
+   813→   * Falls back to legacy getProxy() if the smart pool fails.
+   814→   */
+   815→  async getSmartProxy(
+   816→    domain: string,
+   817→    tier: ProxyTier = 'residential',
+   818→    country?: string,
+   819→    options?: {
+   820→      city?: string;
+   821→      asn?: string;
+   822→      sessionId?: string;
+   823→      requireReputation?: boolean;
+   824→      maxCostPerGb?: number;
+   825→      preferProvider?: boolean;
+   826→      preferredProvider?: ProxyProvider;
+   827→    },
+   828→  ): Promise<(ProxySelection & { source?: string; reputationScore?: number; costPerGb?: number }) | null> {
+   829→    try {
+   830→      // -- Try Smart IP Pool first ---------------------------------------
+   831→      const poolResult = await smartIPPool.getProxy({
+   832→        domain,
+   833→        tier,
+   834→        country,
+   835→        city: options?.city,
+   836→        asn: options?.asn,
+   837→        sessionId: options?.sessionId,
+   838→        requireReputation: options?.requireReputation,
+   839→        maxCostPerGb: options?.maxCostPerGb,
+   840→      });
+   841→
+   842→      if (poolResult) {
+   843→        this.updateDomainIntelligenceFromResult(domain, poolResult);
+   844→        return {
+   845→          proxyUrl: poolResult.proxyUrl,
+   846→          proxyId: poolResult.proxyId,
+   847→          country: poolResult.country,
+   848→          tier: poolResult.tier,
+   849→          city: poolResult.city,
+   850→          asn: poolResult.asn,
+   851→          source: poolResult.source,
+   852→          reputationScore: poolResult.reputationScore,
+   853→          costPerGb: poolResult.costPerGb,
+   854→        };
+   855→      }
+   856→
+   857→      // -- Try aggregator for cost-optimized multi-provider selection -----
+   858→      const aggResult = await proxyAggregator.getProxy({
+   859→        domain,
+   860→        tier,
+   861→        country,
+   862→        city: options?.city,
+   863→        asn: options?.asn,
+   864→        sessionId: options?.sessionId,
+   865→        maxCostPerGb: options?.maxCostPerGb,
+   866→        preferredProvider: options?.preferredProvider,
+   867→        preferProvider: options?.preferProvider,
+   868→      });
+   869→
+   870→      if (aggResult) {
+   871→        this.updateDomainIntelligenceFromAggregator(domain, aggResult);
+   872→        return {
+   873→          proxyUrl: aggResult.proxyUrl,
+   874→          proxyId: aggResult.proxyId,
+   875→          country: aggResult.country,
+   876→          tier: aggResult.tier,
+   877→          city: aggResult.city,
+   878→          asn: aggResult.asn,
+   879→          source: aggResult.provider,
+   880→        };
+   881→      }
+   882→    } catch (err: any) {
+   883→      logger.warn({ domain, tier, error: err.message }, 'Smart IP pool selection failed -- falling back to legacy');
+   884→    }
+   885→
+   886→    // -- Final fallback: legacy getProxy() --------------------------------
+   887→    const legacyResult = await this.getProxy(domain, tier, country, 'least-failures', {
+   888→      city: options?.city,
+   889→      asn: options?.asn,
+   890→      sessionId: options?.sessionId,
+   891→    });
+   892→
+   893→    if (legacyResult) {
+   894→      return { ...legacyResult, source: 'legacy' };
+   895→    }
+   896→
+   897→    return null;
+   898→  }
+   899→
+   900→  /**
+   901→   * Get a proxy from the Nuclear Fusion mega pool.
+   902→   * Highest-level proxy selection that uses ALL sources including
+   903→   * chain reactions, breeding, quantum tunneling, and plasma state.
+   904→   * Automatically falls back through: mega-pool → smart-proxy → legacy.
+   905→   */
+   906→  async getFusionProxy(
+   907→    domain: string,
+   908→    tier: ProxyTier = 'residential',
+   909→    country?: string,
+   910→    options?: {
+   911→      city?: string;
+   912→      asn?: string;
+   913→      sessionId?: string;
+   914→      stealthLevel?: 'light' | 'medium' | 'maximum';
+   915→      captchaAware?: boolean;
+   916→    },
+   917→  ): Promise<(ProxySelection & { source?: string; fusionPowered?: boolean }) | null> {
+   918→    try {
+   919→      // -- Check domain intelligence for fusion-specific routing ----------
+   920→      const intel = this.getDomainIntelligence(domain);
+   921→      const needsCaptcha = options?.captchaAware !== false &&
+   922→        (intel?.requiresCaptcha || this.detectCaptchaNeed(domain).detected);
+   923→      const needsStealth = intel?.requiresStealth ||
+   924→        this.isStealthDomain(domain) ||
+   925→        options?.stealthLevel === 'maximum';
+   926→
+   927→      // -- Try mega pool (fusion-powered) --------------------------------
+   928→      const result = await megaPool.getProxy({
+   929→        domain,
+   930→        tier,
+   931→        country,
+   932→        city: options?.city,
+   933→        asn: options?.asn,
+   934→        sessionId: options?.sessionId,
+   935→      });
+   936→
+   937→      if (result) {
+   938→        this.updateDomainIntelligenceFromMegaPool(domain, result);
+   939→
+   940→        // -- If CAPTCHA detected, pre-warm CAPTCHA solver ---------------
+   941→        if (needsCaptcha) {
+   942→          this.prewarmCaptchaSolver(domain).catch(() => {});
+   943→        }
+   944→
+   945→        return {
+   946→          proxyUrl: result.proxyUrl,
+   947→          proxyId: result.proxyId,
+   948→          country: result.country,
+   949→          tier: result.tier,
+   950→          city: result.city,
+   951→          asn: result.asn,
+   952→          source: result.source,
+   953→          fusionPowered: true,
+   954→        };
+   955→      }
+   956→    } catch (err: any) {
+   957→      logger.warn({ domain, tier, error: err.message }, 'Fusion proxy selection failed -- falling back to smart proxy');
+   958→    }
+   959→
+   960→    // -- Fallback to smart proxy ------------------------------------------
+   961→    const smartResult = await this.getSmartProxy(domain, tier, country, {
+   962→      city: options?.city,
+   963→      asn: options?.asn,
+   964→      sessionId: options?.sessionId,
+   965→    });
+   966→
+   967→    if (smartResult) {
+   968→      return { ...smartResult, fusionPowered: false };
+   969→    }
+   970→
+   971→    return null;
+   972→  }
+   973→
+   974→  /**
+   975→   * The ULTIMATE proxy selection method.
+   976→   * Combines all sources with intelligent routing:
+   977→   *   1. Domain intelligence check (knows what works for this domain)
+   978→   *   2. CAPTCHA-aware routing (auto-detect and route through captcha-solver)
+   979→   *   3. Anti-bot detection (auto-route through web-unlocker)
+   980→   *   4. Cost optimization (minimize cost while maximizing success)
+   981→   *   5. Adaptive strategy (adjusts based on real-time performance)
+   982→   *   6. Multi-source failover (never give up until all sources exhausted)
+   983→   */
+   984→  async getUltimateProxy(
+   985→    domain: string,
+   986→    options?: {
+   987→      tier?: ProxyTier;
+   988→      country?: string;
+   989→      city?: string;
+   990→      asn?: string;
+   991→      sessionId?: string;
+   992→      stealthLevel?: 'light' | 'medium' | 'maximum';
+   993→      maxCostPerGb?: number;
+   994→      requireReputation?: boolean;
+   995→      preferredProvider?: ProxyProvider;
+   996→      captchaAware?: boolean;
+   997→      antibotAware?: boolean;
+   998→      maxRetries?: number;
+   999→      onRetry?: (attempt: number, reason: string) => void;
+  1000→    },
+  1001→  ): Promise<ProxySelection & {
+  1002→    source?: string;
+  1003→    fusionPowered?: boolean;
+  1004→    reputationScore?: number;
+  1005→    costPerGb?: number;
+  1006→    captchaDetected?: boolean;
+  1007→    antibotDetected?: boolean;
+  1008→    routingPath?: string[];
+  1009→  } | null> {
+  1010→    const startTime = Date.now();
+  1011→    const routingPath: string[] = [];
+  1012→    const maxRetries = options?.maxRetries ?? 3;
+  1013→
+  1014→    try {
+  1015→      // -- Phase 1: Domain Intelligence Analysis --------------------------
+  1016→      const intel = this.getDomainIntelligence(domain);
+  1017→      const effectiveTier = intel?.preferredTier || options?.tier || 'residential';
+  1018→      const effectiveCountry = intel?.preferredCountry || options?.country;
+  1019→      routingPath.push('domain-intelligence');
+  1020→
+  1021→      // -- Phase 2: CAPTCHA Detection -------------------------------------
+  1022→      const captchaDetection = (options?.captchaAware !== false)
+  1023→        ? this.detectCaptchaNeed(domain)
+  1024→        : { detected: false, type: null, confidence: 0 } as CaptchaDetectionResult;
+  1025→
+  1026→      if (captchaDetection.detected) {
+  1027→        routingPath.push('captcha-detected');
+  1028→        this.prewarmCaptchaSolver(domain).catch(() => {});
+  1029→      }
+  1030→
+  1031→      // -- Phase 3: Anti-Bot Detection ------------------------------------
+  1032→      const antibotDetection = (options?.antibotAware !== false)
+  1033→        ? this.detectAntibotNeed(domain)
+  1034→        : { detected: false, system: null, confidence: 0 } as AntibotDetectionResult;
+  1035→
+  1036→      if (antibotDetection.detected) {
+  1037→        routingPath.push('antibot-detected');
+  1038→      }
+  1039→
+  1040→      // -- Phase 4: Strategy Resolution -----------------------------------
+  1041→      const strategy = this.resolveUltimateStrategy(domain, intel, captchaDetection, antibotDetection);
+  1042→      routingPath.push(`strategy:${strategy}`);
+  1043→
+  1044→      // -- Phase 5: Try sources in priority order with failover -----------
+  1045→      const sources: Array<{
+  1046→        name: string;
+  1047→        getProxy: () => Promise<ProxySelection | null>;
+  1048→      }> = [];
+  1049→
+  1050→      // Source 1: Fusion mega pool (if domain needs fusion power)
+  1051→      if (antibotDetection.detected || intel?.requiresStealth || this.isStealthDomain(domain)) {
+  1052→        sources.push({
+  1053→          name: 'fusion-mega-pool',
+  1054→          getProxy: () => this.getFusionProxy(domain, effectiveTier, effectiveCountry, {
+  1055→            city: options?.city,
+  1056→            asn: options?.asn,
+  1057→            sessionId: options?.sessionId,
+  1058→            stealthLevel: options?.stealthLevel || 'medium',
+  1059→            captchaAware: captchaDetection.detected,
+  1060→          }).then(r => r ? { proxyUrl: r.proxyUrl, proxyId: r.proxyId, country: r.country, tier: r.tier, city: r.city, asn: r.asn } : null),
+  1061→        });
+  1062→      }
+  1063→
+  1064→      // Source 2: Smart IP pool
+  1065→      sources.push({
+  1066→        name: 'smart-ip-pool',
+  1067→        getProxy: () => this.getSmartProxy(domain, effectiveTier, effectiveCountry, {
+  1068→          city: options?.city,
+  1069→          asn: options?.asn,
+  1070→          sessionId: options?.sessionId,
+  1071→          requireReputation: options?.requireReputation,
+  1072→          maxCostPerGb: options?.maxCostPerGb,
+  1073→          preferredProvider: options?.preferredProvider,
+  1074→        }).then(r => r ? { proxyUrl: r.proxyUrl, proxyId: r.proxyId, country: r.country, tier: r.tier, city: r.city, asn: r.asn } : null),
+  1075→      });
+  1076→
+  1077→      // Source 3: Cost-optimized selection
+  1078→      const costState = this.costOptimizationStates.get(domain);
+  1079→      if (costState?.recommendedSource) {
+  1080→        sources.push({
+  1081→          name: `cost-optimized:${costState.recommendedSource}`,
+  1082→          getProxy: () => this.getProxy(domain, effectiveTier, effectiveCountry, 'cost-optimized', {
+  1083→            city: options?.city,
+  1084→            asn: options?.asn,
+  1085→            sessionId: options?.sessionId,
+  1086→          }),
+  1087→        });
+  1088→      }
+  1089→
+  1090→      // Source 4: Legacy database pool
+  1091→      sources.push({
+  1092→        name: 'legacy-pool',
+  1093→        getProxy: () => this.getProxy(domain, effectiveTier, effectiveCountry, strategy, {
+  1094→          city: options?.city,
+  1095→          asn: options?.asn,
+  1096→          sessionId: options?.sessionId,
+  1097→        }),
+  1098→      });
+  1099→
+  1100→      // Source 5: External residential providers
+  1101→      sources.push({
+  1102→        name: 'external-residential',
+  1103→        getProxy: () => this.getExternalProxy(effectiveTier, effectiveCountry, options?.city, options?.asn),
+  1104→      });
+  1105→
+  1106→      // Source 6: Mobile proxy escalation (for hard-to-bypass domains)
+  1107→      if (antibotDetection.detected || intel?.preferredTier === 'mobile') {
+  1108→        sources.push({
+  1109→          name: 'mobile-proxy-escalation',
+  1110→          getProxy: async () => {
+  1111→            const mobile = await this.getMobileProxy();
+  1112→            if (!mobile) return null;
+  1113→            try {
+  1114→              const result = await mobile.escalateToMobile(domain, { proxyUrl: '', proxyId: '', country: effectiveCountry || '', tier: 'residential' });
+  1115→              if (result) return { proxyUrl: result.proxyUrl, proxyId: result.sessionId, country: result.geo.country || '', tier: 'mobile', city: result.geo.city, asn: result.geo.asn };
+  1116→            } catch { /* fall through */ }
+  1117→            return null;
+  1118→          },
+  1119→        });
+  1120→      }
+  1121→
+  1122→      // -- Try each source with retry logic -------------------------------
+  1123→      for (let attempt = 0; attempt < maxRetries; attempt++) {
+  1124→        for (const source of sources) {
+  1125→          try {
+  1126→            const result = await source.getProxy();
+  1127→            if (result) {
+  1128→              routingPath.push(source.name);
+  1129→
+  1130→              const elapsed = Date.now() - startTime;
+  1131→              logger.info({
+  1132→                domain,
+  1133→                tier: effectiveTier,
+  1134→                country: effectiveCountry,
+  1135→                source: source.name,
+  1136→                attempt,
+  1137→                elapsedMs: elapsed,
+  1138→                routingPath,
+  1139→              }, 'Ultimate proxy selection successful');
+  1140→
+  1141→              return {
+  1142→                ...result,
+  1143→                source: source.name,
+  1144→                fusionPowered: source.name.includes('fusion'),
+  1145→                captchaDetected: captchaDetection.detected,
+  1146→                antibotDetected: antibotDetection.detected,
+  1147→                routingPath,
+  1148→              };
+  1149→            }
+  1150→          } catch (err: any) {
+  1151→            logger.debug({ source: source.name, error: err.message }, 'Source failed, trying next');
+  1152→            options?.onRetry?.(attempt, `Source ${source.name} failed: ${err.message}`);
+  1153→          }
+  1154→        }
+  1155→      }
+  1156→
+  1157→      logger.warn({ domain, tier: effectiveTier, attempts: maxRetries * sources.length }, 'All proxy sources exhausted');
+  1158→    } catch (err: any) {
+  1159→      logger.error({ domain, error: err.message }, 'Ultimate proxy selection crashed');
+  1160→    }
+  1161→
+  1162→    return null;
+  1163→  }
+  1164→
+  1165→  // ===========================================================================
+  1166→  // PUBLIC API -- OUTCOME RECORDING
+  1167→  // ===========================================================================
+  1168→
+  1169→  /**
+  1170→   * Record the outcome of a proxy request for future optimization.
+  1171→   * Auto-rotates to a different proxy on failure.
+  1172→   * Updates domain intelligence, adaptive strategy, and cost optimization.
+  1173→   */
+  1174→  async recordOutcome(outcome: ProxyOutcome): Promise<void> {
+  1175→    try {
+  1176→      const { proxyId, domain, success, statusCode, latencyMs } = outcome;
+  1177→
+  1178→      // -- Update domain intelligence --------------------------------------
+  1179→      this.updateDomainIntelligenceFromOutcome(domain, proxyId, success, latencyMs, statusCode);
+  1180→
+  1181→      // -- Update adaptive strategy performance window ---------------------
+  1182→      this.updateAdaptiveStrategyPerformance(domain, success, latencyMs);
+  1183→
+  1184→      // -- Update cost optimization ----------------------------------------
+  1185→      this.updateCostOptimizationFromOutcome(domain, proxyId, success);
+  1186→
+  1187→      // -- Record outcome in DB --------------------------------------------
+  1188→      await db.proxyOutcome.create({
+  1189→        data: {
+  1190→          id: crypto.randomUUID(),
+  1191→          proxyId,
+  1192→          domain,
+  1193→          success,
+  1194→          statusCode,
+  1195→          latencyMs,
+  1196→        },
+  1197→      });
+  1198→
+  1199→      // -- Update proxy health metrics -------------------------------------
+  1200→      const proxy = await db.proxy.findUnique({ where: { id: proxyId } });
+  1201→      if (!proxy) return;
+  1202→
+  1203→      const newConsecutiveFailures = success ? 0 : proxy.consecutiveFailures + 1;
+  1204→
+  1205→      // EMA success rate (alpha=0.1)
+  1206→      const alpha = 0.1;
+  1207→      const newSuccessRate = success
+  1208→        ? proxy.successRate * (1 - alpha) + 1 * alpha
+  1209→        : proxy.successRate * (1 - alpha);
+  1210→
+  1211→      // Update p95 latency (approximation)
+  1212→      const newP95Latency = latencyMs > proxy.p95Latency
+  1213→        ? Math.round(proxy.p95Latency * 0.9 + latencyMs * 0.1)
+  1214→        : proxy.p95Latency;
+  1215→
+  1216→      // Decide whether to retire the proxy
+  1217→      const shouldRetire = newConsecutiveFailures >= MAX_CONSECUTIVE_FAILURES
+  1218→        || newSuccessRate < RETIRE_THRESHOLD;
+  1219→
+  1220→      await db.proxy.update({
+  1221→        where: { id: proxyId },
+  1222→        data: {
+  1223→          successRate: Math.round(newSuccessRate * 1000) / 1000,
+  1224→          p95Latency: newP95Latency,
+  1225→          failures: success ? proxy.failures : proxy.failures + 1,
+  1226→          consecutiveFailures: newConsecutiveFailures,
+  1227→          retired: shouldRetire,
+  1228→          lastChecked: new Date(),
+  1229→        },
+  1230→      });
+  1231→
+  1232→      if (shouldRetire) {
+  1233→        logger.warn(
+  1234→          { proxyId, domain, successRate: newSuccessRate, consecutiveFailures: newConsecutiveFailures },
+  1235→          'Proxy retired due to poor performance',
+  1236→        );
+  1237→
+  1238→        // Remove from domain optimization map
+  1239→        if (this.domainProxyMap.get(domain) === proxyId) {
+  1240→          this.domainProxyMap.delete(domain);
+  1241→        }
+  1242→
+  1243→        // Report to containment shield
+  1244→        this.reportRetiredProxy(proxyId, domain).catch(() => {});
+  1245→      }
+  1246→
+  1247→      // On failure, clear domain-optimized proxy so next request uses a different one
+  1248→      if (!success && this.domainProxyMap.get(domain) === proxyId) {
+  1249→        this.domainProxyMap.delete(domain);
+  1250→      }
+  1251→
+  1252→      // Invalidate cache
+  1253→      await redis.del(`proxies:${proxy.tier}`);
+  1254→    } catch (error: any) {
+  1255→      logger.error({ error: error.message, proxyId: outcome.proxyId }, 'Failed to record proxy outcome');
+  1256→    }
+  1257→  }
+  1258→
+  1259→  /**
+  1260→   * Release a proxy back to the smart pool after use.
+  1261→   * Records the outcome in both the proxy DB and the reputation tracker.
+  1262→   */
+  1263→  async releaseSmartProxy(
+  1264→    proxyId: string,
+  1265→    domain: string,
+  1266→    success: boolean,
+  1267→    statusCode?: number,
+  1268→    source?: string,
+  1269→  ): Promise<void> {
+  1270→    try {
+  1271→      // Release back to smart pool (handles reputation + cooldown)
+  1272→      await smartIPPool.releaseProxy(proxyId, domain, success, statusCode, source as any);
+  1273→    } catch (err: any) {
+  1274→      logger.debug({ error: err.message }, 'Smart pool release failed');
+  1275→    }
+  1276→
+  1277→    // Also record in the legacy proxy manager for DB tracking
+  1278→    await this.recordOutcome({
+  1279→      proxyId,
+  1280→      domain,
+  1281→      success,
+  1282→      statusCode,
+  1283→      latencyMs: 0,
+  1284→    });
+  1285→  }
+  1286→
+  1287→  /**
+  1288→   * Release a fusion proxy back to the mega pool.
+  1289→   */
+  1290→  async releaseFusionProxy(
+  1291→    proxyId: string,
+  1292→    domain: string,
+  1293→    success: boolean,
+  1294→    statusCode?: number,
+  1295→    latencyMs?: number,
+  1296→    source?: string,
+  1297→  ): Promise<void> {
+  1298→    try {
+  1299→      await megaPool.releaseProxy(proxyId, domain, success, statusCode, source as any);
+  1300→    } catch (err: any) {
+  1301→      logger.debug({ error: err.message }, 'Mega pool release failed');
+  1302→    }
+  1303→
+  1304→    // Also record outcome
+  1305→    await this.recordOutcome({
+  1306→      proxyId,
+  1307→      domain,
+  1308→      success,
+  1309→      statusCode,
+  1310→      latencyMs: latencyMs ?? 0,
+  1311→    });
+  1312→  }
+  1313→
+  1314→  // ===========================================================================
+  1315→  // PUBLIC API -- CAPTCHA SOLVER
+  1316→  // ===========================================================================
+  1317→
+  1318→  /**
+  1319→   * Solve a CAPTCHA using the integrated CAPTCHA solver.
+  1320→   * Supports reCAPTCHA v2/v3, hCaptcha, FunCaptcha, Turnstile, image CAPTCHAs.
+  1321→   * Uses 2Captcha and CapSolver with automatic failover.
+  1322→   */
+  1323→  async solveCaptcha(request: {
+  1324→    type: 'recaptcha_v2' | 'recaptcha_v3' | 'hcaptcha' | 'funcaptcha' | 'turnstile' | 'image' | 'geetest';
+  1325→    siteKey: string;
+  1326→    pageUrl: string;
+  1327→    domain?: string;
+  1328→    proxyUrl?: string;
+  1329→    action?: string;
+  1330→    minScore?: number;
+  1331→    imageData?: string;
+  1332→  }): Promise<{
+  1333→    success: boolean;
+  1334→    token?: string;
+  1335→    provider: string;
+  1336→    solveTimeMs: number;
+  1337→    cost: number;
+  1338→    error?: string;
+  1339→  }> {
+  1340→    try {
+  1341→      const solver = await this.getCaptchaSolver();
+  1342→      if (!solver) {
+  1343→        return { success: false, provider: 'none', solveTimeMs: 0, cost: 0, error: 'CAPTCHA solver module not available' };
+  1344→      }
+  1345→
+  1346→      const result = await solver.solve(request);
+  1347→      return {
+  1348→        success: result.success,
+  1349→        token: result.token,
+  1350→        provider: result.provider,
+  1351→        solveTimeMs: result.solveTimeMs,
+  1352→        cost: result.cost,
+  1353→        error: result.error,
+  1354→      };
+  1355→    } catch (err: any) {
+  1356→      logger.error({ error: err.message, type: request.type }, 'CAPTCHA solving failed');
+  1357→      return { success: false, provider: 'none', solveTimeMs: 0, cost: 0, error: err.message };
+  1358→    }
+  1359→  }
+  1360→
+  1361→  /**
+  1362→   * Batch solve CAPTCHAs using the integrated CAPTCHA solver.
+  1363→   */
+  1364→  async solveCaptchaBatch(
+  1365→    requests: Array<{
+  1366→      type: 'recaptcha_v2' | 'recaptcha_v3' | 'hcaptcha' | 'funcaptcha' | 'turnstile' | 'image' | 'geetest';
+  1367→      siteKey: string;
+  1368→      pageUrl: string;
+  1369→      domain?: string;
+  1370→      proxyUrl?: string;
+  1371→    }>,
+  1372→  ): Promise<Array<{
+  1373→    success: boolean;
+  1374→    token?: string;
+  1375→    provider: string;
+  1376→    solveTimeMs: number;
+  1377→    cost: number;
+  1378→    error?: string;
+  1379→  }>> {
+  1380→    try {
+  1381→      const solver = await this.getCaptchaSolver();
+  1382→      if (!solver) {
+  1383→        return requests.map(() => ({
+  1384→          success: false, provider: 'none', solveTimeMs: 0, cost: 0,
+  1385→          error: 'CAPTCHA solver module not available',
+  1386→        }));
+  1387→      }
+  1388→
+  1389→      const results = await solver.solveBatch(requests, { concurrency: 3 });
+  1390→      return results.map((r: any) => ({
+  1391→        success: r.success,
+  1392→        token: r.token,
+  1393→        provider: r.provider,
+  1394→        solveTimeMs: r.solveTimeMs,
+  1395→        cost: r.cost,
+  1396→        error: r.error,
+  1397→      }));
+  1398→    } catch (err: any) {
+  1399→      logger.error({ error: err.message, count: requests.length }, 'Batch CAPTCHA solving failed');
+  1400→      return requests.map(() => ({
+  1401→        success: false, provider: 'none', solveTimeMs: 0, cost: 0, error: err.message,
+  1402→      }));
+  1403→    }
+  1404→  }
+  1405→
+  1406→  // ===========================================================================
+  1407→  // PUBLIC API -- WEB UNLOCKER
+  1408→  // ===========================================================================
+  1409→
+  1410→  /**
+  1411→   * Unlock a web page using the Web Unlocker service.
+  1412→   * Handles JavaScript rendering, anti-bot bypass, CAPTCHA solving,
+  1413→   * and smart retry with proxy rotation.
+  1414→   */
+  1415→  async unlockPage(request: {
+  1416→    url: string;
+  1417→    domain?: string;
+  1418→    strategy?: 'http' | 'browser' | 'stealth' | 'auto';
+  1419→    stealthLevel?: 'light' | 'medium' | 'maximum';
+  1420→    proxyUrl?: string;
+  1421→    proxyTier?: ProxyTier;
+  1422→    proxyCountry?: string;
+  1423→    headers?: Record<string, string>;
+  1424→    waitForSelector?: string;
+  1425→    timeout?: number;
+  1426→    solveCaptcha?: boolean;
+  1427→    sessionId?: string;
+  1428→    maxRetries?: number;
+  1429→  }): Promise<{
+  1430→    success: boolean;
+  1431→    html?: string;
+  1432→    statusCode?: number;
+  1433→    finalUrl?: string;
+  1434→    captchaDetected: boolean;
+  1435→    captchaSolved: boolean;
+  1436→    strategy: string;
+  1437→    stealthLevel: string;
+  1438→    proxyUsed: boolean;
+  1439→    retries: number;
+  1440→    renderTimeMs: number;
+  1441→    totalTimeMs: number;
+  1442→    error?: string;
+  1443→  }> {
+  1444→    try {
+  1445→      const unlocker = await this.getWebUnlocker();
+  1446→      if (!unlocker) {
+  1447→        return {
+  1448→          success: false, captchaDetected: false, captchaSolved: false,
+  1449→          strategy: 'http', stealthLevel: 'light', proxyUsed: false,
+  1450→          retries: 0, renderTimeMs: 0, totalTimeMs: 0,
+  1451→          error: 'Web Unlocker module not available',
+  1452→        };
+  1453→      }
+  1454→
+  1455→      const result = await unlocker.unlock(request);
+  1456→      return {
+  1457→        success: result.success,
+  1458→        html: result.html,
+  1459→        statusCode: result.statusCode,
+  1460→        finalUrl: result.finalUrl,
+  1461→        captchaDetected: result.captchaDetected,
+  1462→        captchaSolved: result.captchaSolved,
+  1463→        strategy: result.strategy,
+  1464→        stealthLevel: result.stealthLevel,
+  1465→        proxyUsed: result.proxyUsed,
+  1466→        retries: result.retries,
+  1467→        renderTimeMs: result.renderTimeMs,
+  1468→        totalTimeMs: result.totalTimeMs,
+  1469→        error: result.error,
+  1470→      };
+  1471→    } catch (err: any) {
+  1472→      logger.error({ error: err.message, url: request.url }, 'Web Unlocker failed');
+  1473→      return {
+  1474→        success: false, captchaDetected: false, captchaSolved: false,
+  1475→        strategy: 'http', stealthLevel: 'light', proxyUsed: false,
+  1476→        retries: 0, renderTimeMs: 0, totalTimeMs: 0, error: err.message,
+  1477→      };
+  1478→    }
+  1479→  }
+  1480→
+  1481→  // ===========================================================================
+  1482→  // PUBLIC API -- FUSION REACTOR MANAGEMENT
+  1483→  // ===========================================================================
+  1484→
+  1485→  /**
+  1486→   * Ignite the Nuclear Fusion reactor.
+  1487→   * Starts chain reactions, breeding, quantum tunneling, and plasma management.
+  1488→   * The pool becomes self-sustaining when Q-factor > 1.
+  1489→   */
+  1490→  async igniteFusion(config?: {
+  1491→    targetQFactor?: number;
+  1492→    maxReactionRate?: number;
+  1493→    fuelTypes?: string[];
+  1494→    plasmaTemperature?: number;
+  1495→    neutronModeration?: number;
+  1496→    containmentLevel?: number;
+  1497→  }): Promise<{ ignited: boolean; status: string; qFactor?: number }> {
+  1498→    try {
+  1499→      const fusionCore = await this.getFusionCore();
+  1500→      if (!fusionCore) {
+  1501→        return { ignited: false, status: 'unavailable' };
+  1502→      }
+  1503→
+  1504→      await fusionCore.ignite({
+  1505→        targetQFactor: config?.targetQFactor ?? 1.5,
+  1506→        maxReactionRate: config?.maxReactionRate ?? 100,
+  1507→        containmentLevel: config?.containmentLevel ?? 0,
+  1508→        fuelTypes: config?.fuelTypes ?? ['free', 'residential', 'tor', 'datacenter'],
+  1509→        plasmaTemperature: config?.plasmaTemperature ?? 20,
+  1510→        neutronModeration: config?.neutronModeration ?? 0.5,
+  1511→      });
+  1512→
+  1513→      // Start chain reaction
+  1514→      const chainReaction = await this.getChainReaction();
+  1515→      if (chainReaction) {
+  1516→        chainReaction.startReaction();
+  1517→      }
+  1518→
+  1519→      // Start breeder reactor
+  1520→      const breederReactor = await this.getBreederReactor();
+  1521→      if (breederReactor) {
+  1522→        breederReactor.startBreeding();
+  1523→      }
+  1524→
+  1525→      // Start quantum tunneling
+  1526→      const quantumTunnel = await this.getQuantumTunnel();
+  1527→      if (quantumTunnel) {
+  1528→        quantumTunnel.startTunneling();
+  1529→      }
+  1530→
+  1531→      // Start plasma state
+  1532→      const plasmaState = await this.getPlasmaState();
+  1533→      if (plasmaState) {
+  1534→        await plasmaState.startPlasma();
+  1535→      }
+  1536→
+  1537→      // Start containment shield
+  1538→      const containmentShield = await this.getContainmentShield();
+  1539→      if (containmentShield) {
+  1540→        await containmentShield.startContainment();
+  1541→      }
+  1542→
+  1543→      const qFactor = fusionCore.getQFactor?.() ?? 0;
+  1544→      const status = fusionCore.getStatus?.() ?? 'unknown';
+  1545→
+  1546→      logger.info({ qFactor, status }, 'Fusion reactor ignited successfully');
+  1547→
+  1548→      return { ignited: true, status, qFactor };
+  1549→    } catch (err: any) {
+  1550→      logger.error({ error: err.message }, 'Fusion ignition failed');
+  1551→      return { ignited: false, status: 'failed' };
+  1552→    }
+  1553→  }
+  1554→
+  1555→  /**
+  1556→   * Shut down the Nuclear Fusion reactor gracefully.
+  1557→   */
+  1558→  async shutdownFusion(): Promise<void> {
+  1559→    try {
+  1560→      // Stop in reverse order of startup
+  1561→      const modules = [
+  1562→        { name: 'containment', loader: () => this.getContainmentShield(), stop: (m: any) => m.stopContainment?.() },
+  1563→        { name: 'plasma', loader: () => this.getPlasmaState(), stop: (m: any) => m.stopPlasma?.() },
+  1564→        { name: 'quantum', loader: () => this.getQuantumTunnel(), stop: (m: any) => m.stopTunneling?.() },
+  1565→        { name: 'breeder', loader: () => this.getBreederReactor(), stop: (m: any) => m.stopBreeding?.() },
+  1566→        { name: 'chain', loader: () => this.getChainReaction(), stop: (m: any) => m.stopReaction?.() },
+  1567→        { name: 'fusion', loader: () => this.getFusionCore(), stop: (m: any) => m.shutdown?.() },
+  1568→      ];
+  1569→
+  1570→      const stopResults = await Promise.allSettled(
+  1571→        modules.map(async ({ name, loader, stop }) => {
+  1572→          try {
+  1573→            const mod = await loader();
+  1574→            if (mod) await stop(mod);
+  1575→          } catch (err: any) {
+  1576→            logger.debug({ module: name, error: err.message }, `Failed to stop ${name}`);
+  1577→          }
+  1578→        }),
+  1579→      );
+  1580→
+  1581→      const failures = stopResults.filter(r => r.status === 'rejected').length;
+  1582→      if (failures > 0) {
+  1583→        logger.warn({ failures }, 'Some fusion modules failed to stop gracefully');
+  1584→      }
+  1585→
+  1586→      logger.info('Fusion reactor shutdown completed');
+  1587→    } catch (err: any) {
+  1588→      logger.warn({ error: err.message }, 'Fusion shutdown failed');
+  1589→    }
+  1590→  }
+  1591→
+  1592→  /**
+  1593→   * Emergency SCRAM -- immediately shut down the fusion reactor.
+  1594→   */
+  1595→  async scramFusion(): Promise<void> {
+  1596→    try {
+  1597→      const fusionCore = await this.getFusionCore();
+  1598→      if (fusionCore) {
+  1599→        await fusionCore.scram();
+  1600→      }
+  1601→
+  1602→      const containmentShield = await this.getContainmentShield();
+  1603→      if (containmentShield) {
+  1604→        await containmentShield.scram();
+  1605→      }
+  1606→    } catch (err: any) {
+  1607→      logger.error({ error: err.message }, 'Fusion SCRAM failed');
+  1608→    }
+  1609→  }
+  1610→
+  1611→  /**
+  1612→   * Get Nuclear Fusion reactor status.
+  1613→   */
+  1614→  async getFusionStatus(): Promise<any> {
+  1615→    try {
+  1616→      const fusionCore = await this.getFusionCore();
+  1617→      if (!fusionCore) {
+  1618→        return { status: 'offline', error: 'Fusion core not available' };
+  1619→      }
+  1620→      return fusionCore.getStatus();
+  1621→    } catch {
+  1622→      return { status: 'offline', error: 'Fusion core not available' };
+  1623→    }
+  1624→  }
+  1625→
+  1626→  /**
+  1627→   * Get detailed fusion reactor statistics.
+  1628→   */
+  1629→  async getFusionReactorStats(): Promise<any> {
+  1630→    try {
+  1631→      const fusionCore = await this.getFusionCore();
+  1632→      if (!fusionCore) return null;
+  1633→      return fusionCore.getReactorStats?.() ?? null;
+  1634→    } catch {
+  1635→      return null;
+  1636→    }
+  1637→  }
+  1638→
+  1639→  /**
+  1640→   * Get fusion Q-factor.
+  1641→   */
+  1642→  async getFusionQFactor(): Promise<number> {
+  1643→    try {
+  1644→      const fusionCore = await this.getFusionCore();
+  1645→      if (!fusionCore) return 0;
+  1646→      return fusionCore.getQFactor?.() ?? 0;
+  1647→    } catch {
+  1648→      return 0;
+  1649→    }
+  1650→  }
+  1651→
+  1652→  /**
+  1653→   * Inject fuel into the fusion reactor.
+  1654→   */
+  1655→  async injectFusionFuel(fuelType: string, amount: number): Promise<number> {
+  1656→    try {
+  1657→      const fusionCore = await this.getFusionCore();
+  1658→      if (!fusionCore) return 0;
+  1659→      return fusionCore.injectFuel?.(fuelType, amount) ?? 0;
+  1660→    } catch (err: any) {
+  1661→      logger.error({ error: err.message }, 'Fusion fuel injection failed');
+  1662→      return 0;
+  1663→    }
+  1664→  }
+  1665→
+  1666→  /**
+  1667→   * Get fusion core milestones.
+  1668→   */
+  1669→  async getFusionMilestones(): Promise<any[]> {
+  1670→    try {
+  1671→      const fusionCore = await this.getFusionCore();
+  1672→      if (!fusionCore) return [];
+  1673→      return fusionCore.getMilestones?.() ?? [];
+  1674→    } catch {
+  1675→      return [];
+  1676→    }
+  1677→  }
+  1678→
+  1679→  /**
+  1680→   * Get fusion module diagnostics.
+  1681→   */
+  1682→  async getFusionDiagnostics(): Promise<Record<string, unknown>> {
+  1683→    try {
+  1684→      const fusionCore = await this.getFusionCore();
+  1685→      if (!fusionCore) return {};
+  1686→      return fusionCore.getDiagnostics?.() ?? {};
+  1687→    } catch {
+  1688→      return {};
+  1689→    }
+  1690→  }
+  1691→
+  1692→  // ===========================================================================
+  1693→  // PUBLIC API -- DOMAIN INTELLIGENCE
+  1694→  // ===========================================================================
+  1695→
+  1696→  /**
+  1697→   * Get domain intelligence for a specific domain.
+  1698→   */
+  1699→  getDomainIntelligence(domain: string): DomainIntelligenceEntry | undefined {
+  1700→    return this.domainIntelligence.get(domain);
+  1701→  }
+  1702→
+  1703→  /**
+  1704→   * Get all tracked domain intelligence entries.
+  1705→   */
+  1706→  getAllDomainIntelligence(): DomainIntelligenceEntry[] {
+  1707→    return Array.from(this.domainIntelligence.values());
+  1708→  }
+  1709→
+  1710→  /**
+  1711→   * Get domain intelligence summary.
+  1712→   */
+  1713→  getDomainIntelligenceSummary(): {
+  1714→    trackedDomains: number;
+  1715→    stealthDomains: number;
+  1716→    captchaDomains: number;
+  1717→    avgSuccessRate: number;
+  1718→    topDomains: Array<{ domain: string; successRate: number; requestCount: number }>;
+  1719→  } {
+  1720→    const entries = Array.from(this.domainIntelligence.values());
+  1721→    const stealthDomains = entries.filter(e => e.requiresStealth).length;
+  1722→    const captchaDomains = entries.filter(e => e.requiresCaptcha).length;
+  1723→    const avgSuccessRate = entries.length > 0
+  1724→      ? entries.reduce((sum, e) => sum + e.successRate, 0) / entries.length
+  1725→      : 0;
+  1726→    const topDomains = entries
+  1727→      .sort((a, b) => b.requestCount - a.requestCount)
+  1728→      .slice(0, 20)
+  1729→      .map(e => ({ domain: e.domain, successRate: e.successRate, requestCount: e.requestCount }));
+  1730→
+  1731→    return {
+  1732→      trackedDomains: entries.length,
+  1733→      stealthDomains,
+  1734→      captchaDomains,
+  1735→      avgSuccessRate,
+  1736→      topDomains,
+  1737→    };
+  1738→  }
+  1739→
+  1740→  /**
+  1741→   * Manually update domain intelligence for a domain.
+  1742→   */
+  1743→  setDomainIntelligence(domain: string, update: Partial<DomainIntelligenceEntry>): void {
+  1744→    const existing = this.domainIntelligence.get(domain);
+  1745→    if (existing) {
+  1746→      Object.assign(existing, update, { lastUpdated: Date.now() });
+  1747→    } else {
+  1748→      this.domainIntelligence.set(domain, {
+  1749→        domain,
+  1750→        bestProxyIds: [],
+  1751→        worstProxyIds: [],
+  1752→        requiresStealth: false,
+  1753→        requiresCaptcha: false,
+  1754→        preferredTier: 'residential',
+  1755→        preferredCountry: '',
+  1756→        averageLatency: 0,
+  1757→        successRate: 0,
+  1758→        captchaFrequency: 0,
+  1759→        antibotFrequency: 0,
+  1760→        costPerRequest: 0,
+  1761→        lastUpdated: Date.now(),
+  1762→        requestCount: 0,
+  1763→        failoverChain: ['residential', 'mobile', 'isp', 'datacenter'],
+  1764→        ...update,
+  1765→      });
+  1766→    }
+  1767→  }
+  1768→
+  1769→  // ===========================================================================
+  1770→  // PUBLIC API -- CAPTCHA & ANTI-BOT DETECTION
+  1771→  // ===========================================================================
+  1772→
+  1773→  /**
+  1774→   * Detect if a domain likely requires CAPTCHA solving.
+  1775→   */
+  1776→  detectCaptchaNeed(domain: string): CaptchaDetectionResult {
+  1777→    const intel = this.domainIntelligence.get(domain);
+  1778→
+  1779→    // Check domain intelligence first
+  1780→    if (intel?.captchaFrequency && intel.captchaFrequency > 0.3) {
+  1781→      return { detected: true, type: 'unknown', confidence: intel.captchaFrequency };
+  1782→    }
+  1783→
+  1784→    // Known CAPTCHA-heavy domains
+  1785→    const captchaHeavyDomains: Record<string, string> = {
+  1786→      'google.com': 'recaptcha_v3',
+  1787→      'recaptcha.net': 'recaptcha_v2',
+  1788→      'hcaptcha.com': 'hcaptcha',
+  1789→    };
+  1790→
+  1791→    for (const [key, type] of Object.entries(captchaHeavyDomains)) {
+  1792→      if (domain.includes(key)) {
+  1793→        return { detected: true, type, confidence: 0.9 };
+  1794→      }
+  1795→    }
+  1796→
+  1797→    // Check against patterns
+  1798→    const domainLower = domain.toLowerCase();
+  1799→    for (const pattern of CAPTCHA_DETECTION_PATTERNS) {
+  1800→      if (domainLower.includes(pattern)) {
+  1801→        return { detected: true, type: 'unknown', confidence: 0.5 };
+  1802→      }
+  1803→    }
+  1804→
+  1805→    return { detected: false, type: null, confidence: 0 };
+  1806→  }
+  1807→
+  1808→  /**
+  1809→   * Detect if a domain likely uses anti-bot protection.
+  1810→   */
+  1811→  detectAntibotNeed(domain: string): AntibotDetectionResult {
+  1812→    const intel = this.domainIntelligence.get(domain);
+  1813→
+  1814→    // Check domain intelligence
+  1815→    if (intel?.antibotFrequency && intel.antibotFrequency > 0.3) {
+  1816→      return { detected: true, system: 'unknown', confidence: intel.antibotFrequency };
+  1817→    }
+  1818→
+  1819→    // Check stealth domain list
+  1820→    if (this.isStealthDomain(domain)) {
+  1821→      return { detected: true, system: 'unknown', confidence: 0.8 };
+  1822→    }
+  1823→
+  1824→    // Known anti-bot system associations
+  1825→    const antibotDomains: Record<string, string> = {
+  1826→      'amazon.com': 'aws-waf',
+  1827→      'ticketmaster.com': 'perimeterx',
+  1828→      'nike.com': 'akamai',
+  1829→      'adidas.com': 'akamai',
+  1830→      'zillow.com': 'cloudflare',
+  1831→      'yelp.com': 'cloudflare',
+  1832→      'linkedin.com': 'perimeterx',
+  1833→      'airbnb.com': 'cloudflare',
+  1834→    };
+  1835→
+  1836→    for (const [key, system] of Object.entries(antibotDomains)) {
+  1837→      if (domain.includes(key)) {
+  1838→        return { detected: true, system, confidence: 0.7 };
+  1839→      }
+  1840→    }
+  1841→
+  1842→    // Check against patterns
+  1843→    const domainLower = domain.toLowerCase();
+  1844→    for (const pattern of ANTIBOT_DETECTION_PATTERNS) {
+  1845→      if (domainLower.includes(pattern)) {
+  1846→        return { detected: true, system: pattern, confidence: 0.5 };
+  1847→      }
+  1848→    }
+  1849→
+  1850→    return { detected: false, system: null, confidence: 0 };
+  1851→  }
+  1852→
+  1853→  /**
+  1854→   * Check if a domain is known to require stealth.
+  1855→   */
+  1856→  isStealthDomain(domain: string): boolean {
+  1857→    // Check explicit set
+  1858→    for (const stealthDomain of STEALTH_DOMAINS) {
+  1859→      if (domain.includes(stealthDomain) || stealthDomain.includes(domain)) {
+  1860→        return true;
+  1861→      }
+  1862→    }
+  1863→
+  1864→    // Check domain intelligence
+  1865→    const intel = this.domainIntelligence.get(domain);
+  1866→    if (intel?.requiresStealth) return true;
+  1867→
+  1868→    return false;
+  1869→  }
+  1870→
+  1871→  // ===========================================================================
+  1872→  // PUBLIC API -- PRE-WARMING & POOL MANAGEMENT
+  1873→  // ===========================================================================
+  1874→
+  1875→  /**
+  1876→   * Pre-warm IPs for a high-traffic domain.
+  1877→   * Delegates to the Smart IP Pool Manager and Fusion system.
+  1878→   */
+  1879→  async prewarmDomain(
+  1880→    domain: string,
+  1881→    tier: ProxyTier = 'residential',
+  1882→    country?: string,
+  1883→    count?: number,
+  1884→  ): Promise<number> {
+  1885→    const results = await Promise.allSettled([
+  1886→      smartIPPool.prewarmDomain(domain, tier, country),
+  1887→      megaPool.prewarmDomain(domain, tier, country),
+  1888→    ]);
+  1889→
+  1890→    let totalPrewarmed = 0;
+  1891→    for (const result of results) {
+  1892→      if (result.status === 'fulfilled' && typeof result.value === 'number') {
+  1893→        totalPrewarmed += result.value;
+  1894→      }
+  1895→    }
+  1896→
+  1897→    logger.info({ domain, tier, country, prewarmed: totalPrewarmed }, 'Domain pre-warming completed');
+  1898→    return totalPrewarmed;
+  1899→  }
+  1900→
+  1901→  /**
+  1902→   * Get the total effective pool size across ALL sources including fusion.
+  1903→   */
+  1904→  async getTotalEffectiveIPs(): Promise<number> {
+  1905→    try {
+  1906→      return await megaPool.getTotalPoolSize();
+  1907→    } catch {
+  1908→      // Fallback: count DB proxies
+  1909→      return db.proxy.count({ where: { retired: false } });
+  1910→    }
+  1911→  }
+  1912→
+  1913→  /**
+  1914→   * Add a proxy to the pool with full geotargeting metadata.
+  1915→   */
+  1916→  async addProxy(proxy: {
+  1917→    id: string;
+  1918→    url: string;
+  1919→    tier: ProxyTier;
+  1920→    country?: string;
+  1921→    city?: string;
+  1922→    region?: string;
+  1923→    asn?: string;
+  1924→    isp?: string;
+  1925→    provider: string;
+  1926→  }): Promise<void> {
+  1927→    await db.proxy.upsert({
+  1928→      where: { id: proxy.id },
+  1929→      update: { url: proxy.url, retired: false, city: proxy.city, region: proxy.region, asn: proxy.asn, isp: proxy.isp },
+  1930→      create: {
+  1931→        id: proxy.id,
+  1932→        url: proxy.url,
+  1933→        tier: proxy.tier,
+  1934→        country: proxy.country || 'US',
+  1935→        city: proxy.city,
+  1936→        region: proxy.region,
+  1937→        asn: proxy.asn,
+  1938→        isp: proxy.isp,
+  1939→        provider: proxy.provider,
+  1940→      },
+  1941→    });
+  1942→
+  1943→    await redis.del(`proxies:${proxy.tier}`);
+  1944→  }
+  1945→
+  1946→  /**
+  1947→   * Bulk import proxies from a provider with parallel processing.
+  1948→   */
+  1949→  async bulkImport(proxies: Array<{
+  1950→    id: string;
+  1951→    url: string;
+  1952→    tier: ProxyTier;
+  1953→    country: string;
+  1954→    city?: string;
+  1955→    asn?: string;
+  1956→    isp?: string;
+  1957→    provider: string;
+  1958→  }>): Promise<{ imported: number; skipped: number }> {
+  1959→    let imported = 0;
+  1960→    let skipped = 0;
+  1961→
+  1962→    // Process in parallel batches of 20
+  1963→    const batchSize = 20;
+  1964→    for (let i = 0; i < proxies.length; i += batchSize) {
+  1965→      const batch = proxies.slice(i, i + batchSize);
+  1966→      const results = await Promise.allSettled(
+  1967→        batch.map(proxy => this.addProxy(proxy)),
+  1968→      );
+  1969→
+  1970→      for (const result of results) {
+  1971→        if (result.status === 'fulfilled') {
+  1972→          imported++;
+  1973→        } else {
+  1974→          skipped++;
+  1975→        }
+  1976→      }
+  1977→    }
+  1978→
+  1979→    logger.info({ imported, skipped, total: proxies.length }, 'Bulk proxy import completed');
+  1980→    return { imported, skipped };
+  1981→  }
+  1982→
+  1983→  /**
+  1984→   * Validate a proxy using the validation pipeline.
+  1985→   */
+  1986→  async validateProxy(
+  1987→    proxyUrl: string,
+  1988→    proxyId: string,
+  1989→    expectedCountry?: string,
+  1990→  ): Promise<any> {
+  1991→    try {
+  1992→      const pipeline = await this.getValidationPipeline();
+  1993→      if (!pipeline) {
+  1994→        return { valid: false, error: 'Validation pipeline not available' };
+  1995→      }
+  1996→      return pipeline.validateAndStore(proxyUrl, proxyId, expectedCountry);
+  1997→    } catch (err: any) {
+  1998→      return { valid: false, error: err.message };
+  1999→    }
+  2000→  }
+
+[showing lines 1-2000 of 4226; use offset=2001 with limit to continue reading]

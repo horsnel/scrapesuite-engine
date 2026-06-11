@@ -1,0 +1,252 @@
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-81-const TLS_PROFILES: TlsProfile[] = [
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-82-  // Chrome Desktop
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:83:  { name: 'chrome-130-win', browser: 'chrome', version: '130', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Windows"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456, MAX_HEADER_LIST_SIZE: 262144 }, platform: 'Win32', mobile: false, quality: 95 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:84:  { name: 'chrome-129-win', browser: 'chrome', version: '129', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Windows"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Win32', mobile: false, quality: 92 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:85:  { name: 'chrome-128-mac', browser: 'chrome', version: '128', httpVersion: 2, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Chromium";v="128", "Not;A=Brand";v="24", "Google Chrome";v="128"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"macOS"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'MacIntel', mobile: false, quality: 90 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:86:  { name: 'chrome-127-linux', browser: 'chrome', version: '127', httpVersion: 2, userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Not)A;Brand";v="99", "Chromium";v="127", "Google Chrome";v="127"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Linux"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Linux x86_64', mobile: false, quality: 85 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:87:  { name: 'chrome-126-win', browser: 'chrome', version: '126', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Windows"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Win32', mobile: false, quality: 80 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-88-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-89-  // Firefox Desktop
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:90:  { name: 'firefox-130-win', browser: 'firefox', version: '130', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.5', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1', 'Te': 'trailers' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_CHACHA20_POLY1305_SHA256','TLS_AES_256_GCM_SHA384'], extensions: ['0','10','11','13','16','23','27','35','43','45','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 12517377 }, platform: 'Win32', mobile: false, quality: 88 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:91:  { name: 'firefox-129-mac', browser: 'firefox', version: '129', httpVersion: 2, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:129.0) Gecko/20100101 Firefox/129.0', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.5', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1', 'Te': 'trailers' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_CHACHA20_POLY1305_SHA256','TLS_AES_256_GCM_SHA384'], extensions: ['0','10','11','13','16','23','27','35','43','45','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 12517377 }, platform: 'MacIntel', mobile: false, quality: 85 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:92:  { name: 'firefox-128-linux', browser: 'firefox', version: '128', httpVersion: 2, userAgent: 'Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.5', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1', 'Te': 'trailers' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_CHACHA20_POLY1305_SHA256','TLS_AES_256_GCM_SHA384'], extensions: ['0','10','11','13','16','23','27','35','43','45','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 12517377 }, platform: 'Linux x86_64', mobile: false, quality: 82 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-93-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-94-  // Safari Desktop
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:95:  { name: 'safari-18-mac', browser: 'safari', version: '18', httpVersion: 2, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 4096, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 1048576 }, platform: 'MacIntel', mobile: false, quality: 90 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:96:  { name: 'safari-17-mac', browser: 'safari', version: '17', httpVersion: 2, userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 4096, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 1048576 }, platform: 'MacIntel', mobile: false, quality: 85 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-97-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-98-  // Edge Desktop
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:99:  { name: 'edge-130-win', browser: 'edge', version: '130', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Not?A_Brand";v="99", "Microsoft Edge";v="130", "Chromium";v="130"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Windows"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Win32', mobile: false, quality: 88 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:100:  { name: 'edge-129-win', browser: 'edge', version: '129', httpVersion: 2, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Not=A?Brand";v="8", "Microsoft Edge";v="129", "Chromium";v="129"', 'Sec-Ch-Ua-Mobile': '?0', 'Sec-Ch-Ua-Platform': '"Windows"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Win32', mobile: false, quality: 85 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-101-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-102-  // Android Chrome
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:103:  { name: 'chrome-130-android', browser: 'android-chrome', version: '130', httpVersion: 2, userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"', 'Sec-Ch-Ua-Mobile': '?1', 'Sec-Ch-Ua-Platform': '"Android"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Linux armv81', mobile: true, quality: 82 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:104:  { name: 'chrome-129-android', browser: 'android-chrome', version: '129', httpVersion: 2, userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Ch-Ua': '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"', 'Sec-Ch-Ua-Mobile': '?1', 'Sec-Ch-Ua-Platform': '"Android"', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Linux armv81', mobile: true, quality: 78 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-105-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-106-  // iOS Safari
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:107:  { name: 'safari-18-ios', browser: 'ios-safari', version: '18', httpVersion: 2, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 4096, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 1048576 }, platform: 'iPhone', mobile: true, quality: 85 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:108:  { name: 'safari-17-ios', browser: 'ios-safari', version: '17', httpVersion: 2, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','51'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 4096, MAX_CONCURRENT_STREAMS: 100, INITIAL_WINDOW_SIZE: 1048576 }, platform: 'iPhone', mobile: true, quality: 80 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-109-
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-110-  // Samsung Internet
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts:111:  { name: 'samsung-25-android', browser: 'samsung-internet', version: '25', httpVersion: 2, userAgent: 'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/125.0.0.0 Mobile Safari/537.36', defaultHeaders: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8', 'Accept-Language': 'en-US,en;q=0.9', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Site': 'none', 'Sec-Fetch-User': '?1', 'Upgrade-Insecure-Requests': '1' }, cipherSuites: ['TLS_AES_128_GCM_SHA256','TLS_AES_256_GCM_SHA384','TLS_CHACHA20_POLY1305_SHA256'], extensions: ['0','10','11','13','16','23','27','35','43','45','51','65281'], alpnProtocols: ['h2','http/1.1'], h2Settings: { HEADER_TABLE_SIZE: 65536, MAX_CONCURRENT_STREAMS: 1000, INITIAL_WINDOW_SIZE: 6291456 }, platform: 'Linux armv81', mobile: true, quality: 72 },
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-112-];
+/home/z/my-project/src/anti-bot/tls-fingerprint.ts-113-
+--
+/home/z/my-project/src/anti-bot/profile-generator.ts-16-  colorDepth: number;
+/home/z/my-project/src/anti-bot/profile-generator.ts-17-  deviceMemory: number;
+/home/z/my-project/src/anti-bot/profile-generator.ts:18:  hardwareConcurrency: number;
+/home/z/my-project/src/anti-bot/profile-generator.ts-19-  screenResolution: { width: number; height: number };
+/home/z/my-project/src/anti-bot/profile-generator.ts-20-  touchSupport: boolean;
+--
+/home/z/my-project/src/anti-bot/profile-generator.ts-445-
+/home/z/my-project/src/anti-bot/profile-generator.ts-446-const DEVICE_MEMORY_OPTIONS = [2, 4, 8, 16, 32] as const;
+/home/z/my-project/src/anti-bot/profile-generator.ts:447:const HARDWARE_CONCURRENCY_OPTIONS = [2, 4, 6, 8, 12, 16] as const;
+/home/z/my-project/src/anti-bot/profile-generator.ts-448-
+/home/z/my-project/src/anti-bot/profile-generator.ts:449:const HARDWARE_PRESETS: Record<PlatformType, { memory: number[]; concurrency: number[] }> = {
+/home/z/my-project/src/anti-bot/profile-generator.ts-450-  windows: {
+/home/z/my-project/src/anti-bot/profile-generator.ts-451-    memory: [4, 8, 8, 8, 16, 16, 32],
+/home/z/my-project/src/anti-bot/profile-generator.ts:452:    concurrency: [4, 6, 8, 8, 12, 16, 16],
+/home/z/my-project/src/anti-bot/profile-generator.ts-453-  },
+/home/z/my-project/src/anti-bot/profile-generator.ts-454-  mac: {
+/home/z/my-project/src/anti-bot/profile-generator.ts-455-    memory: [8, 16, 16, 16, 32],
+/home/z/my-project/src/anti-bot/profile-generator.ts:456:    concurrency: [8, 8, 10, 12, 16],
+/home/z/my-project/src/anti-bot/profile-generator.ts-457-  },
+/home/z/my-project/src/anti-bot/profile-generator.ts-458-  linux: {
+/home/z/my-project/src/anti-bot/profile-generator.ts-459-    memory: [4, 8, 8, 16, 16, 32],
+/home/z/my-project/src/anti-bot/profile-generator.ts:460:    concurrency: [2, 4, 6, 8, 12, 16],
+/home/z/my-project/src/anti-bot/profile-generator.ts-461-  },
+/home/z/my-project/src/anti-bot/profile-generator.ts-462-  mobile: {
+/home/z/my-project/src/anti-bot/profile-generator.ts-463-    memory: [2, 4, 4, 8],
+/home/z/my-project/src/anti-bot/profile-generator.ts:464:    concurrency: [4, 6, 8, 8],
+/home/z/my-project/src/anti-bot/profile-generator.ts-465-  },
+/home/z/my-project/src/anti-bot/profile-generator.ts-466-};
+--
+/home/z/my-project/src/anti-bot/profile-generator.ts-514-    wv: profile.webglVendor,
+/home/z/my-project/src/anti-bot/profile-generator.ts-515-    wr: profile.webglRenderer,
+/home/z/my-project/src/anti-bot/profile-generator.ts:516:    hc: profile.hardwareConcurrency,
+/home/z/my-project/src/anti-bot/profile-generator.ts-517-    dm: profile.deviceMemory,
+/home/z/my-project/src/anti-bot/profile-generator.ts-518-    tz: profile.timezone,
+--
+/home/z/my-project/src/anti-bot/profile-generator.ts-637-    const presets = HARDWARE_PRESETS[platformType];
+/home/z/my-project/src/anti-bot/profile-generator.ts-638-    const deviceMemory = presets.memory[Math.floor(Math.random() * presets.memory.length)];
+/home/z/my-project/src/anti-bot/profile-generator.ts:639:    const hardwareConcurrency = presets.concurrency[Math.floor(Math.random() * presets.concurrency.length)];
+/home/z/my-project/src/anti-bot/profile-generator.ts-640-
+/home/z/my-project/src/anti-bot/profile-generator.ts-641-    // 11. Touch support
+--
+/home/z/my-project/src/anti-bot/profile-generator.ts-662-      colorDepth: 24,
+/home/z/my-project/src/anti-bot/profile-generator.ts-663-      deviceMemory,
+/home/z/my-project/src/anti-bot/profile-generator.ts:664:      hardwareConcurrency,
+/home/z/my-project/src/anti-bot/profile-generator.ts-665-      screenResolution,
+/home/z/my-project/src/anti-bot/profile-generator.ts-666-      touchSupport,
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-262-  /** User-Agent string. */
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-263-  userAgent: string;
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:264:  /** Hardware concurrency. */
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:265:  hardwareConcurrency: number;
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-266-  /** Device memory in GB. */
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-267-  deviceMemory: number;
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-299-    platform: 'Win32',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-300-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:301:    hardwareConcurrency: 8,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-302-    deviceMemory: 8,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-303-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-319-    platform: 'Win32',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-320-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:321:    hardwareConcurrency: 12,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-322-    deviceMemory: 16,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-323-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-339-    platform: 'MacIntel',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-340-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:341:    hardwareConcurrency: 8,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-342-    deviceMemory: 16,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-343-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-359-    platform: 'Linux x86_64',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-360-    userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:361:    hardwareConcurrency: 12,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-362-    deviceMemory: 16,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-363-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-448-  // ===============================================================
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-449-  // 3. NAVIGATOR PROPERTIES SPOOF
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:450:  //    Imperva checks hardwareConcurrency, deviceMemory, platform.
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-451-  // ===============================================================
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:452:  Object.defineProperty(navigator, 'hardwareConcurrency', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:453:    get: () => __impProfile.hardwareConcurrency, configurable: true,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-454-  });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-455-  Object.defineProperty(navigator, 'deviceMemory', {
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-740-    });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-741-
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:742:    // Override navigator.hardwareConcurrency
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-743-    await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-744-      source: `
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:745:        Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ${profile.hardwareConcurrency}, configurable: true });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-746-        Object.defineProperty(navigator, 'deviceMemory', { get: () => ${profile.deviceMemory}, configurable: true });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-747-        Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true, enumerable: true });
+--
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-1718-        source: `
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-1719-          // Navigator overrides
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1720:          Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => ${profile.hardwareConcurrency}, configurable: true });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-1721-          Object.defineProperty(navigator, 'deviceMemory', { get: () => ${profile.deviceMemory}, configurable: true });
+/home/z/my-project/src/anti-bot/imperva-bypass.ts-1722-          Object.defineProperty(navigator, 'maxTouchPoints', { get: () => ${profile.maxTouchPoints}, configurable: true });
+--
+/home/z/my-project/src/anti-bot/deep-patcher.ts-15- *  2. HTTP/2 FRAME FINGERPRINTING
+/home/z/my-project/src/anti-bot/deep-patcher.ts-16- *     Akamai and Cloudflare fingerprint HTTP/2 SETTINGS frame values
+/home/z/my-project/src/anti-bot/deep-patcher.ts:17: *     (HEADER_TABLE_SIZE, MAX_CONCURRENT_STREAMS, INITIAL_WINDOW_SIZE, etc.)
+/home/z/my-project/src/anti-bot/deep-patcher.ts-18- *     Each browser has unique default values. The Deep Patcher ensures consistency.
+/home/z/my-project/src/anti-bot/deep-patcher.ts-19- *
+--
+/home/z/my-project/src/anti-bot/deep-patcher.ts-23- *
+/home/z/my-project/src/anti-bot/deep-patcher.ts-24- *  4. SERVICE WORKER / WORKLET INJECTION
+/home/z/my-project/src/anti-bot/deep-patcher.ts:25: *     Advanced anti-bot systems (Kasada, DataDome) use Service Workers to detect
+/home/z/my-project/src/anti-bot/deep-patcher.ts-26- *     automation. The Deep Patcher pre-empts this by controlling Service Worker scope.
+/home/z/my-project/src/anti-bot/deep-patcher.ts-27- *
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-165-/** Navigator properties payload. */
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-166-interface NavigatorInfoPayload {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:167:  hardwareConcurrency: number;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-168-  deviceMemory: number;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-169-  maxTouchPoints: number;
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-241-const NAVIGATOR_PROFILES: NavigatorInfoPayload[] = [
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-242-  {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:243:    hardwareConcurrency: 8, deviceMemory: 8, maxTouchPoints: 0,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-244-    platform: 'Win32', language: 'en-US', languages: ['en-US', 'en'],
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-245-    userAgent: '', doNotTrack: '1', cookieEnabled: true, connectionType: '4g',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-246-  },
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-247-  {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:248:    hardwareConcurrency: 12, deviceMemory: 16, maxTouchPoints: 0,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-249-    platform: 'Win32', language: 'en-US', languages: ['en-US', 'en'],
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-250-    userAgent: '', doNotTrack: 'null', cookieEnabled: true, connectionType: '4g',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-251-  },
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-252-  {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:253:    hardwareConcurrency: 8, deviceMemory: 8, maxTouchPoints: 0,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-254-    platform: 'MacIntel', language: 'en-US', languages: ['en-US', 'en'],
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-255-    userAgent: '', doNotTrack: '1', cookieEnabled: true, connectionType: '4g',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-256-  },
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-257-  {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:258:    hardwareConcurrency: 10, deviceMemory: 16, maxTouchPoints: 0,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-259-    platform: 'MacIntel', language: 'en-US', languages: ['en-US', 'en'],
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-260-    userAgent: '', doNotTrack: 'null', cookieEnabled: true, connectionType: '4g',
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-712-  // Navigator info
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-713-  const ni = pkg.navigatorInfo;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:714:  parts.push(`8:${ni.hardwareConcurrency},${ni.deviceMemory},${ni.maxTouchPoints},${ni.platform},${ni.language}`);
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-715-
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-716-  // Fingerprint hashes
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-910-    // Navigator property overrides
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-911-    const navProps = {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:912:      hardwareConcurrency: window.__akamai_nav_hwConcurrency,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-913-      deviceMemory: window.__akamai_nav_deviceMemory,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-914-      maxTouchPoints: window.__akamai_nav_maxTouchPoints,
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1637-      // Set up override variables before injecting the spoof script
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1638-      await page.evaluate(
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1639:        ({ vendor, renderer, hwConcurrency, deviceMemory, maxTouchPoints }) => {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1640-          (window as any).__akamai_webgl_vendor = vendor;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1641-          (window as any).__akamai_webgl_renderer = renderer;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1642:          (window as any).__akamai_nav_hwConcurrency = hwConcurrency;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1643-          (window as any).__akamai_nav_deviceMemory = deviceMemory;
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1644-          (window as any).__akamai_nav_maxTouchPoints = maxTouchPoints;
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1647-          vendor: rendererInfo.vendor,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1648-          renderer: rendererInfo.renderer,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1649:          hwConcurrency: navigatorProfile.hardwareConcurrency,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1650-          deviceMemory: navigatorProfile.deviceMemory,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1651-          maxTouchPoints: navigatorProfile.maxTouchPoints,
+--
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1683-        screenInfo: sensorPkg.screenInfo,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1684-        navigatorInfo: {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1685:          hardwareConcurrency: sensorPkg.navigatorInfo.hardwareConcurrency,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1686-          deviceMemory: sensorPkg.navigatorInfo.deviceMemory,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts-1687-          maxTouchPoints: sensorPkg.navigatorInfo.maxTouchPoints,
+--
+/home/z/my-project/src/anti-bot/cdp-injection.ts-123-  /** Override navigator.plugins at V8 level */
+/home/z/my-project/src/anti-bot/cdp-injection.ts-124-  plugins: boolean;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:125:  /** Override navigator.hardwareConcurrency at CDP level */
+/home/z/my-project/src/anti-bot/cdp-injection.ts:126:  hardwareConcurrency: boolean;
+/home/z/my-project/src/anti-bot/cdp-injection.ts-127-  /** Override navigator.deviceMemory at CDP level */
+/home/z/my-project/src/anti-bot/cdp-injection.ts-128-  deviceMemory: boolean;
+--
+/home/z/my-project/src/anti-bot/cdp-injection.ts-152-  httpHeaders: true,
+/home/z/my-project/src/anti-bot/cdp-injection.ts-153-  plugins: true,
+/home/z/my-project/src/anti-bot/cdp-injection.ts:154:  hardwareConcurrency: true,
+/home/z/my-project/src/anti-bot/cdp-injection.ts-155-  deviceMemory: true,
+/home/z/my-project/src/anti-bot/cdp-injection.ts-156-  maxTouchPoints: true,
+--
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-166-  /** User-Agent string. */
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-167-  userAgent: string;
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:168:  /** Hardware concurrency (logical CPU cores). */
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:169:  hardwareConcurrency: number;
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-170-  /** Device memory in GB. */
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-171-  deviceMemory: number;
+--
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-238-    platform: 'Win32',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-239-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:240:    hardwareConcurrency: 8,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-241-    deviceMemory: 8,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-242-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-274-    platform: 'Win32',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-275-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:276:    hardwareConcurrency: 12,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-277-    deviceMemory: 16,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-278-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-310-    platform: 'MacIntel',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-311-    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:312:    hardwareConcurrency: 8,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-313-    deviceMemory: 16,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-314-    maxTouchPoints: 0,
+--
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-346-    platform: 'Linux armv8l',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-347-    userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:348:    hardwareConcurrency: 8,
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts-349-    deviceMemory: 8,
+
+[Showing results with pagination = limit: 250]

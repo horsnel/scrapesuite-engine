@@ -1,0 +1,252 @@
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:755:            or ``"stealth"``. Default is ``"auto"``.
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:764:            ``"dynamic"`` and ``"stealth"`` strategies.
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:802:        ...     strategy="stealth",
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:919:        >>> results = client.scrape_batch(urls, strategy="stealth")
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2016:        ...     strategy="stealth",
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2072:        stealth: Optional[bool] = None,
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2090:        stealth : bool, optional
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2091:            Enable stealth mode (anti-detection). Default is ``True``.
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2111:        >>> with client.scraping_browser(stealth=True) as browser:
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2133:        if stealth is not None:
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2134:            cdp_body["stealth"] = stealth
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2167:        stealth: Optional[bool] = None,
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2180:        >>> async with client.ascraping_browser(stealth=True) as browser:
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2201:        if stealth is not None:
+/home/z/my-project/sdk/python/scrapesuite/__init__.py:2202:            cdp_body["stealth"] = stealth
+/home/z/my-project/sdk/python/scrapesuite/models.py:41:            "Scraping strategy: 'auto', 'static', 'dynamic', or 'stealth'."
+/home/z/my-project/sdk/nodejs/src/types.ts:36:export type ScrapeStrategy = 'auto' | 'cache' | 'http' | 'browser' | 'stealth-browser';
+/home/z/my-project/sdk/nodejs/src/types.ts:654:  /** Use stealth mode (anti-bot evasion). Default: true */
+/home/z/my-project/sdk/nodejs/src/types.ts:655:  stealth?: boolean;
+/home/z/my-project/sdk/nodejs/src/index.ts:244: *   strategy: 'stealth-browser',
+/home/z/my-project/sdk/nodejs/src/index.ts:366:   * with stealth mode and proxy support.
+/home/z/my-project/sdk/nodejs/src/index.ts:972:   * built-in proxy rotation and anti-bot evasion.
+/home/z/my-project/sdk/nodejs/src/index.ts:983:   *   stealth: true,
+/home/z/my-project/colab-final-test.py:138:t("POST render", api("/v1/render", "POST", {"url": "https://httpbin.org/get", "stealthMode": "none", "timeout": 15000}, timeout=30))
+/home/z/my-project/search7.json:32:    "snippet": "This guide covers the architecture, proxy management, anti-bot evasion, Decodo's Site Unblocker, for example, integrates as a proxy endpoint that manages ...",
+/home/z/my-project/colab-test-v2.py:183:record("POST /v1/render (httpbin /get)", api_request("/v1/render", "POST", {"url": "https://httpbin.org/get", "stealthMode": "none", "timeout": 45000, "extract": {"waitUntil": "domcontentloaded"}}, timeout=60))
+/home/z/my-project/src/akamai/types.ts:128:export type EvasionStrategy = 'sensor_spoofing' | 'behavior_mimicry' | 'fingerprint_consistency' | 'tls_matching' | 'header_normalization' | 'cookie_simulation' | 'rate_adaptation' | 'ip_rotation';
+/home/z/my-project/src/akamai/types.ts:138:export interface EvasionResult {
+/home/z/my-project/src/akamai/types.ts:139:  strategy: EvasionStrategy;
+/home/z/my-project/src/akamai/types.ts:150:  /** Whether to proactively apply evasions or only react */
+/home/z/my-project/src/akamai/types.ts:151:  proactiveEvasion: boolean;
+/home/z/my-project/src/akamai/types.ts:152:  /** Maximum evasion actions per request */
+/home/z/my-project/src/akamai/types.ts:153:  maxEvasionsPerRequest: number;
+/home/z/my-project/src/akamai/types.ts:154:  /** Learning mode: track which evasions work for which domains */
+/home/z/my-project/src/akamai/types.ts:156:  /** Domain-specific evasion profiles */
+/home/z/my-project/src/akamai/types.ts:157:  domainProfiles: Record<string, EvasionStrategy[]>;
+/home/z/my-project/src/akamai/types.ts:186:  evasionsApplied: number;
+/home/z/my-project/src/akamai/types.ts:187:  evasionsSucceeded: number;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:20: * effective evasion techniques per Akamai deployment.
+/home/z/my-project/src/akamai/bot-manager-evader.ts:27:  BotDetection, BotDetectionMethod, EvasionStrategy, EvasionResult,
+/home/z/my-project/src/akamai/bot-manager-evader.ts:33:const EVASION_HISTORY_PREFIX = 'akamai:evader:history:';
+/home/z/my-project/src/akamai/bot-manager-evader.ts:43:  proactiveEvasion: true,
+/home/z/my-project/src/akamai/bot-manager-evader.ts:44:  maxEvasionsPerRequest: 3,
+/home/z/my-project/src/akamai/bot-manager-evader.ts:55:// EVASION STRATEGIES
+/home/z/my-project/src/akamai/bot-manager-evader.ts:58:interface EvasionAction {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:59:  strategy: EvasionStrategy;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:61:  apply: (context: EvasionContext) => Promise<EvasionResult>;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:64:interface EvasionContext {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:70:  previousResults: EvasionResult[];
+/home/z/my-project/src/akamai/bot-manager-evader.ts:73:const EVASION_ACTIONS: EvasionAction[] = [
+/home/z/my-project/src/akamai/bot-manager-evader.ts:242:  private evasionHistory: Map<string, EvasionResult[]> = new Map();
+/home/z/my-project/src/akamai/bot-manager-evader.ts:243:  private domainEffectiveness: Map<string, Record<EvasionStrategy, number>> = new Map();
+/home/z/my-project/src/akamai/bot-manager-evader.ts:252:   * 1. Domain-specific profiles (Netflix needs different evasions than Google)
+/home/z/my-project/src/akamai/bot-manager-evader.ts:263:  }): Promise<EvasionResult[]> {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:265:    const results: EvasionResult[] = [];
+/home/z/my-project/src/akamai/bot-manager-evader.ts:267:    // Determine which evasion strategies to apply
+/home/z/my-project/src/akamai/bot-manager-evader.ts:275:    }, 'Applying evasion strategies');
+/home/z/my-project/src/akamai/bot-manager-evader.ts:277:    const context: EvasionContext = {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:287:      if (results.length >= this.config.maxEvasionsPerRequest) break;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:304:    this.evasionHistory.set(requestId, results);
+/home/z/my-project/src/akamai/bot-manager-evader.ts:312:  /** Apply proactive evasions before any detection (prevention mode). */
+/home/z/my-project/src/akamai/bot-manager-evader.ts:313:  async proactiveEvade(domain: string, url: string, requestId: string, sessionId: string): Promise<EvasionResult[]> {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:314:    if (!this.config.proactiveEvasion) return [];
+/home/z/my-project/src/akamai/bot-manager-evader.ts:320:  async reactiveEvade(detections: BotDetection[], domain: string, url: string, requestId: string, sessionId: string): Promise<EvasionResult[]> {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:326:  private selectStrategies(domain: string, detections: BotDetection[]): EvasionAction[] {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:327:    let strategies: EvasionAction[] = [];
+/home/z/my-project/src/akamai/bot-manager-evader.ts:332:      strategies = EVASION_ACTIONS.filter(a => domainProfile.includes(a.strategy));
+/home/z/my-project/src/akamai/bot-manager-evader.ts:338:      const reactiveStrategies = EVASION_ACTIONS.filter(a =>
+/home/z/my-project/src/akamai/bot-manager-evader.ts:347:      const proactiveStrategies = EVASION_ACTIONS.filter(a =>
+/home/z/my-project/src/akamai/bot-manager-evader.ts:364:    const seen = new Set<EvasionStrategy>();
+/home/z/my-project/src/akamai/bot-manager-evader.ts:374:  private async updateEffectiveness(domain: string, results: EvasionResult[]): Promise<void> {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:377:      effectiveness = {} as Record<EvasionStrategy, number>;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:392:  getEffectiveness(domain: string): Record<EvasionStrategy, number> | undefined {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:396:  /** Get overall evasion statistics. */
+/home/z/my-project/src/akamai/bot-manager-evader.ts:398:    totalEvasionsApplied: number;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:400:    byStrategy: Record<EvasionStrategy, { count: number; avgEffectiveness: number }>;
+/home/z/my-project/src/akamai/bot-manager-evader.ts:408:    for (const [requestId, results] of this.evasionHistory) {
+/home/z/my-project/src/akamai/bot-manager-evader.ts:422:      totalEvasionsApplied: totalApplied,
+/home/z/my-project/src/akamai/manager.ts:5: * Coordinates sensor generation, Hydra solving, and Bot Manager evasion
+/home/z/my-project/src/akamai/manager.ts:13:import type { AkamaiConfig, AkamaiStats, SensorPayload, HydraSolution, EvasionResult, HydraChallenge } from './types';
+/home/z/my-project/src/akamai/manager.ts:49:    proactiveEvasion: true,
+/home/z/my-project/src/akamai/manager.ts:50:    maxEvasionsPerRequest: 3,
+/home/z/my-project/src/akamai/manager.ts:90:   * 2. Apply proactive evasions
+/home/z/my-project/src/akamai/manager.ts:101:    evasions: EvasionResult[];
+/home/z/my-project/src/akamai/manager.ts:115:    // 2. Apply proactive evasions
+/home/z/my-project/src/akamai/manager.ts:116:    const evasions = await this.evader.proactiveEvade(domain, url, requestId, sessionId);
+/home/z/my-project/src/akamai/manager.ts:118:    // 3. Build headers from evasion results
+/home/z/my-project/src/akamai/manager.ts:133:    // 4. Build cookies from evasion results
+/home/z/my-project/src/akamai/manager.ts:139:    return { sensorPayload, evasions, headers, cookies };
+/home/z/my-project/src/akamai/manager.ts:148:  async handleDetection(detections: Array<{ method: any; confidence: number; indicators: string[] }>, domain: string, url: string, requestId: string, sessionId: string): Promise<EvasionResult[]> {
+/home/z/my-project/src/akamai/manager.ts:163:      evasionsApplied: evaderStats.totalEvasionsApplied,
+/home/z/my-project/src/akamai/manager.ts:164:      evasionsSucceeded: evaderStats.totalEvasionsApplied, // Approximation
+/home/z/my-project/src/anti-bot/akamai-hydra.ts:2: * Akamai Hydra -- Multi-Head Evasion Orchestrator for ScrapeSuite Engine
+/home/z/my-project/src/akamai/index.ts:6: * challenge solving, and multi-vector evasion strategies.
+/home/z/my-project/src/akamai/index.ts:14:  BotDetectionMethod, EvasionStrategy, BotDetection, EvasionResult, BotManagerEvaderConfig,
+/home/z/my-project/download/search9.json:3:    "url": "https://scrapfly.io/blog/posts/puppeteer-stealth-complete-guide",
+/home/z/my-project/download/search9.json:4:    "name": "Puppeteer Stealth: Complete Guide to Avoiding Detection - Scrapfly",
+/home/z/my-project/download/search9.json:5:    "snippet": "Learn how to use Puppeteer Stealth plugin to avoid detection. Complete tutorial covering stealth configuration, evasion modules, ...",
+/home/z/my-project/download/search9.json:12:    "url": "https://www.browserless.io/blog/stealth-scraping-puppeteer-playwright",
+/home/z/my-project/download/search9.json:13:    "name": "Stealth Scraping with Puppeteer or Playwright at Scale - Browserless",
+/home/z/my-project/download/search9.json:14:    "snippet": "Learn puppeteer and Playwright stealth scraping tactics for fingerprints, behavior, sessions, and SPA waits, plus how to scale cleanly using ...",
+/home/z/my-project/download/search9.json:21:    "url": "https://www.npmjs.com/search?q=keywords:detection-evasion",
+/home/z/my-project/download/search9.json:22:    "name": "keywords:detection-evasion - npm search",
+/home/z/my-project/download/search9.json:23:    "snippet": "A plugin that improves the stealth of the playwright library using fingerprints ... Stealth mode: Applies various techniques to make detection of headless ...",
+/home/z/my-project/download/search9.json:30:    "url": "https://www.reddit.com/r/WebScrapingInsider/comments/1s33ts2/puppeteerextrapluginstealth_still_working_in_2026",
+/home/z/my-project/download/search9.json:31:    "name": "puppeteer-extra-plugin-stealth still working in 2026, how? - Reddit",
+/home/z/my-project/download/search9.json:41:    "snippet": "The stealth plugin patches Puppeteer's browser instances to mask typical bot fingerprints. For example, it can flip navigator.webdriver to false ...",
+/home/z/my-project/download/search9.json:48:    "url": "https://github.com/managedcode/playwright_stealth",
+/home/z/my-project/download/search9.json:49:    "name": "managedcode/playwright_stealth: Stealth evasion library  - GitHub",
+/home/z/my-project/download/search9.json:50:    "snippet": "Stealth evasion library for Microsoft.Playwright (.NET). Applies 31 init-script patches that mask headless Chrome fingerprints — navigator properties, ...",
+/home/z/my-project/download/search9.json:57:    "url": "https://stackoverflow.com/questions/79863349/puppeteer-even-with-stealth-plugin-or-playwright-cant-login-on-google-account",
+/home/z/my-project/download/search9.json:58:    "name": "Puppeteer (even with Stealth plugin) or Playwright can't login on",
+/home/z/my-project/download/search9.json:68:    "snippet": "In this article, we analyze and compare some of the most popular headless Chrome browsers - Playwright, Puppeteer Stealth, Undetected ChromeDriver, and Kameleo ...",
+/home/z/my-project/download/search9.json:76:    "name": "How to Use Puppeteer Extra for Stealth Web Scraping - YouTube",
+/home/z/my-project/download/search9.json:84:    "url": "https://o-mega.ai/articles/best-stealth-browser-alternatives-to-anchor-2026",
+/home/z/my-project/download/search9.json:85:    "name": "Best Stealth Browser Alternatives to Anchor 2026 | Articles - O-mega.ai",
+/home/z/my-project/download/search9.json:86:    "snippet": "Kameleo provides headless mode with Selenium, Playwright, and Puppeteer integration, enabling automated workflows while maintaining full stealth ...",
+/home/z/my-project/download/search1.json:5:    "snippet": "Anti-Bot Sophistication: Advanced detection systems from Cloudflare, Akamai, and PerimeterX demand more sophisticated evasion techniques. Cloud- ...",
+/home/z/my-project/download/search1.json:85:    "name": "WHY 2025 - Stealth Web Scraping Techniques for OSINT - YouTube",
+/home/z/my-project/src/pdf/index.ts:254: * proxy rotation, and anti-bot evasion are handled upstream.
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:5: * stealth approaches. Instead of just detecting and hoping, this module
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:26: *     rotation, and stealth mode escalation.
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:46:  | 'maximum-stealth';     // Apply all stealth measures + re-solve
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:693:      case 'maximum-stealth':
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:867:      'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:74:  | 'maximum-stealth'       // Apply all stealth measures + re-solve
+/home/z/my-project/src/anti-bot/types.ts:90:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:97:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:104:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:111:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:118:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:124:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:130:    'maximum-stealth',
+/home/z/my-project/src/anti-bot/types.ts:135:    'maximum-stealth',
+/home/z/my-project/src/browser-pool/index.ts:3:import { stealthEngine } from '../anti-bot/stealth';
+/home/z/my-project/src/browser-pool/index.ts:26:  profile: ReturnType<typeof stealthEngine.getRandomProfile>;
+/home/z/my-project/src/browser-pool/index.ts:93:  async acquire(proxyUrl?: string, stealthMode: boolean = false): Promise<BrowserLease> {
+/home/z/my-project/src/browser-pool/index.ts:98:      return this.createLease(pooled, proxyUrl, stealthMode);
+/home/z/my-project/src/browser-pool/index.ts:104:        return this.createLease(newBrowser, proxyUrl, stealthMode);
+/home/z/my-project/src/browser-pool/index.ts:268:    stealthMode: boolean = false,
+/home/z/my-project/src/browser-pool/index.ts:271:    const profile = stealthEngine.getRandomProfile();
+/home/z/my-project/src/browser-pool/index.ts:273:    const contextOptions = stealthEngine.getContextOptions(profile);
+/home/z/my-project/src/browser-pool/index.ts:280:    if (stealthMode) {
+/home/z/my-project/src/browser-pool/index.ts:281:      await context.addInitScript(stealthEngine.getStealthInitScript(profile));
+/home/z/my-project/src/browser-pool/index.ts:282:      // Inject human behavior simulation for anti-bot evasion
+/home/z/my-project/src/anti-bot/profile-generator.ts:644:    // 12. Generate noise values for canvas and audio fingerprint evasion
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:20: *  4. maximum-stealth   -- Apply all stealth measures + re-solve
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:724:// CDP STEALTH INJECTION
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:728: * Apply CDP-level stealth patches to defeat Imperva's automation detection.
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:731:async function applyCDPStealth(
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:751:    logger.debug('Applied CDP stealth patches for Imperva');
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:753:    logger.warn({ err: err.message }, 'Failed to apply CDP stealth patches');
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1052:   * Strategy escalation: cookie-injection → browser-execute → profile-rotation → maximum-stealth
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1090:        case 'maximum-stealth':
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1091:          result = await this.bypassMaximumStealth(ctx, startTime);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1100:      if (!result.success && selectedStrategy !== 'maximum-stealth') {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1233:      // Step 2: Apply CDP stealth if available
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1235:        await applyCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1362:      // Step 4: Apply CDP stealth with new profile
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1364:        await applyCDPStealth(ctx.cdpSession, newProfile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1439:  // --- Strategy: Maximum Stealth ------------------------------------------
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1442:   * Strategy 4: Apply all stealth measures -- maximum effort bypass.
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1443:   * Combines fingerprint injection, CDP stealth, cookie clearing,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1446:  private async bypassMaximumStealth(
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1452:    logger.info({ domain }, 'Starting Imperva maximum-stealth strategy');
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1464:      // Step 3: Apply comprehensive CDP stealth
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1466:        await this.applyMaximumCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1485:          strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1488:          errors: ['Maximum stealth: challenge did not resolve in extended timeout'],
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1500:          strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1503:          errors: ['Maximum stealth: no Imperva cookies extracted'],
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1515:          strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1518:          errors: ['Maximum stealth: page still blocked'],
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1526:        'Imperva maximum-stealth bypass successful',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1530:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1540:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1542:        errors: [`Maximum stealth error: ${err.message}`],
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1703:   * Apply comprehensive CDP-level stealth for maximum-stealth strategy.
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1705:  private async applyMaximumCDPStealth(
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1716:      // Inject comprehensive stealth script
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1788:      logger.debug('Applied maximum CDP stealth patches for Imperva');
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1790:      logger.warn({ err: err.message }, 'Failed to apply maximum CDP stealth');
+/home/z/my-project/download/search5.json:41:    "snippet": "Professional anti-bot services use countermeasures against Puppeteer, including plugins like stealth/extra-stealth.",
+/home/z/my-project/src/fusion-reactor/types.ts:122:  | 'escalate_stealth'       // Increase stealth level
+/home/z/my-project/src/fusion-reactor/types.ts:129:  | 'activate_maximum_stealth'; // Activate all stealth measures simultaneously
+/home/z/my-project/src/fusion-reactor/types.ts:232:  /** Stealth escalation parameters */
+/home/z/my-project/src/fusion-reactor/types.ts:233:  stealth?: {
+/home/z/my-project/download/generate_competitive_report.py:78:    'established players across seven key dimensions: infrastructure scale, anti-bot evasion, intelligent extraction, '
+/home/z/my-project/download/generate_competitive_report.py:125:    ('Anti-Bot Evasion', ['Yes', 'Partial', 'Partial', 'Partial', 'Yes', 'No', 'No', 'No']),
+/home/z/my-project/download/generate_competitive_report.py:175:    'techniques — genetic algorithms, swarm intelligence, Thompson Sampling, CRDTs, and multi-layer stealth. '
+/home/z/my-project/download/generate_competitive_report.py:216:     'Provides multi-layer stealth including TLS fingerprint randomization that changes with every connection, canvas and '
+/home/z/my-project/download/generate_competitive_report.py:219:     'local IP leak prevention. The emergent stealth properties arise from the combination of all layers, making it '
+/home/z/my-project/download/generate_competitive_report.py:298:     'Automates infinite scroll with four behavior profiles (stealth, normal, aggressive, custom) that model different '
+/home/z/my-project/download/generate_competitive_report.py:378:    ['Anti-Forensics (Ghost)', '5-8 months', 'Multi-layer stealth combination', 'Anti-detection test results'],
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:854:          case 'maximum-stealth':
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:855:            success = await this.executeMaximumStealth(page, context, domain);
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:950:    if (activeStrategy !== 'profile-rotation' && activeStrategy !== 'maximum-stealth') {
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1473:  // --- Maximum Stealth ----------------------------------------------------
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1476:   * Apply all available stealth measures and retry the challenge.
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1479:  private async executeMaximumStealth(
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1484:    logger.info({ domain }, 'Applying maximum stealth for Cloudflare bypass');
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1565:      logger.error({ err: err.message, domain }, 'Maximum stealth bypass failed');
+/home/z/my-project/download/search7.json:31:    "name": "TLS Bypass Techniques: Detection vs Evasion [2026] - ScrapeHero",
+/home/z/my-project/src/anti-bot/manager.ts:19: *  |  | Kasada SW    | | Akamai       | | Deep Browser | | Stealth      | |
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:106:  escalate_stealth: () => ({
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:107:    stealth: { level: 'enhanced', measures: ['fingerprint_noise', 'timing_randomization', 'behavior_injection'] },
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:109:  activate_maximum_stealth: () => ({
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:110:    stealth: { level: 'nuclear', measures: ['fingerprint_noise', 'timing_randomization', 'behavior_injection', 'proxy_rotation', 'session_isolation', 'trace_clearing'] },
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:203:        subCascades: [{ reactionType: 'escalate_stealth', delayMs: 0, condition: 'on_failure', priority: 'nuclear', subCascades: [] }],
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:230:        subCascades: [{ reactionType: 'activate_maximum_stealth', delayMs: 0, condition: 'on_failure', priority: 'nuclear', subCascades: [] }],
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:260:    description: 'When IP blocked, rotate proxy + fingerprint + session + escalate stealth',
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:262:    reactionTypes: ['rotate_proxy', 'rotate_fingerprint', 'switch_session', 'escalate_stealth'],
+/home/z/my-project/src/fusion-reactor/reaction-engine.ts:289:        subCascades: [{ reactionType: 'activate_maximum_stealth', delayMs: 0, condition: 'on_failure', priority: 'nuclear', subCascades: [] }],
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1282:    // --- Strategy: Maximum Stealth --------------------------------------
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1283:    if (activeStrategy === 'maximum-stealth') {
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1284:      const result = await this.executeMaximumStealthBypass(ctx);
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1589:  // --- Maximum Stealth Bypass --------------------------------------------
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1592:   * Apply all stealth measures + behavioral mimic for the hardest PX sites.
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1594:  private async executeMaximumStealthBypass(ctx: BypassContext): Promise<AntiBotResult> {
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1599:      // Use CDP session to apply deep stealth if available
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1601:        await this.applyCdpStealth(ctx.cdpSession);
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1610:      // Execute behavioral mimic with full stealth
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1616:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1620:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1971:  // --- CDP Stealth -------------------------------------------------------
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1974:   * Apply CDP-level stealth patches to further evade PX detection.
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1976:  private async applyCdpStealth(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:2010:      logger.debug('CDP stealth patches applied for PerimeterX');
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:2012:      logger.debug({ err: err.message }, 'CDP stealth patch failed (non-critical)');
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1169:   * browser execution, profile rotation, TLS matching, and maximum stealth.
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1226:      case 'maximum-stealth':
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1227:        result = await this.bypassWithMaximumStealth(ctx);
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1237:    if (!result.success && chosenStrategy !== 'maximum-stealth') {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1351:   * stealth patches applied to avoid detection.
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1481:  // --- Maximum Stealth Strategy ---------------------------------------------
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1484:   * Apply all stealth measures: sensor synthesis, fingerprint spoofing,
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1487:  private async bypassWithMaximumStealth(ctx: BypassContext): Promise<AntiBotResult> {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1491:    logger.info({ domain }, 'Attempting Akamai bypass with maximum stealth');
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1494:      // Inject all scripts with maximum stealth
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1508:      // Extended timeout for maximum stealth
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1516:          strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1525:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1527:        errors: ['Maximum stealth strategy did not produce valid cookies'],
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1531:        strategy: 'maximum-stealth',
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:1542:   * When extended is true, generates more events for maximum stealth mode.
+/home/z/my-project/src/anti-bot/index.ts:56:export { stealthBrowserEngine } from './stealth-browser';
+/home/z/my-project/src/anti-bot/index.ts:57:export type { StealthLaunchOptions, StealthBrowserResult } from './stealth-browser';
+/home/z/my-project/src/anti-bot/index.ts:64:export { stealthEngine } from './stealth';
+/home/z/my-project/src/rendering-pipeline/index.ts:9: * stealth browsing, and data extraction into a single operation.
+/home/z/my-project/src/rendering-pipeline/index.ts:15: *  |  Step 1: Acquire Browser   ← BrowserPool / StealthBrowserEngine         |
+
+[Showing results with pagination = limit: 250]

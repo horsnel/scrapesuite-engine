@@ -1,0 +1,252 @@
+/home/z/my-project/src/anti-bot/akamai-hydra.ts:30:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/kasada-sw-proxy.ts:30:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/kasada-sw-proxy.ts:459:  async interceptSWMessages(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/src/anti-bot/kasada-sw-proxy.ts:462:      await cdpSession.send('Network.enable', {
+/home/z/my-project/src/anti-bot/kasada-sw-proxy.ts:467:      cdpSession.on('Network.requestWillBeSent', (event: any) => {
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:31:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/kasada-challenger.ts:373:      cdpSession?: CDPSession;
+/home/z/my-project/src/anti-bot/types.ts:19:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/types.ts:430:  cdpSession?: CDPSession;
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:42:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:732:  cdpSession: CDPSession,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:737:    await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:743:    await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:954:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1234:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1235:        await applyCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1363:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1364:        await applyCDPStealth(ctx.cdpSession, newProfile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1465:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1466:        await this.applyMaximumCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1706:    cdpSession: CDPSession,
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1711:      await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1717:      await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/src/anti-bot/imperva-bypass.ts:1779:      await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/src/cdp-browser/index.ts:55:import { chromium, type Browser, type BrowserContext, type Page, type CDPSession } from 'playwright';
+/home/z/my-project/src/cdp-browser/index.ts:147:  cdpSessions: Map<string, CDPSession>;
+/home/z/my-project/src/cdp-browser/index.ts:169:  cdpSession: CDPSession | null;
+/home/z/my-project/src/cdp-browser/index.ts:695:   * * Creates a new CDP session via Playwright's browser.newBrowserCDPSession()
+/home/z/my-project/src/cdp-browser/index.ts:720:      managedBrowser.browser.newBrowserCDPSession().then((cdpSession) => {
+/home/z/my-project/src/cdp-browser/index.ts:722:        managedBrowser.cdpSessions.set(session.sessionId, cdpSession);
+/home/z/my-project/src/cdp-browser/index.ts:725:        this.setupCdpTracking(cdpSession, session);
+/home/z/my-project/src/cdp-browser/index.ts:844:    let cdpSession: CDPSession | null = null;
+/home/z/my-project/src/cdp-browser/index.ts:853:        if (injectionResult.cdpSessionCreated) {
+/home/z/my-project/src/cdp-browser/index.ts:855:            cdpSession = await context.newCDPSession(page);
+/home/z/my-project/src/cdp-browser/index.ts:874:          cdpSession: cdpSession || undefined,
+/home/z/my-project/src/cdp-browser/index.ts:897:    if (cdpSession) {
+/home/z/my-project/src/cdp-browser/index.ts:898:      this.setupCdpTracking(cdpSession, null);
+/home/z/my-project/src/cdp-browser/index.ts:915:      cdpSession,
+/home/z/my-project/src/cdp-browser/index.ts:937:    if (cdpSession) {
+/home/z/my-project/src/cdp-browser/index.ts:938:      managedBrowser.cdpSessions.set(sessionId, cdpSession);
+/home/z/my-project/src/cdp-browser/index.ts:984:      if (session.cdpSession) {
+/home/z/my-project/src/cdp-browser/index.ts:985:        try { await session.cdpSession.detach(); } catch {}
+/home/z/my-project/src/cdp-browser/index.ts:1001:      managedBrowser.cdpSessions.delete(sessionId);
+/home/z/my-project/src/cdp-browser/index.ts:1159:      cdpSessions: new Map(),
+/home/z/my-project/src/cdp-browser/index.ts:1394:  private setupCdpTracking(cdpSession: CDPSession, session: CdpBrowserSession | null): void {
+/home/z/my-project/src/cdp-browser/index.ts:1397:      cdpSession.send('Network.enable').catch(() => {});
+/home/z/my-project/src/cdp-browser/index.ts:1400:      cdpSession.on('Network.dataReceived', (event: any) => {
+/home/z/my-project/src/cdp-browser/index.ts:1409:      cdpSession.on('Network.requestWillBeSent', (event: any) => {
+/home/z/my-project/src/cdp-browser/index.ts:1418:      cdpSession.on('close', () => {
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:37:import type { Page, BrowserContext, CDPSession, ElementHandle, Frame } from 'playwright';
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:510:    if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:512:        const responseHeaders = await this.getResponseHeadersViaCDP(ctx.cdpSession);
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1664:  private async getResponseHeadersViaCDP(cdpSession: CDPSession): Promise<Record<string, string>> {
+/home/z/my-project/src/anti-bot/cloudflare-turnstyle.ts:1666:      const { headers } = await cdpSession.send('Network.getAllCookies') as any;
+/home/z/my-project/src/anti-bot/deep-patcher.ts:53:import type { Page, CDPSession, BrowserContext } from 'playwright';
+/home/z/my-project/src/anti-bot/deep-patcher.ts:543:    cdpSession?: CDPSession;
+/home/z/my-project/src/anti-bot/deep-patcher.ts:565:    if (options?.cdpSession && effectiveConfig.responseHeaderCleaning) {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:567:        await this.enableResponseInterception(options.cdpSession, profile);
+/home/z/my-project/src/anti-bot/deep-patcher.ts:575:    if (options?.cdpSession && effectiveConfig.headerOrderSpoofing) {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:577:        await this.enforceHeaderOrder(options.cdpSession, profile);
+/home/z/my-project/src/anti-bot/deep-patcher.ts:585:    if (options?.cdpSession && effectiveConfig.removeAutomationHeaders) {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:587:        await this.removeAutomationResponseHeaders(options.cdpSession);
+/home/z/my-project/src/anti-bot/deep-patcher.ts:615:  private async enableResponseInterception(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:617:    await cdpSession.send('Fetch.enable', {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:623:    cdpSession.on('Fetch.requestPaused', async (event: any) => {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:638:          await cdpSession.send('Fetch.continueResponse', {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:643:          await cdpSession.send('Fetch.continueResponse', { requestId });
+/home/z/my-project/src/anti-bot/deep-patcher.ts:647:          await cdpSession.send('Fetch.continueResponse', { requestId: event.requestId });
+/home/z/my-project/src/anti-bot/deep-patcher.ts:656:  private async enforceHeaderOrder(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:662:    (cdpSession as any).__headerOrder = headerOrder;
+/home/z/my-project/src/anti-bot/deep-patcher.ts:663:    (cdpSession as any).__browserType = profile.browser;
+/home/z/my-project/src/anti-bot/deep-patcher.ts:669:  private async removeAutomationResponseHeaders(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/src/anti-bot/deep-patcher.ts:672:      await cdpSession.send('Network.enable');
+/home/z/my-project/src/anti-bot/deep-patcher.ts:677:    cdpSession.on('Network.responseReceived', (event: any) => {
+/home/z/my-project/src/anti-bot/manager.ts:25: *  1. handlePage(url, page, context, cdpSession) -- main entry
+/home/z/my-project/src/anti-bot/manager.ts:33:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/manager.ts:210:            cdpSession: ctx.cdpSession,
+/home/z/my-project/src/anti-bot/manager.ts:303:   * @param cdpSession Optional CDP session for low-level operations
+/home/z/my-project/src/anti-bot/manager.ts:310:    cdpSession?: CDPSession
+/home/z/my-project/src/anti-bot/manager.ts:325:      cdpSession,
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:26:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1600:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1601:        await this.applyCdpStealth(ctx.cdpSession);
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1976:  private async applyCdpStealth(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1979:      await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/src/anti-bot/akamai-sensor.ts:23:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/base.ts:19:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/cdp-injection.ts:43:import type { Browser, BrowserContext, Page, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/cdp-injection.ts:70:  cdpSessionActive: boolean;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:80:  cdpSessionCreated: boolean;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:85:  cdpSession: CDPSession | null;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:691:    let cdpSessionCreated = false;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:694:    let cdpSession: CDPSession | null = null;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:696:      cdpSession = await page.context().newCDPSession(page);
+/home/z/my-project/src/anti-bot/cdp-injection.ts:697:      cdpSessionCreated = true;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:707:    if (cdpSession) {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:711:          await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:730:          await cdpSession.send('Emulation.setDeviceMetricsOverride', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:748:          await cdpSession.send('Emulation.setTimezoneOverride', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:762:            await cdpSession.send('Emulation.setGeolocationOverride', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:777:          await cdpSession.send('Emulation.setLocaleOverride', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:802:          await cdpSession.send('Network.setExtraHTTPHeaders', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:814:          await cdpSession.send('Emulation.setTouchEmulationEnabled', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:827:        cdpSession,
+/home/z/my-project/src/anti-bot/cdp-injection.ts:863:    if (cdpSession && effectiveConfig.networkInterception) {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:865:        await this.enableNetworkInterception(cdpSession, coherentProfile);
+/home/z/my-project/src/anti-bot/cdp-injection.ts:875:    profile.cdpSessionActive = cdpSessionCreated;
+/home/z/my-project/src/anti-bot/cdp-injection.ts:884:      cdpSessionCreated,
+/home/z/my-project/src/anti-bot/cdp-injection.ts:894:      cdpSessionCreated,
+/home/z/my-project/src/anti-bot/cdp-injection.ts:903:  private async enableNetworkInterception(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:904:    await cdpSession.send('Fetch.enable', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:911:    cdpSession.on('Fetch.requestPaused', async (event: any) => {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:931:        await cdpSession.send('Fetch.continueRequest', {
+/home/z/my-project/src/anti-bot/cdp-injection.ts:938:          await cdpSession.send('Fetch.continueRequest', { requestId: event.requestId });
+/home/z/my-project/src/anti-bot/cdp-injection.ts:970:      cdpSessionActive: false,
+/home/z/my-project/src/anti-bot/cdp-injection.ts:1042:          state.cdpSession?.detach();
+/home/z/my-project/src/anti-bot/cdp-injection.ts:1062:          state.cdpSession?.detach();
+/home/z/my-project/src/anti-bot/cdp-injection.ts:1081:        await state.cdpSession?.detach();
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:49:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:1218:  private activeCdpSessions = new Set<CDPSession>();
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:1929:      let cdp = ctx.cdpSession;
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:1931:        cdp = await ctx.page.context().newCDPSession(ctx.page);
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:1955:      let cdp = ctx.cdpSession;
+/home/z/my-project/src/anti-bot/f5-shape-bypass.ts:1957:        cdp = await ctx.page.context().newCDPSession(ctx.page);
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:48:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1535:      if (ctx.cdpSession) {
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1536:        await this.applyCdpOverrides(ctx.cdpSession, profile);
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1580:              cdpOverridesApplied: !!ctx.cdpSession,
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1952:    cdpSession: CDPSession,
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1957:      await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1965:      await cdpSession.send('Emulation.setDeviceMetricsOverride', {
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1976:      await cdpSession.send('Emulation.setTimezoneOverride', {
+/home/z/my-project/src/anti-bot/datadome-circumvent.ts:1982:        await cdpSession.send('Emulation.setTouchEmulationEnabled', {
+/home/z/my-project/src/anti-bot/stealth-browser.ts:30:import type { Browser, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/src/anti-bot/stealth-browser.ts:684:        const cdp = await context.newCDPSession(pages[0]);
+/home/z/my-project/src/anti-bot/stealth-browser.ts:1094:      const cdp = await contexts[0].newCDPSession(pages[0]);
+/home/z/my-project/src/anti-bot/stealth-browser.ts:1115:      const cdp = await contexts[0].newCDPSession(pages[0]);
+/home/z/my-project/src/anti-bot/stealth-browser.ts:1136:  private async applySafeCdpOverrides(cdp: CDPSession): Promise<void> {
+/home/z/my-project/tool-results/read_1781202780388_71ac105d6035.txt:30:    30→import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:53:    53→import type { Page, CDPSession, BrowserContext } from 'playwright';
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:543:   543→    cdpSession?: CDPSession;
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:565:   565→    if (options?.cdpSession && effectiveConfig.responseHeaderCleaning) {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:567:   567→        await this.enableResponseInterception(options.cdpSession, profile);
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:575:   575→    if (options?.cdpSession && effectiveConfig.headerOrderSpoofing) {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:577:   577→        await this.enforceHeaderOrder(options.cdpSession, profile);
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:585:   585→    if (options?.cdpSession && effectiveConfig.removeAutomationHeaders) {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:587:   587→        await this.removeAutomationResponseHeaders(options.cdpSession);
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:615:   615→  private async enableResponseInterception(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:617:   617→    await cdpSession.send('Fetch.enable', {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:623:   623→    cdpSession.on('Fetch.requestPaused', async (event: any) => {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:638:   638→          await cdpSession.send('Fetch.continueResponse', {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:643:   643→          await cdpSession.send('Fetch.continueResponse', { requestId });
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:647:   647→          await cdpSession.send('Fetch.continueResponse', { requestId: event.requestId });
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:656:   656→  private async enforceHeaderOrder(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:662:   662→    (cdpSession as any).__headerOrder = headerOrder;
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:663:   663→    (cdpSession as any).__browserType = profile.browser;
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:669:   669→  private async removeAutomationResponseHeaders(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:672:   672→      await cdpSession.send('Network.enable');
+/home/z/my-project/tool-results/read_1781202780722_dcbc8c7aba42.txt:677:   677→    cdpSession.on('Network.responseReceived', (event: any) => {
+/home/z/my-project/tool-results/read_1781202613517_71ac105d6035.txt:30:    30→import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:53:    53→import type { Page, CDPSession, BrowserContext } from 'playwright';
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:543:   543→    cdpSession?: CDPSession;
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:565:   565→    if (options?.cdpSession && effectiveConfig.responseHeaderCleaning) {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:567:   567→        await this.enableResponseInterception(options.cdpSession, profile);
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:575:   575→    if (options?.cdpSession && effectiveConfig.headerOrderSpoofing) {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:577:   577→        await this.enforceHeaderOrder(options.cdpSession, profile);
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:585:   585→    if (options?.cdpSession && effectiveConfig.removeAutomationHeaders) {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:587:   587→        await this.removeAutomationResponseHeaders(options.cdpSession);
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:615:   615→  private async enableResponseInterception(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:617:   617→    await cdpSession.send('Fetch.enable', {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:623:   623→    cdpSession.on('Fetch.requestPaused', async (event: any) => {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:638:   638→          await cdpSession.send('Fetch.continueResponse', {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:643:   643→          await cdpSession.send('Fetch.continueResponse', { requestId });
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:647:   647→          await cdpSession.send('Fetch.continueResponse', { requestId: event.requestId });
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:656:   656→  private async enforceHeaderOrder(cdpSession: CDPSession, profile: CoherentProfile): Promise<void> {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:662:   662→    (cdpSession as any).__headerOrder = headerOrder;
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:663:   663→    (cdpSession as any).__browserType = profile.browser;
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:669:   669→  private async removeAutomationResponseHeaders(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:672:   672→      await cdpSession.send('Network.enable');
+/home/z/my-project/tool-results/read_1781202614055_dcbc8c7aba42.txt:677:   677→    cdpSession.on('Network.responseReceived', (event: any) => {
+/home/z/my-project/tool-results/grep_1781202873988_c1611f6b8cd9.txt:158:/home/z/my-project/src/anti-bot/imperva-bypass.ts:1235:        await applyCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/tool-results/grep_1781202873988_c1611f6b8cd9.txt:160:/home/z/my-project/src/anti-bot/imperva-bypass.ts:1364:        await applyCDPStealth(ctx.cdpSession, newProfile);
+/home/z/my-project/tool-results/grep_1781202873988_c1611f6b8cd9.txt:167:/home/z/my-project/src/anti-bot/imperva-bypass.ts:1466:        await this.applyMaximumCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/tool-results/grep_1781202873988_c1611f6b8cd9.txt:221:/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1601:        await this.applyCdpStealth(ctx.cdpSession);
+/home/z/my-project/tool-results/grep_1781202873988_c1611f6b8cd9.txt:227:/home/z/my-project/src/anti-bot/perimeterx-evader.ts:1976:  private async applyCdpStealth(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/src/proxy/web-unlocker.ts:1915:            cdpSessionCreated: cdpResult.cdpSessionCreated,
+/home/z/my-project/src/proxy/web-unlocker.ts:1920:            const cdpSession = cdpInjectionEngine.getSession(cdpResult.profileId)?.cdpSession || undefined;
+/home/z/my-project/src/proxy/web-unlocker.ts:1923:              await deepBrowserPatcher.patch(page, profile, { cdpSession });
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/f5-shape-bypass.js:1571:            let cdp = ctx.cdpSession;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/f5-shape-bypass.js:1573:                cdp = await ctx.page.context().newCDPSession(ctx.page);
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/f5-shape-bypass.js:1594:            let cdp = ctx.cdpSession;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/f5-shape-bypass.js:1596:                cdp = await ctx.page.context().newCDPSession(ctx.page);
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/manager.d.ts:25: *  1. handlePage(url, page, context, cdpSession) -- main entry
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/manager.d.ts:32:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/manager.d.ts:55:     * @param cdpSession Optional CDP session for low-level operations
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/manager.d.ts:58:    handlePage(url: string, page: Page, context: BrowserContext, cdpSession?: CDPSession): Promise<AntiBotResult>;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:489:        if (options?.cdpSession && effectiveConfig.responseHeaderCleaning) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:491:                await this.enableResponseInterception(options.cdpSession, profile);
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:499:        if (options?.cdpSession && effectiveConfig.headerOrderSpoofing) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:501:                await this.enforceHeaderOrder(options.cdpSession, profile);
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:509:        if (options?.cdpSession && effectiveConfig.removeAutomationHeaders) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:511:                await this.removeAutomationResponseHeaders(options.cdpSession);
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:536:    async enableResponseInterception(cdpSession, profile) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:538:        await cdpSession.send('Fetch.enable', {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:543:        cdpSession.on('Fetch.requestPaused', async (event) => {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:556:                    await cdpSession.send('Fetch.continueResponse', {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:562:                    await cdpSession.send('Fetch.continueResponse', { requestId });
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:567:                    await cdpSession.send('Fetch.continueResponse', { requestId: event.requestId });
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:576:    async enforceHeaderOrder(cdpSession, profile) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:581:        cdpSession.__headerOrder = headerOrder;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:582:        cdpSession.__browserType = profile.browser;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:587:    async removeAutomationResponseHeaders(cdpSession) {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:590:            await cdpSession.send('Network.enable');
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.js:595:        cdpSession.on('Network.responseReceived', (event) => {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/cdp-injection.d.ts:42:import type { BrowserContext, Page, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/cdp-injection.d.ts:59:    cdpSessionActive: boolean;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/cdp-injection.d.ts:68:    cdpSessionCreated: boolean;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/cdp-injection.d.ts:72:    cdpSession: CDPSession | null;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/kasada-sw-proxy.d.ts:29:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/kasada-sw-proxy.d.ts:104:    interceptSWMessages(cdpSession: CDPSession): Promise<void>;
+/home/z/my-project/scrapesuite-engine/src/anti-bot/akamai-hydra.ts:30:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-sw-proxy.ts:30:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-sw-proxy.ts:459:  async interceptSWMessages(cdpSession: CDPSession): Promise<void> {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-sw-proxy.ts:462:      await cdpSession.send('Network.enable', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-sw-proxy.ts:467:      cdpSession.on('Network.requestWillBeSent', (event: any) => {
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/kasada-challenger.d.ts:30:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/kasada-challenger.d.ts:92:        cdpSession?: CDPSession;
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-challenger.ts:31:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/kasada-challenger.ts:373:      cdpSession?: CDPSession;
+/home/z/my-project/scrapesuite-engine/src/anti-bot/types.ts:19:import type { Page, BrowserContext, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/types.ts:430:  cdpSession?: CDPSession;
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.d.ts:52:import type { Page, CDPSession } from 'playwright';
+/home/z/my-project/scrapesuite-engine/dist/anti-bot/deep-patcher.d.ts:101:        cdpSession?: CDPSession;
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:42:import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:732:  cdpSession: CDPSession,
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:737:    await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:743:    await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:954:      if (ctx.cdpSession) {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1234:      if (ctx.cdpSession) {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1235:        await applyCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1363:      if (ctx.cdpSession) {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1364:        await applyCDPStealth(ctx.cdpSession, newProfile);
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1465:      if (ctx.cdpSession) {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1466:        await this.applyMaximumCDPStealth(ctx.cdpSession, profile);
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1706:    cdpSession: CDPSession,
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1711:      await cdpSession.send('Network.setUserAgentOverride', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1717:      await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/imperva-bypass.ts:1779:      await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
+/home/z/my-project/scrapesuite-engine/src/anti-bot/cloudflare-turnstyle.ts:37:import type { Page, BrowserContext, CDPSession, ElementHandle, Frame } from 'playwright';
+/home/z/my-project/scrapesuite-engine/src/anti-bot/cloudflare-turnstyle.ts:510:    if (ctx.cdpSession) {
+
+[Showing results with pagination = limit: 250]
