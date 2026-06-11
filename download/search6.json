@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://docs.zenrows.com/integrations/scrapy",
+    "name": "How to Integrate Scrapy with ZenRows",
+    "snippet": "Scrapy is a powerful web scraping library, but anti-scraping measures can make it challenging. A ZenRows Scrapy integration can overcome these obstacles.",
+    "host_name": "docs.zenrows.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrape.do/compare/zenrows-vs-scrapedo",
+    "name": "ZenRows vs. Scrape.do: Which API Is Better?",
+    "snippet": "ZenRows is fast compared to the average web scraping API and has domain-specific APIs. However, Scrape.do is 2x faster, has a higher success rate, costs less ...",
+    "host_name": "scrape.do",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.zenrows.com/blog/web-scraping-tools",
+    "name": "In-Depth Review of Top 15 Web Scraping Tools & Software - ZenRows",
+    "snippet": "ZenRows scraper API is an all-in-one web scraping solution with top-notch service, making it a powerful toolkit for extracting data at scale.",
+    "host_name": "www.zenrows.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://khabdrick-dev.medium.com/web-automation-with-zenrows-and-python-a24ff12866ed",
+    "name": "Web scraping with ZenRows and Python | by Muhammed Ali - Medium",
+    "snippet": "ZenRows is a web scraping service tailored to handle the complexities of modern, bot-protected websites. It provides a powerful API that automates data ...",
+    "host_name": "khabdrick-dev.medium.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://apify.com/alternatives/zenrows-alternative",
+    "name": "ZenRows alternative - Apify",
+    "snippet": "For $69/month, ZenRows provides access to a multi-purpose API. For only $29/month Apify offers a full-stack scraping platform with over 38,000+ APIs (Actors) ...",
+    "host_name": "apify.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/javascript/comments/pfvbd0/web_scraping_with_javascript_and_nodejs_zenrows",
+    "name": "Web Scraping with Javascript and Node.js - ZenRows - Reddit",
+    "snippet": "I built an open-source RAG system in JavaScript/TypeScript that lets you chat with any website (using local embeddings). 17. 7. JavaScript is ...",
+    "host_name": "www.reddit.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.firecrawl.dev/blog/best-open-source-web-scraping-libraries",
+    "name": "Best Open-Source Web Scraping Libraries in 2026 - Firecrawl",
+    "snippet": "Scrapy is a powerful open-source web scraping framework written in Python that has stood the test of time since its initial release in 2008. It ...",
+    "host_name": "www.firecrawl.dev",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://use-apify.com/blog/best-web-scraping-tools-2026",
+    "name": "13 Best Web Scraping Tools in 2026, Tested & Priced | Use Apify",
+    "snippet": "1. Apify — Best all-in-one platform​ · 2. Scrape.do — Capable and fast single-endpoint API with all features at $29​ · 3. Bright Data — Best ...",
+    "host_name": "use-apify.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://sourceforge.net/software/compare/ScraperAPI-vs-ZenRows",
+    "name": "ScraperAPI vs. ZenRows Comparison - SourceForge",
+    "snippet": "ScraperAPI is a powerful web scraping API that enables users to collect data from any public website without worrying about proxies, browsers, or CAPTCHA ...",
+    "host_name": "sourceforge.net",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.quora.com/What-are-some-good-open-source-web-scraping-and-crawling-tools",
+    "name": "What are some good open source web scraping and crawling tools?",
+    "snippet": "Scrapy crawling is faster than any other platforms, since it uses asynchronous operations (on top of Twisted). Scrapy has better and faster ...",
+    "host_name": "www.quora.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

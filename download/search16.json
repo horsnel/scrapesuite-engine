@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://scrapfly.io/docs/scrape-api/anti-scraping-protection",
+    "name": "Anti-Scraping Protection (ASP) - Scrapfly",
+    "snippet": "Scrapfly ASP bypass does not require any extra input from you, and you will receive successful responses automatically.",
+    "host_name": "scrapfly.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io",
+    "name": "Scrapfly - Web Scraping API, Cloud Browser, Screenshot API",
+    "snippet": "SCRAPFLY Protected-site success rate 98% on protected sites, measured weekly by the Scrapeway benchmark. covers scraping, browser automation, screenshots, ...",
+    "host_name": "scrapfly.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/products/web-scraping-api",
+    "name": "Scrapfly is the Best Web Scraping API: 98% Success Rate, Anti-Bot",
+    "snippet": "Scrapfly is the best web scraping API. Collect data from any website with 98% success rate against Cloudflare, DataDome, Akamai, and 17 other anti-bot vendors.",
+    "host_name": "scrapfly.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/scraper-api-vs-crawler-api",
+    "name": "Scraper API vs Crawler API - When to Use Each for AI - Scrapfly Blog",
+    "snippet": "Core Features: This API handles modern web scraping challenges on autopilot. Anti Scraping Protection (ASP) manages anti-bot systems ...",
+    "host_name": "scrapfly.io",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.capterra.com/p/212653/Scrapfly/reviews",
+    "name": "Scrapfly Reviews 2026. Verified Reviews, Pros & Cons - Capterra",
+    "snippet": "The Anti-Bot Detection bypass is easily the standout feature. Scrapfly handles Cloudflare, Akamai, and Datadome challenges more reliably than almost any other ...",
+    "host_name": "www.capterra.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://webclaw.io/compare/scrapfly",
+    "name": "webclaw vs Scrapfly",
+    "snippet": "Scrapfly's anti-scraping protection bypass costs up to 25 credits per request, and JS rendering adds another 5x. up to 25 credits per request. Good debugging ...",
+    "host_name": "webclaw.io",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://docs.crewai.com/en/tools/web-scraping/scrapflyscrapetool",
+    "name": "Scrapfly Scrape Website Tool - CrewAI Documentation",
+    "snippet": "This tool provides advanced web scraping capabilities with headless browser support, proxies, and anti-bot bypass features. anti-scraping protection bypass.",
+    "host_name": "docs.crewai.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/scrapfly",
+    "name": "Scrapfly - GitHub",
+    "snippet": "Official TypeScript/JavaScript SDK for the Scrapfly platform: web scraping, screenshots, AI extraction, crawling, and a remote anti-bot browser.",
+    "host_name": "github.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrape.do/compare/scrapfly-vs-scrapedo",
+    "name": "ScrapFly vs. Scrape.do: Which API Is Better?",
+    "snippet": "ScrapFly claims 99.99% uptime but performs slightly worse than that at 95.2% with 10.3 second average response rate. These numbers for sure aren't awful for a ...",
+    "host_name": "scrape.do",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/how-to-bypass-anti-bot-protection-when-web-scraping",
+    "name": "How to Bypass Anti-Bot Protection When Web Scraping - Scrapfly Blog",
+    "snippet": "Scrapfly's Anti-Scraping Protection (ASP) bypasses all six anti-bot systems covered in this guide. ASP handles TLS fingerprinting, browser ...",
+    "host_name": "scrapfly.io",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

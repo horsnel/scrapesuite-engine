@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.imperva.com/learn/application-security/credential-stuffing",
+    "name": "What is Credential Stuffing | Attack Example & Defense Methods",
+    "snippet": "Credential stuffing is a cyberattack method in which attackers use lists of compromised user credentials to breach into a system.",
+    "host_name": "www.imperva.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cloudflare.com/learning/bots/what-is-credential-stuffing",
+    "name": "What is credential stuffing? | Learning Center - Cloudflare",
+    "snippet": "Credential stuffing is a cyberattack that uses stolen login credentials from one breach to gain access to accounts on other services.",
+    "host_name": "www.cloudflare.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.humansecurity.com/learn/blog/credential-stuffing-and-account-takeover-attacks-remain-nagging-business-problems",
+    "name": "Credential stuffing and account takeover attacks remain nagging",
+    "snippet": "Stolen user credentials are involved in 31% of breaches, and 20% of visits to a login page are attempted account takeovers.",
+    "host_name": "www.humansecurity.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.arkoselabs.com/solutions/credential-stuffing",
+    "name": "Credential Stuffing Solution - Arkose Labs",
+    "snippet": "Stop credential stuffing attacks and protect user accounts from takeover. Arkose Labs eliminates the value of stolen credentials with advanced bot defense.",
+    "host_name": "www.arkoselabs.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.paloaltonetworks.com/cyberpedia/credential-stuffing",
+    "name": "What Is Credential Stuffing? - Palo Alto Networks",
+    "snippet": "Credential stuffing is a high-volume, automated attack that tests stolen username-password pairs across multiple services, exploiting password reuse.",
+    "host_name": "www.paloaltonetworks.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://jsoverson.medium.com/3-misunderstandings-about-credential-stuffing-attacks-3526c618a8d6",
+    "name": "3 Misunderstandings about Credential Stuffing attacks",
+    "snippet": "Credential stuffing is defined as large-scale automation of login flows fed by previously discovered username and password pairs.",
+    "host_name": "jsoverson.medium.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.healthcareitnews.com/news/how-provider-organizations-can-protect-against-credential-stuffing-and-data-scraping",
+    "name": "How provider organizations can protect against credential stuffing",
+    "snippet": "After a successful credential stuffing attack on a healthcare provider organization's patient portal comes data scraping. Web scraping, or ...",
+    "host_name": "www.healthcareitnews.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.facebook.com/groups/linux.fans.group/posts/30143782288570166",
+    "name": "Largest data breach in history not a new breach - Facebook",
+    "snippet": "How it happened The breach appears to stem from infostealer malware, which harvests credentials from infected devices—not corporate server hacks ...",
+    "host_name": "www.facebook.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.vectra.ai/resources/credential-stuffing-attack",
+    "name": "Anatomy of a Credential Stuffing Attack - Vectra AI",
+    "snippet": "Credential stuffing is a type of cyberattack where attackers use automated tools to try large volumes of username and password combinations — often obtained ...",
+    "host_name": "www.vectra.ai",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.huntress.com/blog/biggest-data-breaches",
+    "name": "27 Biggest Data Breaches in History: Famous Examples - Huntress",
+    "snippet": "Learn about the biggest data breaches of the past 20 years, how they happened, and how you can better protect your organization from major ...\nSina Weibo initially attributed the leak to an API vulnerability, later admitting it was a data scraping operation exploiting a system loophole.",
+    "host_name": "www.huntress.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

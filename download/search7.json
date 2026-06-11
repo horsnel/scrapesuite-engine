@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.browserless.io/blog/tls-fingerprinting-explanation-detection-and-bypassing-it-in-playwright-and-puppeteer",
+    "name": "TLS Fingerprinting: How It Works & How to Bypass It (2025)",
+    "snippet": "Learn what TLS fingerprinting is, how JA3 and JA4 detection works, and how to bypass TLS fingerprint detection in Playwright and Puppeteer ...",
+    "host_name": "www.browserless.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/web-scraping-tools/ja3-fingerprint",
+    "name": "JA3/JA4 TLS Fingerprint - Detect Browser TLS/SSL  - Scrapfly",
+    "snippet": "Test your browser's JA3, JA4, JA3N, and Scrapfly TLS fingerprints. Learn how TLS fingerprinting is used to detect bots and block web scrapers.",
+    "host_name": "scrapfly.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.nstbrowser.io/blog/tls-fingerprinting",
+    "name": "TLS Fingerprinting: Techniques and Bypassing Methods - Nstbrowser",
+    "snippet": "Explore TLS fingerprinting techniques like JA3, JA4, and JARM, learn how to bypass them, and discover how Nstbrowser enhances your online ...",
+    "host_name": "www.nstbrowser.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.scrapehero.com/tls-fingerprint-bypass-techniques",
+    "name": "TLS Bypass Techniques: Detection vs Evasion [2026] - ScrapeHero",
+    "snippet": "Understand the evolution TLS fingerprint bypass techniques arms race from JA3 to modern ML defenses. Learn what works and what doesn't ...",
+    "host_name": "www.scrapehero.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/golang/comments/1n41g3s/introducing_surf_a_browserimpersonating_http",
+    "name": "A browser-impersonating HTTP client for Go (TLS/JA3/4/header",
+    "snippet": "Many websites today use advanced bot detection techniques — things like: TLS fingerprinting (JA3/JA4). HTTP/2 SETTINGS & priority frame ...",
+    "host_name": "www.reddit.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://rayobyte.com/blog/tls-fingerprinting",
+    "name": "Overcoming TLS Fingerprinting in Web Scraping - Rayobyte",
+    "snippet": "How Can You Bypass TLS Fingerprinting? · Use a Real Browser · Use Browser-Driven Scraping Libraries · TLS Fingerprint Spoofing · Use Proxies · Rotate ...",
+    "host_name": "rayobyte.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://arxiv.org/html/2602.09606v1",
+    "name": "When Handshakes Tell the Truth: Detecting Web Bad Bots via TLS",
+    "snippet": "This work explores a less intrusive, protocol-level method: using TLS fingerprinting with the JA4 technique to tell apart bots from real users.",
+    "host_name": "arxiv.org",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/topics/tls-fingerprinting",
+    "name": "tls-fingerprinting · GitHub Topics",
+    "snippet": "Bypass bot detection by perfectly mimicking Chrome, Firefox, and Safari at the cryptographic level (JA3/JA4, Akamai fingerprint, header order). Supports HTTP/ ...",
+    "host_name": "github.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://webdecoy.com/blog/ja4-fingerprinting-ai-scrapers-practical-guide",
+    "name": "JA4 Fingerprinting: Detect AI Scrapers by TLS - WebDecoy",
+    "snippet": "AI scrapers spoof user agents, but TLS handshakes give them away. Learn how JA4 fingerprinting expos.",
+    "host_name": "webdecoy.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://security.stackexchange.com/questions/236947/how-to-spoof-ja3-signature",
+    "name": "How to Spoof JA3 Signature? - Information Security Stack Exchange",
+    "snippet": "You can spoof specific JA3 fingerprints by manipulating the accepted ciphers. But likely you cannot spoof arbitrary ones.",
+    "host_name": "security.stackexchange.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://scrapfly.io/blog/posts/puppeteer-stealth-complete-guide",
+    "name": "Puppeteer Stealth: Complete Guide to Avoiding Detection - Scrapfly",
+    "snippet": "Learn how to use Puppeteer Stealth plugin to avoid detection. Complete tutorial covering stealth configuration, evasion modules, ...",
+    "host_name": "scrapfly.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.browserless.io/blog/stealth-scraping-puppeteer-playwright",
+    "name": "Stealth Scraping with Puppeteer or Playwright at Scale - Browserless",
+    "snippet": "Learn puppeteer and Playwright stealth scraping tactics for fingerprints, behavior, sessions, and SPA waits, plus how to scale cleanly using ...",
+    "host_name": "www.browserless.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.npmjs.com/search?q=keywords:detection-evasion",
+    "name": "keywords:detection-evasion - npm search",
+    "snippet": "A plugin that improves the stealth of the playwright library using fingerprints ... Stealth mode: Applies various techniques to make detection of headless ...",
+    "host_name": "www.npmjs.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/WebScrapingInsider/comments/1s33ts2/puppeteerextrapluginstealth_still_working_in_2026",
+    "name": "puppeteer-extra-plugin-stealth still working in 2026, how? - Reddit",
+    "snippet": "Both Puppeteer and Playwright instrument the browser through the Chrome DevTools Protocol. Detection systems now look for artifacts of that ...",
+    "host_name": "www.reddit.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.browsercat.com/post/playwright-vs-puppeteer-web-scraping-comparison",
+    "name": "Playwright vs Puppeteer: Best Choice for Web Scraping? - BrowserCat",
+    "snippet": "The stealth plugin patches Puppeteer's browser instances to mask typical bot fingerprints. For example, it can flip navigator.webdriver to false ...",
+    "host_name": "www.browsercat.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/managedcode/playwright_stealth",
+    "name": "managedcode/playwright_stealth: Stealth evasion library  - GitHub",
+    "snippet": "Stealth evasion library for Microsoft.Playwright (.NET). Applies 31 init-script patches that mask headless Chrome fingerprints — navigator properties, ...",
+    "host_name": "github.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/79863349/puppeteer-even-with-stealth-plugin-or-playwright-cant-login-on-google-account",
+    "name": "Puppeteer (even with Stealth plugin) or Playwright can't login on",
+    "snippet": "Google has sophisticated anti-botting nowadays. As this answer explains, Puppeteer's browser makes no attempt at being undetectable, ...",
+    "host_name": "stackoverflow.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://kameleo.io/blog/the-best-headless-chrome-browser-for-bypassing-anti-bot-systems",
+    "name": "The Best Headless Chrome Browser for Bypassing Anti-Bot Systems",
+    "snippet": "In this article, we analyze and compare some of the most popular headless Chrome browsers - Playwright, Puppeteer Stealth, Undetected ChromeDriver, and Kameleo ...",
+    "host_name": "kameleo.io",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=banOBNYkCeI",
+    "name": "How to Use Puppeteer Extra for Stealth Web Scraping - YouTube",
+    "snippet": "Looking for reliable proxies for your projects? Check out our solutions here: https://iproyal.club/home and use code YOUTUBE3 for an extra ...",
+    "host_name": "www.youtube.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://o-mega.ai/articles/best-stealth-browser-alternatives-to-anchor-2026",
+    "name": "Best Stealth Browser Alternatives to Anchor 2026 | Articles - O-mega.ai",
+    "snippet": "Kameleo provides headless mode with Selenium, Playwright, and Puppeteer integration, enabling automated workflows while maintaining full stealth ...",
+    "host_name": "o-mega.ai",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

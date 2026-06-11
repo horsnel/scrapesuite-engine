@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://imaginecommunications.com/insights-and-resources/cybersecurity-watch-top-five-takeaways-netflix-hack",
+    "name": "Cybersecurity Watch: Top Five Takeaways from Netflix Hack",
+    "snippet": "A ransomware attack involving Netflix that resulted in the unauthorized release of several episodes of one of the media company's most popular shows.",
+    "host_name": "imaginecommunications.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://cybersecurityventures.com/today",
+    "name": "CYBERCRIME WIRE: Latest Security And Privacy News",
+    "snippet": "The agency stated that the attack damaged its technical infrastructure and temporarily halted its media operations. Full Story. Source: Hawar News Agency. 06 ...",
+    "host_name": "cybersecurityventures.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://oxcyber.org/netflixs-cybersecurity-breach-what-you-need-to-know",
+    "name": "Netflix's Cybersecurity Breach: What You Need to Know - OxCyber",
+    "snippet": "Possible attack methods include: Phishing Attacks – Trick employees into revealing credentials. Weak Security Controls – If Iyuno didn't enforce strong ...",
+    "host_name": "oxcyber.org",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.researchgate.net/publication/370322883_Online_Database_Security_Threats_and_Solutions_The_NetFlix_Incident",
+    "name": "Online Database Security Threats and Solutions: The NetFlix Incident",
+    "snippet": "attack revealed that the scale of the security breach is high. Netflix fell short of recommended best practice rules as. outlined in “The Data Protection Act ...",
+    "host_name": "www.researchgate.net",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.beyondtrust.com/blog/entry/netflix-breach-orange-black-another-hack",
+    "name": "Netflix Breach: Orange, Black, and Another Hack - BeyondTrust",
+    "snippet": "The breach confirms findings from the 2017 Verizon Data Breach Report that 73% of all attacks are financially motivated and no business, or ...",
+    "host_name": "www.beyondtrust.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=lFSieutAXfc",
+    "name": "New Details Emerge On Hack Attack Of Netflix - YouTube",
+    "snippet": "Hackers released episodes of the popular Netflix show Orange is the New Black before it premiered on the Los Gatos streaming service.",
+    "host_name": "www.youtube.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://hothardware.com/news/massive-47gb-plaintext-breach",
+    "name": "Massive 47GB Data Breach Exposes Millions Of Passwords For",
+    "snippet": "Massive 47GB Data Breach Exposes Millions Of Passwords For Google, Netflix And More. by Zak Killian — Tuesday, May 27, 2025, 01:30 PM EDT. Comments.",
+    "host_name": "hothardware.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.bugcrowd.com/blog/a-hacker-breaks-down-netflixs-new-show-zero-day",
+    "name": "A hacker breaks down Netflix's new show, Zero Day | @Bugcrowd",
+    "snippet": "This is because the attack focused on breaking the core requirements and critical infrastructure that many systems share: the internet, ...",
+    "host_name": "www.bugcrowd.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://rodtrent.substack.com/p/security-check-in-quick-hits-supply-4ce",
+    "name": "Security Check-in Quick Hits: Supply Chain Attacks Rage On, Major",
+    "snippet": "Security Check-in Quick Hits: Supply Chain Attacks Rage On, Major Breaches Confirmed, and Ransomware Disrupts Critical Infrastructure · HackerOne ...",
+    "host_name": "rodtrent.substack.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.develeap.com/news/how-netflix-maps-thousands-of-microservices-in-real-time-f973f6a3",
+    "name": "How Netflix Maps Thousands of Microservices in Real-Time",
+    "snippet": "Over 50 legitimate npm packages were compromised in coordinated supply chain attacks distributing a Rust-based information stealer and a self-spreading worm.",
+    "host_name": "www.develeap.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

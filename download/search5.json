@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://webautomation.io/blog/ultimate-guide-to-web-scraping-antibot-and-blocking-systems-and-how-to-bypass-them",
+    "name": "The Ultimate Guide to Web Scraping Antibot Systems (2025)",
+    "snippet": "Compare top anti-bot systems like Cloudflare, Akamai, and DataDome — their strengths, weaknesses, and real-world scraping bypass tactics for ...",
+    "host_name": "webautomation.io",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/bypass",
+    "name": "Bypass Anti-Bot Protection - Cloudflare, Akamai, DataDome and More",
+    "snippet": "Bypass Cloudflare, Akamai, DataDome, PerimeterX, Kasada, Imperva, F5, and AWS WAF with a single API parameter. Scrapfly ASP achieves 94-98% success rate ...",
+    "host_name": "scrapfly.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.kasada.io/kasada-introduces-api-integrations",
+    "name": "Kasada Introduces New CDN Edge and Custom API Integrations",
+    "snippet": "With Kasada's new CDN edge API integrations, its award-winning dynamic bot defense platform integrates quickly and easily with any CDN provider, ...",
+    "host_name": "www.kasada.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.facebook.com/groups/1577315533418837/posts/1663456318138091",
+    "name": "Python library for scraping websites with bot protection bypass",
+    "snippet": "This python library scrapes any website while bypassing every bot protection on the internet. It rotates fingerprints, mimics real browser ...",
+    "host_name": "www.facebook.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://stackoverflow.com/questions/74417183/is-there-anyway-to-bypass-get-around-or-avoid-kasada-bot-mitigation-protection",
+    "name": "Is there anyway to bypass, get around, or avoid Kasada Bot",
+    "snippet": "Professional anti-bot services use countermeasures against Puppeteer, including plugins like stealth/extra-stealth.",
+    "host_name": "stackoverflow.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@Mustafa77/how-to-bypass-cloudflare-for-web-scarping-6e04839114d6",
+    "name": "Web Scraping Part5: How to Bypass Cloudflare. - Medium",
+    "snippet": "Modern WAFs like Akamai and DataDome use similar protection mechanisms that require more sophisticated bypass techniques. Cloudscraper: A ...",
+    "host_name": "medium.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1hlzynt/how_to_get_around_highcost_scraping_of_heavily",
+    "name": "How to get around high-cost scraping of heavily bot detected sites?",
+    "snippet": "I am scraping a NBC-owned site's API and they have crazy bot detection. Very strict cloudflare security & captcha/turnstile, custom WAF, custom session ...",
+    "host_name": "www.reddit.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.scrapehero.com/bypass-anti-bot-services",
+    "name": "7 Popular Anti-Bot Services and Strategies To Bypass Them",
+    "snippet": "Bypassing anti-bot services is key to efficient scraping. This article discusses popular anti-bot services and methods to overcome them.",
+    "host_name": "www.scrapehero.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapebadger.com/blog/how-to-bypass-kasada-anti-bot-complete-2026-guide",
+    "name": "How to Bypass Kasada Anti-Bot Protection: Complete 2026 Guide",
+    "snippet": "Kasada technical guide covers all five detection layers and how ScrapeBadger bypasses them automatically. Star free with 1000 free credits.",
+    "host_name": "scrapebadger.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://guptadeepak.com/tools/top-5-bot-management-tools-2026",
+    "name": "Top 5 Bot Management & Anti-Fraud Bot Tools of 2026",
+    "snippet": "Compare the top 5 bot management and anti-fraud bot tools of 2026. Honest analysis of DataDome, HUMAN Security, Kasada, Cloudflare Bot ...",
+    "host_name": "guptadeepak.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

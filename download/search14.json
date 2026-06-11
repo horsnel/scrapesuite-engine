@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.thumbmarkjs.com/content/browser-fingerprinting-techniques",
+    "name": "Browser Fingerprinting Techniques: How Each Signal Works (With",
+    "snippet": "Learn how canvas, WebGL, audio, and TLS browser fingerprinting techniques work — with example JavaScript code.",
+    "host_name": "www.thumbmarkjs.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.browsercat.com/post/browser-fingerprint-spoofing-explained",
+    "name": "Master Browser Fingerprint Spoofing with Expert Techniques",
+    "snippet": "Browser fingerprinting is a powerful technique that websites use to identify and track users by collecting various details about their browser and device.",
+    "host_name": "www.browsercat.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://webdecoy.com/blog/browser-fingerprinting-2026-what-still-works",
+    "name": "Browser Fingerprinting 2026: What Works, What Doesn't - WebDecoy",
+    "snippet": "Randomizes canvas output, blocks WebGL renderer info, customizable browser profiles with unique canvas, WebGL, AudioContext, and font fingerprints.\nBrave: The most aggressive anti-fingerprinting browser. Randomizes canvas output, blocks WebGL renderer info, adds noise to AudioContext, limits font ...",
+    "host_name": "webdecoy.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://proxies.sx/use-cases/privacy/fingerprinting",
+    "name": "Browser Fingerprinting Guide 2026 | Canvas, WebGL, WebGPU",
+    "snippet": "Advanced fingerprinting can identify you across different browsers on the same device. GPU, audio hardware, and installed fonts remain constant.",
+    "host_name": "proxies.sx",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://pydoll.tech/docs/deep-dive/fingerprinting/browser-fingerprinting",
+    "name": "Browser Fingerprinting - Pydoll - Async Web Automation Library",
+    "snippet": "The canvas, WebGL, and AudioContext fingerprints come from actual GPU and audio hardware. The navigator properties, plugins, and screen dimensions reflect ...",
+    "host_name": "pydoll.tech",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=EVh84c0gVqE",
+    "name": "What to do with hardware fingerprints? Discussing Canvas, WebGL",
+    "snippet": "Canvas #WebGL #AudioContext #fingerprinting We discuss how Canvas, WebGL, and AudioContext fingerprints work in the wild and provide ...",
+    "host_name": "www.youtube.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://blog.octobrowser.net/canvas-audio-and-webgl-an-in-depth-analysis-of-fingerprinting-technologies",
+    "name": "Canvas, Audio and WebGL: an in-depth analysis of fingerprinting",
+    "snippet": "An anti-detect browser can meaningfully and consistently spoof your fingerprint and help you preserve real privacy online.",
+    "host_name": "blog.octobrowser.net",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://gologin.com/blog/browserleaks-review-fingerprint-testing",
+    "name": "BrowserLeaks Review 2026: The Ultimate Guide to Fingerprint Testing",
+    "snippet": "Canvas and AudioContext fingerprints mean your hardware is identifiable regardless of your VPN or browser settings. WebRTC leaks mean your real ...",
+    "host_name": "gologin.com",
+    "rank": 7,
+    "date": "Jun 10, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://litport.net/blog/browser-fingerprint-detection-advanced-guide-for-developers-18406",
+    "name": "Browser Fingerprint Detection in 2025: Advanced Guide for  - Litport",
+    "snippet": "Learn how browser fingerprinting works, explore advanced detection techniques, and implement effective solutions with real-world examples.",
+    "host_name": "litport.net",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrappey.com/qa/web-scraping-apis/what-is-browser-fingerprinting",
+    "name": "What Is Browser Fingerprinting? How It Works & Why It Matters",
+    "snippet": "Browser fingerprinting identifies visitors by their device characteristics — fonts, canvas, WebGL, TLS — without cookies.",
+    "host_name": "scrappey.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

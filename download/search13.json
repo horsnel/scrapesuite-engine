@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.cloudflare.com/learning/ddos/glossary/mirai-botnet",
+    "name": "What is the Mirai Botnet? - Cloudflare",
+    "snippet": "Learn how Mirai malware turns IoT devices running on the ARC processor and the Linux OS, into botnets. Mirai is commonly used to launch DDoS attacks, ...",
+    "host_name": "www.cloudflare.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://krebsonsecurity.com/2025/10/aisuru-botnet-shifts-from-ddos-to-residential-proxies",
+    "name": "Aisuru Botnet Shifts from DDoS to Residential Proxies",
+    "snippet": "First identified in August 2024, Aisuru has spread to at least 700,000 IoT systems, such as poorly secured Internet routers and security cameras ...",
+    "host_name": "krebsonsecurity.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cisa.gov/news-events/alerts/2016/10/14/heightened-ddos-threat-posed-mirai-and-other-botnets",
+    "name": "Heightened DDoS Threat Posed by Mirai and Other Botnets - CISA",
+    "snippet": "An IoT botnet powered by Mirai malware created the DDoS attack. The Mirai malware continuously scans the Internet for vulnerable IoT devices.",
+    "host_name": "www.cisa.gov",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.linkedin.com/posts/bkrebs_new-by-me-aisuru-botnet-shifts-from-ddos-activity-7389133838029053952-VP_3",
+    "name": "New, by me: Aisuru Botnet Shifts from DDoS to Residential Proxies",
+    "snippet": "Happily, the domain name was deftly snatched up last week by Philippe Caturegli, “chief hacking officer” for the security intelligence company ...",
+    "host_name": "www.linkedin.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.imperva.com/blog/malware-analysis-mirai-ddos-botnet",
+    "name": "Breaking Down Mirai: An IoT DDoS Botnet Analysis - Imperva",
+    "snippet": "In this post we share information from our own encounters with Mirai botnets as well as the results of our investigation of Mirai's source code.",
+    "host_name": "www.imperva.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cyber.nj.gov/threat-landscape/malware/botnets/mirai",
+    "name": "Mirai - Botnets - NJCCIC",
+    "snippet": "The Mirai botnet is named after the Mirai Trojan, the malware that was used in its creation. Mirai was discovered by MalwareMustDie!, a white-hat security ...",
+    "host_name": "www.cyber.nj.gov",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.indusface.com/learning/mirai-botnet",
+    "name": "Mirai Botnet: How It Works and How to Stop It | Indusface",
+    "snippet": "The Mirai botnet is a network of compromised IoT devices used to launch massive DDoS attacks, exploiting weak credentials & vulnerabilities ...",
+    "host_name": "www.indusface.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.recordedfuture.com/research/mirai-botnet-iot",
+    "name": "Mirai-Variant IoT Botnet Used to Target Financial Sector in January",
+    "snippet": "Insikt Group assesses that a Mirai botnet variant, possibly linked to the IoTroop or Reaper botnet, was utilized in attacks on at least one ...",
+    "host_name": "www.recordedfuture.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.facebook.com/groups/2600net/posts/4192410157648744",
+    "name": "New IoT botnet capable of crippling digital assaults - Facebook",
+    "snippet": "I wonder if this is why I've seen posts similar to, “Why is my toaster oven using 500 Mbps?”|IoT is 🗑️ Why do corporations connect everything ...",
+    "host_name": "www.facebook.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.researchgate.net/publication/363475096_Understanding_the_Mirai_Botnet_Understanding_the_Mirai_Botnet",
+    "name": "(PDF) Understanding the Mirai Botnet  - ResearchGate",
+    "snippet": "PDF | The Mirai botnet, composed primarily of embedded and IoT devices, took the Internet by storm in late 2016 when it overwhelmed several ...",
+    "host_name": "www.researchgate.net",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

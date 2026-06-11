@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://www.capsolver.com/blog/web-scraping/web-scraping-anti-detection-techniques",
+    "name": "Web Scraping Anti-Detection Techniques: Stable Data Extraction",
+    "snippet": "This guide explores the core mechanisms behind bot detection, from basic IP rate limiting to advanced browser fingerprinting. By examining these ...",
+    "host_name": "www.capsolver.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@iramjack8/anti-scraping-418f809b5085",
+    "name": "Anti-Scraping. Defending the Data Perimeter | by Iram Jack | Medium",
+    "snippet": "Anti-scraping is the practice of detecting, deterring, and blocking automated bots from extracting data without permission. This guide moves ...",
+    "host_name": "medium.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.paloaltonetworks.com/cyberpedia/what-is-botnet",
+    "name": "What is a Botnet? - Palo Alto Networks",
+    "snippet": "To evade detection, modern botnets often use polymorphic code that alters its signature with every new infection. This prevents legacy antivirus software from ...",
+    "host_name": "www.paloaltonetworks.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.radware.com/cyberpedia/bot-management/best-anti-botnet-software",
+    "name": "Best Anti-Botnet Software: Top 5 Solutions in 2025 - Radware",
+    "snippet": "Anti-bot software helps protect digital platforms from malicious bot attacks by detecting and mitigating suspicious or automated bot activity.",
+    "host_name": "www.radware.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.akamai.com/blog/security/the-web-scraping-problem-part-three-protecting-against-botnets",
+    "name": "The Web Scraping Problem, Part 3: Protecting Against Botnets",
+    "snippet": "Akamai Content Protector is the next generation of scraper detection, designed to detect most activity and resist continuous changes in attack strategies.",
+    "host_name": "www.akamai.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://dspace.lib.ntua.gr/xmlui/bitstream/handle/123456789/62389/thesis%20final%20final%20final.pdf?sequence=1",
+    "name": "[PDF] Advanced Web Scraping in the Modern Web - DSpace@NTUA",
+    "snippet": "A major focus of this work is to make web scraping more accessible to non-technical individuals, facilitated through the development of Soniq, ...",
+    "host_name": "dspace.lib.ntua.gr",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.group-ib.com/resources/knowledge-hub/botnet",
+    "name": "Everything You Need to Know About Botnets - Group-IB",
+    "snippet": "A botnet is a network of interconnected devices secretly infected with malware, from laptops and smartphones to IoT gadgets like smart TVs and routers.",
+    "host_name": "www.group-ib.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://hirinfotech.com/unblockable-web-scraping-the-ultimate-guide",
+    "name": "Unblockable Web Scraping: The Ultimate Guide - Hir Infotech",
+    "snippet": "Stop getting blocked when web scraping in 2026. This guide details how to use AI, residential proxies, and advanced fingerprinting to ...",
+    "host_name": "hirinfotech.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=4nZD6ee2Xo8",
+    "name": "WHY 2025 - Stealth Web Scraping Techniques for OSINT - YouTube",
+    "snippet": "... attack surface reconnaissance. Yet, as anti-bot technologies grow more sophisticated, traditional scraping methods based on direct HTTP ...",
+    "host_name": "www.youtube.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://news.risky.biz/risky-bulletin-browser-extensions-hijacked-for-web-scraping-botnet",
+    "name": "Risky Bulletin: Browser extensions hijacked for web scraping botnet",
+    "snippet": "More than one million users have installed browser extensions that turn their browsers into proxies for a web scraping botnet.",
+    "host_name": "news.risky.biz",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://browserbase.com/blog/best-web-scraping-tools",
+    "name": "Top 10 web scraping tools in 2025: Complete developer guide",
+    "snippet": "Anti-Bot Sophistication: Advanced detection systems from Cloudflare, Akamai, and PerimeterX demand more sophisticated evasion techniques. Cloud- ...",
+    "host_name": "browserbase.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://python.plainenglish.io/modern-anti-bot-systems-and-how-to-bypass-them-4d28475522d1",
+    "name": "Modern Anti-Bot Systems and How to Bypass Them | by Harim Choi",
+    "snippet": "Reduces scraping frequency. This project: Educational demonstration of anti-bot bypass techniques. Users responsible for legal compliance.",
+    "host_name": "python.plainenglish.io",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1ou92ee/built_a_production_web_scraper_that_bypasses",
+    "name": "Built a production web scraper that bypasses anti-bot detection",
+    "snippet": "I built a production scraper that gets past modern multi-layer anti-bot defenses (fingerprinting, behavioral biometrics, TLS analysis, ...",
+    "host_name": "www.reddit.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.sitepoint.com/modern-web-scraping",
+    "name": "Modern Web Scraping: How to Actually Bypass Anti-Bot Systems",
+    "snippet": "Your web scraper keeps getting blocked? Learn why rotating IPs fail, how Cloudflare detects bots, and what strategies actually bypass modern ...",
+    "host_name": "www.sitepoint.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://medium.com/@sohail_saifii/web-scraping-in-2025-bypassing-modern-bot-detection-fcab286b117d",
+    "name": "Web Scraping in 2025: Bypassing Modern Bot Detection - Medium",
+    "snippet": "In 2025, it's an arms race. Websites have gotten really, really good at detecting bots. We're talking multi-layered detection systems that ...",
+    "host_name": "medium.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.kadoa.com/blog/what-is-web-scraping",
+    "name": "What is Web Scraping? Enterprise Use Cases for 2026 - Kadoa",
+    "snippet": "According to the 2026 State of Web Scraping report, Cloudflare is the single most commonly encountered anti-bot system. Cloudflare, Akamai, DataDome, and ...",
+    "host_name": "www.kadoa.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1sgzfah/build_an_agentic_browser_that_beats_anti_bot",
+    "name": "Build an Agentic Browser That Beats Anti Bot Systems - Reddit",
+    "snippet": "108 votes, 28 comments. Yes it do scraping too link : https://github.com/yranjan06/WEBGhosting-MCP.",
+    "host_name": "www.reddit.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://brightdata.com/blog/web-data/best-web-scraping-apis",
+    "name": "The 9 Best Web Scraping APIs in 2026: Ranked & Tested - Bright Data",
+    "snippet": "A data-driven breakdown of the best web scraping APIs in 2026, ranked by real benchmark results, pricing, and anti-bot performance. 27 min read.",
+    "host_name": "brightdata.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.olostep.com/blog/what-is-web-scraping",
+    "name": "What Is Web Scraping? How It Works in 2026 - Olostep",
+    "snippet": "It automatically handles JavaScript rendering, proxy rotation, and anti-bot bypassing, converting raw web content into structured JSON or ...",
+    "host_name": "www.olostep.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.youtube.com/watch?v=4nZD6ee2Xo8",
+    "name": "WHY 2025 - Stealth Web Scraping Techniques for OSINT - YouTube",
+    "snippet": "anti-bot technologies grow more sophisticated, traditional scraping methods based on direct HTTP requests are increasingly ineffective. This ...",
+    "host_name": "www.youtube.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

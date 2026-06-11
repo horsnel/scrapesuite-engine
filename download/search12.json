@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://cybersecurityventures.com/today",
+    "name": "CYBERCRIME WIRE: Latest Security And Privacy News",
+    "snippet": "Our daily feed provides you with the latest news and breaking stories on the cybereconomy, hackers, intrusions, privacy, security and much more.",
+    "host_name": "cybersecurityventures.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.pkware.com/blog/2026-data-breaches",
+    "name": "2026 Data Breaches: Cybersecurity Incidents Explained - PKWARE",
+    "snippet": "Each month, we'll cover 2026 data breaches, revealing the scale, data exposed, breach cause, and key lessons.",
+    "host_name": "www.pkware.com",
+    "rank": 1,
+    "date": "Jun 4, 2026",
+    "favicon": ""
+  },
+  {
+    "url": "https://firecompass.com/weekly-cybersecurity-intelligence-report-cyber-threats-breaches-11-aug-18-aug",
+    "name": "Weekly Cybersecurity Briefing | Massive Data Breaches Aug 2025",
+    "snippet": "Cybersecurity Intelligence Aug 2025: Major Salesforce, healthcare & staffing breaches exposed. Explore top cyber threats & mitigation tips.",
+    "host_name": "firecompass.com",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.ibm.com/reports/data-breach",
+    "name": "Cost of a Data Breach Report 2025 - IBM",
+    "snippet": "IBM's global Cost of a Data Breach Report 2025 provides up-to-date insights into cybersecurity threats and their financial impacts on organizations.",
+    "host_name": "www.ibm.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.enzoic.com/blog/inside-the-credential-economy-compromised-credentials",
+    "name": "Inside the Credential Economy - Enzoic",
+    "snippet": "Threat research into compromised credentials. See how infostealer malware and ULP lists continue to drive data breaches and ATO.",
+    "host_name": "www.enzoic.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.pomerium.com/blog/january-2025-data-breaches-list",
+    "name": "January 2025 Data Breaches [LIST] - Pomerium",
+    "snippet": "In 2023, PayPal disclosed that threat actors conducted a large-scale credentials stuffing attack between December 6th and December 8th, 2022, where 35,000 ...",
+    "host_name": "www.pomerium.com",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://tech.co/news/data-breaches-updated-list",
+    "name": "Data Breaches That Have Happened This Year (2026 Update)",
+    "snippet": "Reportedly, the attack occurred between July 17, 2024 and August 3, 2024. ... breach – customer accounts were broken into with a credential-stuffing attack.",
+    "host_name": "tech.co",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cybergensecurity.com/cyber-threats-facing-streaming-platforms-in-2025",
+    "name": "Cyber Threats Facing Streaming Platforms in 2025",
+    "snippet": "Learn about the top cyber threats facing streaming platforms in 2025. Cybergen experts explain risks such as credential theft, piracy, ...",
+    "host_name": "www.cybergensecurity.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.cloudskope.com/insights/breaches",
+    "name": "Breach Library: 50+ Major Breaches - Cloudskope",
+    "snippet": "The Norton LifeLock credential stuffing attack of January 2023 affected approximately 925,000 customer accounts, with attackers using credentials stolen from ...",
+    "host_name": "www.cloudskope.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.itpro.com/security/cyber-attacks/credential-theft-has-surged-160-percent-in-2025",
+    "name": "Credential theft has surged 160% in 2025 | IT Pro - ITPro",
+    "snippet": "Credential theft now accounts for one-in-five data breaches, with the number of compromised credentials skyrocketing.",
+    "host_name": "www.itpro.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]

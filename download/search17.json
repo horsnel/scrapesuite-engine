@@ -1,0 +1,92 @@
+[
+  {
+    "url": "https://brightdata.com/blog/web-data/best-captcha-solvers",
+    "name": "Top 10 CAPTCHA Solvers of 2026 - Bright Data",
+    "snippet": "Discover the best CAPTCHA solvers for web scraping. Learn about speed, accuracy, pricing, and API integration to bypass CAPTCHA challenges efficiently.",
+    "host_name": "brightdata.com",
+    "rank": 0,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://thunderbit.com/blog/best-captcha-solvers-web-scraping",
+    "name": "8 Best CAPTCHA Solvers for Web Scraping, Tested at Scale",
+    "snippet": "CapSolver is an AI-first CAPTCHA solving service built for speed. It uses machine learning models instead of human workers, which means faster ...\nModern challenges like reCAPTCHA v3, Cloudflare Turnstile, and hCaptcha analyze your browser fingerprint, mouse behavior, TLS handshake, and ...",
+    "host_name": "thunderbit.com",
+    "rank": 1,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://scrapfly.io/blog/posts/best-captcha-solving-api",
+    "name": "Best CAPTCHA Solving APIs in 2026 - Scrapfly Blog",
+    "snippet": "CapSolver built their reputation on speed. Their AI-first approach solves modern CAPTCHA types fast, often under 10 seconds. They've put a lot ...",
+    "host_name": "scrapfly.io",
+    "rank": 2,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://chromewebstore.google.com/detail/captcha-solver-automate-c/hlifkpholllijblknnmbfagnkjneagid",
+    "name": "Captcha Solver: automate CAPTCHA solving - Chrome Web Store",
+    "snippet": "-> CAPTCHA Solver extension detects hCaptcha, reCAPTCHA and MTCaptcha on any web page and automatically solve the challenges. -> Finer controls on the ...",
+    "host_name": "chromewebstore.google.com",
+    "rank": 3,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.reddit.com/r/webscraping/comments/1i47z9d/so_is_hcaptcha_now_essentially_impenetrable_to",
+    "name": "So is hCaptcha now essentially impenetrable to automated solving?",
+    "snippet": "The only potentially feasible solution I have found is a platform that lets you automate the filling of forms, button clicks and then inserts an actual human ...",
+    "host_name": "www.reddit.com",
+    "rank": 4,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://azapi.ai/blog/best-captcha-solver-api-for-web-scraping",
+    "name": "Best Captcha Solver API for Web Scraping: The Right Solution",
+    "snippet": "Very fast solve times (around 0.2–0.3 seconds); High accuracy across reCAPTCHA, hCaptcha, FunCaptcha, image, math & digit CAPTCHAs; Supports special Indian ...",
+    "host_name": "azapi.ai",
+    "rank": 5,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://hasdata.com/blog/captcha-solving",
+    "name": "Top 5 CAPTCHA Solving Services Benchmarked (2026) - HasData",
+    "snippet": "The 86% success rate means roughly 1 in 7 attempts will require a retry. Invisible reCAPTCHA and Cloudflare Turnstile both achieved 100% success ...",
+    "host_name": "hasdata.com",
+    "rank": 6,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://multilogin.com/blog/best-captcha-solve",
+    "name": "Best CAPTCHA Solver: Top Picks That Work in 2026 - Multilogin",
+    "snippet": "Capsolver is one of the fastest and most accurate CAPTCHA solvers on the market. It uses 100% AI and machine learning to handle everything from reCAPTCHA v2 and ...",
+    "host_name": "multilogin.com",
+    "rank": 7,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://github.com/luminati-io/cloudflare-captcha-solver",
+    "name": "luminati-io/cloudflare-captcha-solver: Solve Cloudflare  - GitHub",
+    "snippet": "The CAPTCHA Solver automatically detects and resolves CAPTCHAs in real-time. Simply enable the feature, and it will handle everything from detection to solving.\nOur CAPTCHA Solver uses advanced AI-based logic to detect, analyze, and solve CAPTCHAs automatically. It handles retries, fingerprinting, and headers to bypass ...",
+    "host_name": "github.com",
+    "rank": 8,
+    "date": "",
+    "favicon": ""
+  },
+  {
+    "url": "https://www.capsolver.com/blog/All/best-captcha-solver",
+    "name": "What is the best CAPTCHA solver in 2026 - CapSolver",
+    "snippet": "What's the most accurate CAPTCHA solver? CapSolver leads with a 99%+ success rate across tons of CAPTCHA types. · How much does a CAPTCHA solver ...",
+    "host_name": "www.capsolver.com",
+    "rank": 9,
+    "date": "",
+    "favicon": ""
+  }
+]
