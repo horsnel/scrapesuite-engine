@@ -1,0 +1,1271 @@
+     1→/**
+     2→ * Multi-Format Output Pipeline -- Transform scraped HTML into multiple output formats.
+     3→ *
+     4→ * Inspired by Bright Data's output pipeline: users specify an output format
+     5→ * (or let auto-detection choose one) instead of receiving raw HTML every time.
+     6→ * Each format is optimized for a different consumer use-case:
+     7→ *
+     8→ *   raw      -- Original HTML as-is (default, no processing)
+     9→ *   markdown -- Clean Markdown with headers, links, images, lists, tables, code
+    10→ *   cleaned  -- HTML with noise removed (scripts, ads, nav, cookie banners)
+    11→ *   text     -- Plain text with normalized whitespace
+    12→ *   parsed   -- Structured JSON with title, OG tags, headings, links, images, main content
+    13→ *
+    14→ * Key design decisions
+    15→ * --------------------
+    16→ *  • Regex-based parsing only -- no cheerio dependency for the core pipeline.
+    17→ *    Regex is faster and more reliable at scale for production HTML processing.
+    18→ *  • Simplified CSS selector support: 'main', 'article', '#id', '.class'
+    19→ *  • Proper error handling -- every format degrades gracefully on malformed HTML
+    20→ *  • Processing metrics -- every result includes size, compression ratio, and timing
+    21→ *
+    22→ * Usage
+    23→ * -----
+    24→ *   import { outputPipeline, detectBestFormat } from './output';
+    25→ *
+    26→ *   const result = outputPipeline.process(html, url, { format: 'markdown' });
+    27→ *   // result.content -- Markdown string
+    28→ *   // result.compressionRatio -- 0.35 (65% size reduction)
+    29→ *
+    30→ *   const best = detectBestFormat(html);
+    31→ *   // best === 'parsed' for mostly-boilerplate pages
+    32→ */
+    33→
+    34→import { createChildLogger } from '../utils/logger';
+    35→
+    36→const logger = createChildLogger('output-pipeline');
+    37→
+    38→// --- Public Types --------------------------------------------------------------
+    39→
+    40→/** Supported output formats for the pipeline. */
+    41→export type OutputFormat = 'raw' | 'markdown' | 'cleaned' | 'text' | 'parsed';
+    42→
+    43→/** Options controlling how the output pipeline transforms HTML. */
+    44→export interface OutputOptions {
+    45→  /** Desired output format. Default: 'raw'. */
+    46→  format: OutputFormat;
+    47→  /** Include metadata (title, description, OG tags) in output. Default: true for 'parsed', false otherwise. */
+    48→  includeMetadata?: boolean;
+    49→  /** Truncate output to this length (in characters). Default: no limit. */
+    50→  maxLength?: number;
+    51→  /** Extract content from a specific CSS-like selector. Simplified: 'main', 'article', '#id', '.class'. */
+    52→  selector?: string;
+    53→}
+    54→
+    55→/** Structured output returned by the 'parsed' format. */
+    56→export interface ParsedOutput {
+    57→  title: string;
+    58→  description: string;
+    59→  canonicalUrl: string;
+    60→  ogTags: Record<string, string>;
+    61→  author: string;
+    62→  publishedDate: string;
+    63→  headings: Array<{ level: number; text: string }>;
+    64→  links: Array<{ text: string; href: string }>;
+    65→  images: Array<{ alt: string; src: string }>;
+    66→  mainContent: string;
+    67→  wordCount: number;
+    68→}
+    69→
+    70→/** Result of processing HTML through the output pipeline. */
+    71→export interface OutputResult {
+    72→  /** The format that was applied. */
+    73→  format: OutputFormat;
+    74→  /** The transformed content (string for raw/markdown/cleaned/text, ParsedOutput for parsed). */
+    75→  content: string | ParsedOutput;
+    76→  /** Size of the original HTML in bytes. */
+    77→  originalSizeBytes: number;
+    78→  /** Size of the output in bytes. */
+    79→  outputSizeBytes: number;
+    80→  /** Ratio of outputSize / originalSize (< 1 means compression). */
+    81→  compressionRatio: number;
+    82→  /** Processing time in milliseconds. */
+    83→  processingMs: number;
+    84→}
+    85→
+    86→// --- Internal Helpers ----------------------------------------------------------
+    87→
+    88→/**
+    89→ * Decode common HTML entities to their character equivalents.
+    90→ */
+    91→function decodeEntities(text: string): string {
+    92→  return text
+    93→    .replace(/&amp;/g, '&')
+    94→    .replace(/&lt;/g, '<')
+    95→    .replace(/&gt;/g, '>')
+    96→    .replace(/&quot;/g, '"')
+    97→    .replace(/&#39;/g, "'")
+    98→    .replace(/&#x27;/g, "'")
+    99→    .replace(/&#x2F;/g, '/')
+   100→    .replace(/&apos;/g, "'")
+   101→    .replace(/&nbsp;/g, ' ')
+   102→    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+   103→    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+   104→}
+   105→
+   106→/**
+   107→ * Strip all HTML tags from a string and normalize whitespace.
+   108→ */
+   109→function stripAllTags(html: string): string {
+   110→  return html
+   111→    .replace(/<[^>]+>/g, ' ')
+   112→    .replace(/\s+/g, ' ')
+   113→    .trim();
+   114→}
+   115→
+   116→/**
+   117→ * Extract the content of a simplified CSS selector from HTML.
+   118→ * Supports: 'main', 'article', '#id', '.class', and tag selectors.
+   119→ * Returns the original HTML if the selector doesn't match.
+   120→ */
+   121→function extractBySelector(html: string, selector: string): string {
+   122→  if (!selector) return html;
+   123→
+   124→  const trimmed = selector.trim();
+   125→
+   126→  // ID selector: #my-id
+   127→  if (trimmed.startsWith('#')) {
+   128→    const id = trimmed.slice(1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+   129→    const re = new RegExp(`<[^>]+id=["']${id}["'][^>]*>([\\s\\S]*?)(?:<\\/\\w+>\\s*)?(?=<[^>]+id=["']|<\\/body|$)`, 'i');
+   130→    const match = html.match(re);
+   131→    if (match) {
+   132→      // Try to get a balanced closing tag
+   133→      const balanced = extractBalancedElement(html, 'id', id);
+   134→      if (balanced) return balanced;
+   135→      return match[1];
+   136→    }
+   137→    return html;
+   138→  }
+   139→
+   140→  // Class selector: .my-class
+   141→  if (trimmed.startsWith('.')) {
+   142→    const cls = trimmed.slice(1).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+   143→    const balanced = extractBalancedElement(html, 'class', cls);
+   144→    if (balanced) return balanced;
+   145→    return html;
+   146→  }
+   147→
+   148→  // Tag selector: main, article, section, div.content, etc.
+   149→  const tagOnly = trimmed.match(/^(\w+)$/);
+   150→  if (tagOnly) {
+   151→    const tag = tagOnly[1].toLowerCase();
+   152→    const balanced = extractBalancedTag(html, tag);
+   153→    if (balanced) return balanced;
+   154→    return html;
+   155→  }
+   156→
+   157→  // Tag with class: div.my-class
+   158→  const tagClass = trimmed.match(/^(\w+)\.([\w-]+)$/);
+   159→  if (tagClass) {
+   160→    const tag = tagClass[1].toLowerCase();
+   161→    const cls = tagClass[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+   162→    const balanced = extractBalancedElement(html, 'class', cls, tag);
+   163→    if (balanced) return balanced;
+   164→    return html;
+   165→  }
+   166→
+   167→  // Tag with id: div#my-id
+   168→  const tagId = trimmed.match(/^(\w+)#([\w-]+)$/);
+   169→  if (tagId) {
+   170→    const tag = tagId[1].toLowerCase();
+   171→    const id = tagId[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+   172→    const balanced = extractBalancedElement(html, 'id', id, tag);
+   173→    if (balanced) return balanced;
+   174→    return html;
+   175→  }
+   176→
+   177→  return html;
+   178→}
+   179→
+   180→/**
+   181→ * Extract balanced HTML element content by attribute name and value.
+   182→ * Uses a simple stack-based approach to handle nesting.
+   183→ */
+   184→function extractBalancedElement(
+   185→  html: string,
+   186→  attrName: string,
+   187→  attrValue: string,
+   188→  tagName?: string,
+   189→): string | null {
+   190→  const tagPattern = tagName
+   191→    ? `<${tagName}`
+   192→    : '<\\w+';
+   193→  const attrPattern = new RegExp(
+   194→    `${tagPattern}[^>]*${attrName}=["']${attrValue}["'][^>]*>`,
+   195→    'i',
+   196→  );
+   197→  const openMatch = html.match(attrPattern);
+   198→  if (!openMatch) return null;
+   199→
+   200→  const startIdx = openMatch.index!;
+   201→  // Determine the actual tag name from the matched opening tag
+   202→  const tagMatch = openMatch[0].match(/^<(\w+)/);
+   203→  if (!tagMatch) return null;
+   204→  const tag = tagMatch[1].toLowerCase();
+   205→
+   206→  return extractBalancedContentFromIndex(html, tag, startIdx);
+   207→}
+   208→
+   209→/**
+   210→ * Extract balanced content for a given tag starting from an opening tag at a position.
+   211→ */
+   212→function extractBalancedTag(html: string, tag: string): string | null {
+   213→  const openRe = new RegExp(`<${tag}[\\s>]`, 'i');
+   214→  const match = html.match(openRe);
+   215→  if (!match || match.index === undefined) return null;
+   216→
+   217→  return extractBalancedContentFromIndex(html, tag, match.index);
+   218→}
+   219→
+   220→/**
+   221→ * Given the position of an opening tag, extract its balanced content.
+   222→ * Uses a depth counter to handle nesting.
+   223→ */
+   224→function extractBalancedContentFromIndex(html: string, tag: string, startIdx: number): string | null {
+   225→  let depth = 0;
+   226→  let pos = startIdx;
+   227→
+   228→  // Regex patterns for opening and closing tags
+   229→  const openRe = new RegExp(`<${tag}[\\s>/]`, 'gi');
+   230→  const closeRe = new RegExp(`</${tag}\\s*>`, 'gi');
+   231→
+   232→  // Find where the opening tag ends
+   233→  const afterOpen = html.indexOf('>', startIdx);
+   234→  if (afterOpen === -1) return null;
+   235→  const contentStart = afterOpen + 1;
+   236→
+   237→  pos = contentStart;
+   238→  depth = 1;
+   239→
+   240→  while (depth > 0 && pos < html.length) {
+   241→    // Find next opening or closing tag
+   242→    openRe.lastIndex = pos;
+   243→    closeRe.lastIndex = pos;
+   244→
+   245→    const nextOpen = openRe.exec(html);
+   246→    const nextClose = closeRe.exec(html);
+   247→
+   248→    let openPos = nextOpen ? nextOpen.index : Infinity;
+   249→    let closePos = nextClose ? nextClose.index : Infinity;
+   250→
+   251→    if (openPos === Infinity && closePos === Infinity) break;
+   252→
+   253→    if (closePos <= openPos) {
+   254→      depth--;
+   255→      if (depth === 0) {
+   256→        return html.substring(contentStart, closePos);
+   257→      }
+   258→      pos = closePos + nextClose![0].length;
+   259→    } else {
+   260→      depth++;
+   261→      pos = nextOpen!.index + nextOpen![0].length;
+   262→    }
+   263→  }
+   264→
+   265→  // Fallback: return everything from contentStart to a reasonable boundary
+   266→  return html.substring(contentStart, Math.min(contentStart + 100000, html.length));
+   267→}
+   268→
+   269→// --- Noise Patterns ------------------------------------------------------------
+   270→
+   271→/** Elements to remove entirely (with their content) for cleaned/text/markdown formats. */
+   272→const NOISE_ELEMENTS_RE = /<(script|style|noscript|iframe|svg|path|nav|footer|header|aside|form|button|input|textarea|select|label|fieldset|legend)[\s>][^>]*>[\s\S]*?<\/\1>/gi;
+   273→
+   274→/** Self-closing noise elements. */
+   275→const NOISE_SELF_CLOSING_RE = /<(script|style|noscript|iframe|svg|nav|footer|header|aside|form|button|input|textarea|select|meta|link)\b[^>]*\/?>/gi;
+   276→
+   277→/** Common ad / popup / cookie banner class and id patterns. */
+   278→const AD_NOISE_CLASS_IDS = [
+   279→  // Ad-related
+   280→  'ad[s-_]?banner', 'ad[s-_]?container', 'ad[s-_]?wrapper', 'ad[s-_]?slot',
+   281→  'ad[s-_]?unit', 'ad[s-_]?placement', 'google[_-]?ad', 'adsense',
+   282→  'advertisement', 'sponsored',
+   283→  // Cookie / consent
+   284→  'cookie[_-]?banner', 'cookie[_-]?consent', 'cookie[_-]?notice',
+   285→  'cookie[_-]?policy', 'cookie[_-]?bar', 'gdpr', 'ccpa',
+   286→  'consent[_-]?banner', 'consent[_-]?popup', 'privacy[_-]?banner',
+   287→  // Popups / overlays
+   288→  'popup', 'modal[_-]?overlay', 'overlay', 'interstitial',
+   289→  'newsletter[_-]?popup', 'subscribe[_-]?popup', 'paywall',
+   290→  'registration[_-]?wall', 'login[_-]?wall',
+   291→  // Social / sharing
+   292→  'social[_-]?share', 'share[_-]?buttons?', 'social[_-]?bar',
+   293→  // Sticky / floating
+   294→  'sticky[_-]?bar', 'floating[_-]?bar', 'toolbar',
+   295→];
+   296→
+   297→const AD_NOISE_PATTERN = new RegExp(
+   298→  `<div[^>]*(?:class|id)=["'][^"']*\\b(?:${AD_NOISE_CLASS_IDS.join('|')})\\b[^"']*["'][^>]*>[\\s\\S]*?<\\/div>`,
+   299→  'gi',
+   300→);
+   301→
+   302→/** HTML comments. */
+   303→const HTML_COMMENTS_RE = /<!--[\s\S]*?-->/g;
+   304→
+   305→/** Data attributes. */
+   306→const DATA_ATTRS_RE = /\s+data-[a-zA-Z0-9_-]+=(?:"[^"]*"|'[^']*'|[^\s>]+)/g;
+   307→
+   308→/**
+   309→ * Remove noise from HTML (ads, cookie banners, popups, comments, data attributes).
+   310→ */
+   311→function removeNoise(html: string): string {
+   312→  let cleaned = html;
+   313→
+   314→  // Remove HTML comments
+   315→  cleaned = cleaned.replace(HTML_COMMENTS_RE, '');
+   316→
+   317→  // Remove ad/cookie/popup divs
+   318→  cleaned = cleaned.replace(AD_NOISE_PATTERN, '');
+   319→
+   320→  // Remove noise elements with their content
+   321→  cleaned = cleaned.replace(NOISE_ELEMENTS_RE, '');
+   322→
+   323→  // Remove self-closing noise elements
+   324→  cleaned = cleaned.replace(NOISE_SELF_CLOSING_RE, '');
+   325→
+   326→  // Remove data attributes
+   327→  cleaned = cleaned.replace(DATA_ATTRS_RE, '');
+   328→
+   329→  return cleaned;
+   330→}
+   331→
+   332→/**
+   333→ * Normalize whitespace in text: collapse multiple spaces, trim lines, remove excessive blank lines.
+   334→ */
+   335→function normalizeWhitespace(text: string): string {
+   336→  return text
+   337→    .replace(/\t/g, '  ')
+   338→    .replace(/[ \t]+$/gm, '')      // Trim trailing whitespace on lines
+   339→    .replace(/\n{3,}/g, '\n\n')    // Max 2 consecutive newlines
+   340→    .trim();
+   341→}
+   342→
+   343→// --- Format: raw ---------------------------------------------------------------
+   344→
+   345→/**
+   346→ * Return the HTML as-is (with optional selector extraction and length truncation).
+   347→ */
+   348→function processRaw(html: string, options: OutputOptions): string {
+   349→  let content = html;
+   350→  if (options.selector) {
+   351→    content = extractBySelector(content, options.selector);
+   352→  }
+   353→  if (options.maxLength && content.length > options.maxLength) {
+   354→    content = content.substring(0, options.maxLength);
+   355→  }
+   356→  return content;
+   357→}
+   358→
+   359→// --- Format: markdown ----------------------------------------------------------
+   360→
+   361→/**
+   362→ * Convert HTML to clean Markdown.
+   363→ *
+   364→ * Handles: headers (h1-h6), paragraphs, bold, italic, links, images,
+   365→ * ordered/unordered lists, code blocks, inline code, tables, blockquotes,
+   366→ * horizontal rules, line breaks.
+   367→ *
+   368→ * Strips: script, style, nav, footer, header, aside elements.
+   369→ * Preserves meaningful content only.
+   370→ */
+   371→function processMarkdown(html: string, options: OutputOptions): string {
+   372→  try {
+   373→    let content = html;
+   374→
+   375→    // Apply selector if provided
+   376→    if (options.selector) {
+   377→      content = extractBySelector(content, options.selector);
+   378→    }
+   379→
+   380→    // -- Remove noise elements ---------------------------------------------
+   381→    content = content.replace(NOISE_ELEMENTS_RE, '');
+   382→    content = content.replace(NOISE_SELF_CLOSING_RE, '');
+   383→    content = content.replace(HTML_COMMENTS_RE, '');
+   384→    content = content.replace(AD_NOISE_PATTERN, '');
+   385→
+   386→    // -- Pre-process: preserve content we want to convert ------------------
+   387→
+   388→    // Tables -- convert before other processing to avoid mangling
+   389→    content = convertTablesToMarkdown(content);
+   390→
+   391→    // Code blocks -- preserve them early
+   392→    content = content.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_match, code: string) => {
+   393→      const lang = '';
+   394→      const cleaned = decodeEntities(code.replace(/<[^>]+>/g, '').trim());
+   395→      return `\n\n\`\`\`${lang}\n${cleaned}\n\`\`\`\n\n`;
+   396→    });
+   397→
+   398→    // Inline code
+   399→    content = content.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_match, code: string) => {
+   400→      const cleaned = decodeEntities(code.replace(/<[^>]+>/g, '').trim());
+   401→      if (cleaned.includes('\n')) {
+   402→        return `\n\n\`\`\`\n${cleaned}\n\`\`\`\n\n`;
+   403→      }
+   404→      return `\`${cleaned}\``;
+   405→    });
+   406→
+   407→    // -- Headings ----------------------------------------------------------
+   408→    for (let i = 1; i <= 6; i++) {
+   409→      const hashes = '#'.repeat(i);
+   410→      const re = new RegExp(`<h${i}[^>]*>([\\s\\S]*?)<\\/h${i}>`, 'gi');
+   411→      content = content.replace(re, (_match, text: string) => {
+   412→        const cleaned = cleanMarkdownInline(text).trim();
+   413→        return `\n\n${hashes} ${cleaned}\n\n`;
+   414→      });
+   415→    }
+   416→
+   417→    // -- Paragraphs --------------------------------------------------------
+   418→    content = content.replace(/<p[^>]*>([\s\S]*?)<\/p>/gi, (_match, text: string) => {
+   419→      const cleaned = cleanMarkdownInline(text).trim();
+   420→      if (!cleaned) return '';
+   421→      return `\n\n${cleaned}\n\n`;
+   422→    });
+   423→
+   424→    // -- Bold --------------------------------------------------------------
+   425→    content = content.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, (_match, _tag: string, text: string) => {
+   426→      const cleaned = text.trim();
+   427→      if (!cleaned) return '';
+   428→      return `**${cleaned}**`;
+   429→    });
+   430→
+   431→    // -- Italic ------------------------------------------------------------
+   432→    content = content.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, (_match, _tag: string, text: string) => {
+   433→      const cleaned = text.trim();
+   434→      if (!cleaned) '';
+   435→      return `*${cleaned}*`;
+   436→    });
+   437→
+   438→    // -- Bold + Italic -----------------------------------------------------
+   439→    content = content.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**');
+   440→    content = content.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*');
+   441→
+   442→    // -- Strikethrough -----------------------------------------------------
+   443→    content = content.replace(/<(del|s|strike)[^>]*>([\s\S]*?)<\/\1>/gi, '~~$2~~');
+   444→
+   445→    // -- Links -------------------------------------------------------------
+   446→    content = content.replace(/<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, (_match, href: string, text: string) => {
+   447→      const cleaned = cleanMarkdownInline(text).trim();
+   448→      if (!cleaned) return '';
+   449→      // Skip anchor links and javascript:
+   450→      if (href.startsWith('#') || href.startsWith('javascript:')) return cleaned;
+   451→      return `[${cleaned}](${href})`;
+   452→    });
+   453→
+   454→    // -- Images ------------------------------------------------------------
+   455→    content = content.replace(/<img[^>]*src=["']([^"']*)["'][^>]*alt=["']([^"']*)["'][^>]*\/?>/gi, '![$2]($1)');
+   456→    content = content.replace(/<img[^>]*alt=["']([^"']*)["'][^>]*src=["']([^"']*)["'][^>]*\/?>/gi, '![$1]($2)');
+   457→    content = content.replace(/<img[^>]*src=["']([^"']*)["'][^>]*\/?>/gi, '![]($1)');
+   458→
+   459→    // -- Unordered Lists ---------------------------------------------------
+   460→    content = content.replace(/<ul[^>]*>([\s\S]*?)<\/ul>/gi, (_match, items: string) => {
+   461→      return convertListItems(items, false);
+   462→    });
+   463→
+   464→    // -- Ordered Lists -----------------------------------------------------
+   465→    content = content.replace(/<ol[^>]*>([\s\S]*?)<\/ol>/gi, (_match, items: string) => {
+   466→      return convertListItems(items, true);
+   467→    });
+   468→
+   469→    // -- Blockquotes -------------------------------------------------------
+   470→    content = content.replace(/<blockquote[^>]*>([\s\S]*?)<\/blockquote>/gi, (_match, text: string) => {
+   471→      const cleaned = cleanMarkdownInline(text).trim();
+   472→      const lines = cleaned.split('\n').map((l: string) => `> ${l}`).join('\n');
+   473→      return `\n\n${lines}\n\n`;
+   474→    });
+   475→
+   476→    // -- Horizontal Rules --------------------------------------------------
+   477→    content = content.replace(/<hr[^>]*\/?>/gi, '\n\n---\n\n');
+   478→
+   479→    // -- Line breaks -------------------------------------------------------
+   480→    content = content.replace(/<br[^>]*\/?>/gi, '  \n');
+   481→
+   482→    // -- Definition lists --------------------------------------------------
+   483→    content = content.replace(/<dt[^>]*>([\s\S]*?)<\/dt>/gi, (_match, text: string) => {
+   484→      return `\n**${cleanMarkdownInline(text).trim()}**\n`;
+   485→    });
+   486→    content = content.replace(/<dd[^>]*>([\s\S]*?)<\/dd>/gi, (_match, text: string) => {
+   487→      return `: ${cleanMarkdownInline(text).trim()}\n`;
+   488→    });
+   489→
+   490→    // -- Remove remaining tags ---------------------------------------------
+   491→    content = content.replace(/<[^>]+>/g, '');
+   492→
+   493→    // -- Decode entities ---------------------------------------------------
+   494→    content = decodeEntities(content);
+   495→
+   496→    // -- Clean up whitespace -----------------------------------------------
+   497→    content = normalizeWhitespace(content);
+   498→
+   499→    // Remove excessive empty lines
+   500→    content = content.replace(/\n{3,}/g, '\n\n');
+   501→
+   502→    // -- Truncate if needed ------------------------------------------------
+   503→    if (options.maxLength && content.length > options.maxLength) {
+   504→      content = content.substring(0, options.maxLength);
+   505→    }
+   506→
+   507→    return content.trim();
+   508→  } catch (err) {
+   509→    logger.error({ err: (err as Error).message }, 'Markdown conversion failed');
+   510→    return html;
+   511→  }
+   512→}
+   513→
+   514→/**
+   515→ * Clean inline HTML elements within a Markdown context.
+   516→ * Handles nested bold/italic/links etc. before falling through to tag stripping.
+   517→ */
+   518→function cleanMarkdownInline(text: string): string {
+   519→  let result = text;
+   520→
+   521→  // Bold
+   522→  result = result.replace(/<(strong|b)[^>]*>([\s\S]*?)<\/\1>/gi, '**$2**');
+   523→  // Italic
+   524→  result = result.replace(/<(em|i)[^>]*>([\s\S]*?)<\/\1>/gi, '*$2*');
+   525→  // Strikethrough
+   526→  result = result.replace(/<(del|s|strike)[^>]*>([\s\S]*?)<\/\1>/gi, '~~$2~~');
+   527→  // Links
+   528→  result = result.replace(/<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi, '[$2]($1)');
+   529→  // Images
+   530→  result = result.replace(/<img[^>]*src=["']([^"']*)["'][^>]*alt=["']([^"']*)["'][^>]*\/?>/gi, '![$2]($1)');
+   531→  result = result.replace(/<img[^>]*alt=["']([^"']*)["'][^>]*src=["']([^"']*)["'][^>]*\/?>/gi, '![$1]($2)');
+   532→  result = result.replace(/<img[^>]*src=["']([^"']*)["'][^>]*\/?>/gi, '![]($1)');
+   533→  // Inline code
+   534→  result = result.replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '`$1`');
+   535→  // Line breaks
+   536→  result = result.replace(/<br[^>]*\/?>/gi, '  \n');
+   537→
+   538→  // Remove remaining tags
+   539→  result = result.replace(/<[^>]+>/g, '');
+   540→
+   541→  return decodeEntities(result);
+   542→}
+   543→
+   544→/**
+   545→ * Convert <li> items within a list to Markdown list items.
+   546→ */
+   547→function convertListItems(itemsHtml: string, ordered: boolean): string {
+   548→  const items: string[] = [];
+   549→  const liPattern = /<li[^>]*>([\s\S]*?)<\/li>/gi;
+   550→  let m: RegExpExecArray | null;
+   551→  let idx = 1;
+   552→
+   553→  while ((m = liPattern.exec(itemsHtml)) !== null) {
+   554→    const text = cleanMarkdownInline(m[1]).trim();
+   555→    if (!text) continue;
+   556→
+   557→    // Handle nested lists within <li> -- extract them separately
+   558→    const nestedUl = m[1].match(/<ul[^>]*>([\s\S]*?)<\/ul>/gi);
+   559→    const nestedOl = m[1].match(/<ol[^>]*>([\s\S]*?)<\/ol>/gi);
+   560→
+   561→    const prefix = ordered ? `${idx}. ` : '- ';
+   562→    let item = `${prefix}${text}`;
+   563→
+   564→    // Add nested list items with indentation
+   565→    if (nestedUl) {
+   566→      for (const nested of nestedUl) {
+   567→        const nestedItems = nested.match(/<li[^>]*>([\s\S]*?)<\/li>/gi) || [];
+   568→        for (const ni of nestedItems) {
+   569→          const niText = cleanMarkdownInline(ni.replace(/<\/?li[^>]*>/gi, '')).trim();
+   570→          item += `\n  - ${niText}`;
+   571→        }
+   572→      }
+   573→    }
+   574→    if (nestedOl) {
+   575→      for (const nested of nestedOl) {
+   576→        const nestedItems = nested.match(/<li[^>]*>([\s\S]*?)<\/li>/gi) || [];
+   577→        let nIdx = 1;
+   578→        for (const ni of nestedItems) {
+   579→          const niText = cleanMarkdownInline(ni.replace(/<\/?li[^>]*>/gi, '')).trim();
+   580→          item += `\n  ${nIdx}. ${niText}`;
+   581→          nIdx++;
+   582→        }
+   583→      }
+   584→    }
+   585→
+   586→    items.push(item);
+   587→    idx++;
+   588→  }
+   589→
+   590→  return '\n\n' + items.join('\n') + '\n\n';
+   591→}
+   592→
+   593→/**
+   594→ * Convert HTML tables to Markdown table format.
+   595→ */
+   596→function convertTablesToMarkdown(html: string): string {
+   597→  const tablePattern = /<table[^>]*>([\s\S]*?)<\/table>/gi;
+   598→
+   599→  return html.replace(tablePattern, (_match, tableContent: string) => {
+   600→    const rows: string[][] = [];
+   601→
+   602→    // Extract rows
+   603→    const rowPattern = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+   604→    let rowMatch: RegExpExecArray | null;
+   605→
+   606→    while ((rowMatch = rowPattern.exec(tableContent)) !== null) {
+   607→      const cells: string[] = [];
+   608→
+   609→      // Simple cell extraction: find all <th> and <td> content
+   610→      const allCells = rowMatch[1].match(/<(th|td)[^>]*>([\s\S]*?)<\/\1>/gi) || [];
+   611→      for (const cell of allCells) {
+   612→        const text = cell.replace(/<\/?(th|td)[^>]*>/gi, '').trim();
+   613→        const cleaned = cleanMarkdownInline(text).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+   614→        cells.push(cleaned);
+   615→      }
+   616→
+   617→      if (cells.length > 0) {
+   618→        rows.push(cells);
+   619→      }
+   620→    }
+   621→
+   622→    if (rows.length === 0) return '';
+   623→
+   624→    // Build markdown table
+   625→    const maxCols = Math.max(...rows.map(r => r.length));
+   626→    let md = '\n\n';
+   627→
+   628→    // Header row (first row)
+   629→    const header = rows[0];
+   630→    md += '| ' + header.join(' | ') + ' |\n';
+   631→    md += '| ' + header.map(() => '---').join(' | ') + ' |\n';
+   632→
+   633→    // Data rows
+   634→    for (let i = 1; i < rows.length; i++) {
+   635→      const row = rows[i];
+   636→      // Pad rows with fewer columns
+   637→      while (row.length < maxCols) row.push('');
+   638→      md += '| ' + row.join(' | ') + ' |\n';
+   639→    }
+   640→
+   641→    md += '\n';
+   642→    return md;
+   643→  });
+   644→}
+   645→
+   646→// --- Format: cleaned -----------------------------------------------------------
+   647→
+   648→/**
+   649→ * Clean HTML: remove noise elements, ads, popups, cookie banners, comments,
+   650→ * data attributes. Keep structural elements. Normalize whitespace.
+   651→ */
+   652→function processCleaned(html: string, options: OutputOptions): string {
+   653→  try {
+   654→    let content = html;
+   655→
+   656→    // Apply selector if provided
+   657→    if (options.selector) {
+   658→      content = extractBySelector(content, options.selector);
+   659→    }
+   660→
+   661→    // Remove HTML comments
+   662→    content = content.replace(HTML_COMMENTS_RE, '');
+   663→
+   664→    // Remove ad / cookie / popup divs
+   665→    content = content.replace(AD_NOISE_PATTERN, '');
+   666→
+   667→    // Remove noise elements with their content
+   668→    content = content.replace(NOISE_ELEMENTS_RE, '');
+   669→
+   670→    // Remove self-closing noise elements
+   671→    content = content.replace(NOISE_SELF_CLOSING_RE, '');
+   672→
+   673→    // Remove data attributes
+   674→    content = content.replace(DATA_ATTRS_RE, '');
+   675→
+   676→    // Remove aria attributes (accessibility attributes, not content)
+   677→    content = content.replace(/\s+aria-[a-zA-Z0-9_-]+=(?:"[^"]*"|'[^']*'|[^\s>]+)/g, '');
+   678→
+   679→    // Remove role attributes
+   680→    content = content.replace(/\s+role=(?:"[^"]*"|'[^']*'|[^\s>]+)/g, '');
+   681→
+   682→    // Remove event handler attributes
+   683→    content = content.replace(/\s+on\w+=(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+   684→
+   685→    // Remove class and style attributes (we keep structural elements but strip styling)
+   686→    content = content.replace(/\s+class=(?:"[^"]*"|'[^']*'|[^\s>]+)/g, '');
+   687→    content = content.replace(/\s+style=(?:"[^"]*"|'[^']*'|[^\s>]+)/g, '');
+   688→
+   689→    // Remove empty elements (tags with no content between them)
+   690→    content = content.replace(/<(div|span|p|section|article|aside|header|footer|main)\s*><\/\1>/gi, '');
+   691→
+   692→    // Normalize whitespace within tags
+   693→    content = content.replace(/\s{2,}/g, ' ');
+   694→
+   695→    // Normalize line breaks
+   696→    content = content.replace(/\n{3,}/g, '\n\n');
+   697→
+   698→    // Trim
+   699→    content = content.trim();
+   700→
+   701→    // Truncate if needed
+   702→    if (options.maxLength && content.length > options.maxLength) {
+   703→      content = content.substring(0, options.maxLength);
+   704→    }
+   705→
+   706→    return content;
+   707→  } catch (err) {
+   708→    logger.error({ err: (err as Error).message }, 'Cleaned HTML processing failed');
+   709→    return html;
+   710→  }
+   711→}
+   712→
+   713→// --- Format: text --------------------------------------------------------------
+   714→
+   715→/**
+   716→ * Extract plain text from HTML.
+   717→ * Strip ALL HTML tags, normalize whitespace and line breaks,
+   718→ * remove excessive blank lines, preserve paragraph structure with double newlines.
+   719→ */
+   720→function processText(html: string, options: OutputOptions): string {
+   721→  try {
+   722→    let content = html;
+   723→
+   724→    // Apply selector if provided
+   725→    if (options.selector) {
+   726→      content = extractBySelector(content, options.selector);
+   727→    }
+   728→
+   729→    // Remove noise elements first
+   730→    content = content.replace(NOISE_ELEMENTS_RE, '');
+   731→    content = content.replace(NOISE_SELF_CLOSING_RE, '');
+   732→    content = content.replace(AD_NOISE_PATTERN, '');
+   733→    content = content.replace(HTML_COMMENTS_RE, '');
+   734→
+   735→    // Preserve paragraph structure -- add double newlines for block elements
+   736→    const blockElements = [
+   737→      'p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+   738→      'li', 'tr', 'br', 'hr', 'blockquote', 'pre',
+   739→      'section', 'article', 'main', 'aside', 'header', 'footer',
+   740→    ];
+   741→
+   742→    for (const tag of blockElements) {
+   743→      // Closing tags → double newline for block elements
+   744→      if (tag === 'br') {
+   745→        content = content.replace(/<br[^>]*\/?>/gi, '\n');
+   746→      } else if (tag === 'hr') {
+   747→        content = content.replace(/<hr[^>]*\/?>/gi, '\n---\n');
+   748→      } else {
+   749→        const closeRe = new RegExp(`</${tag}[^>]*>`, 'gi');
+   750→        content = content.replace(closeRe, '\n\n');
+   751→      }
+   752→    }
+   753→
+   754→    // Strip all remaining HTML tags
+   755→    content = content.replace(/<[^>]+>/g, '');
+   756→
+   757→    // Decode HTML entities
+   758→    content = decodeEntities(content);
+   759→
+   760→    // Normalize whitespace
+   761→    content = normalizeWhitespace(content);
+   762→
+   763→    // Remove excessive blank lines but preserve paragraph breaks
+   764→    content = content.replace(/\n{3,}/g, '\n\n');
+   765→
+   766→    // Truncate if needed
+   767→    if (options.maxLength && content.length > options.maxLength) {
+   768→      content = content.substring(0, options.maxLength);
+   769→    }
+   770→
+   771→    return content.trim();
+   772→  } catch (err) {
+   773→    logger.error({ err: (err as Error).message }, 'Text extraction failed');
+   774→    return html.replace(/<[^>]+>/g, '').trim();
+   775→  }
+   776→}
+   777→
+   778→// --- Format: parsed ------------------------------------------------------------
+   779→
+   780→/**
+   781→ * Intelligently parse HTML to extract structured data:
+   782→ *   title, description, canonical URL, OG tags, author, published date,
+   783→ *   headings, links, images, main content, word count.
+   784→ */
+   785→function processParsed(html: string, url: string, options: OutputOptions): ParsedOutput {
+   786→  try {
+   787→    let content = html;
+   788→
+   789→    // Apply selector if provided
+   790→    if (options.selector) {
+   791→      content = extractBySelector(content, options.selector);
+   792→    }
+   793→
+   794→    // -- Title -------------------------------------------------------------
+   795→    let title = extractMetaContent(content, 'og:title')
+   796→      || extractFirstMatch(content, /<title[^>]*>([\s\S]*?)<\/title>/i)
+   797→      || extractMetaContent(content, 'twitter:title')
+   798→      || '';
+   799→    title = decodeEntities(stripAllTags(title).trim());
+   800→
+   801→    // -- Description -------------------------------------------------------
+   802→    let description = extractMetaName(content, 'description')
+   803→      || extractMetaContent(content, 'og:description')
+   804→      || extractMetaContent(content, 'twitter:description')
+   805→      || '';
+   806→    description = decodeEntities(stripAllTags(description).trim());
+   807→
+   808→    // -- Canonical URL -----------------------------------------------------
+   809→    let canonicalUrl = extractFirstMatch(content, /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i)
+   810→      || extractFirstMatch(content, /<link[^>]*href=["']([^"']*)["'][^>]*rel=["']canonical["']/i)
+   811→      || extractMetaContent(content, 'og:url')
+   812→      || url;
+   813→
+   814→    // -- OG Tags -----------------------------------------------------------
+   815→    const ogTags: Record<string, string> = {};
+   816→    const ogPattern = /<meta[^>]*property=["']og:([a-zA-Z0-9_:.-]+)["'][^>]*content=["']([^"']*)["']/gi;
+   817→    let ogMatch: RegExpExecArray | null;
+   818→    while ((ogMatch = ogPattern.exec(content)) !== null) {
+   819→      ogTags[ogMatch[1]] = decodeEntities(ogMatch[2]);
+   820→    }
+   821→    // Alternate format: content before property
+   822→    const ogAltPattern = /<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:([a-zA-Z0-9_:.-]+)["']/gi;
+   823→    while ((ogMatch = ogAltPattern.exec(content)) !== null) {
+   824→      if (!ogTags[ogMatch[2]]) {
+   825→        ogTags[ogMatch[2]] = decodeEntities(ogMatch[1]);
+   826→      }
+   827→    }
+   828→
+   829→    // -- Author ------------------------------------------------------------
+   830→    let author = extractMetaName(content, 'author')
+   831→      || extractMetaContent(content, 'article:author')
+   832→      || extractFirstMatch(content, /<meta[^>]*property=["']author["'][^>]*content=["']([^"']*)["']/i)
+   833→      || extractFirstMatch(content, /<meta[^>]*name=["']byl[^"']*["'][^>]*content=["']([^"']*)["']/i)
+   834→      || extractFirstMatch(content, /class=["'][^"']*(?:author|byline)[^"']*["'][^>]*>([\s\S]*?)<\/(?:span|a|div|p)>/i)
+   835→      || '';
+   836→    author = decodeEntities(stripAllTags(author).trim());
+   837→
+   838→    // -- Published Date ----------------------------------------------------
+   839→    let publishedDate = extractMetaProperty(content, 'article:published_time')
+   840→      || extractMetaName(content, 'date')
+   841→      || extractMetaName(content, 'datepublished')
+   842→      || extractMetaName(content, 'pubdate')
+   843→      || extractFirstMatch(content, /<time[^>]*datetime=["']([^"']*)["']/i)
+   844→      || extractMetaContent(content, 'og:article:published_time')
+   845→      || '';
+   846→    publishedDate = publishedDate.trim();
+   847→
+   848→    // -- Headings ----------------------------------------------------------
+   849→    const headings: Array<{ level: number; text: string }> = [];
+   850→    for (let i = 1; i <= 6; i++) {
+   851→      const re = new RegExp(`<h${i}[^>]*>([\\s\\S]*?)<\\/h${i}>`, 'gi');
+   852→      let hMatch: RegExpExecArray | null;
+   853→      while ((hMatch = re.exec(content)) !== null) {
+   854→        const text = decodeEntities(stripAllTags(hMatch[1])).trim();
+   855→        if (text) {
+   856→          headings.push({ level: i, text });
+   857→        }
+   858→      }
+   859→    }
+   860→
+   861→    // -- Links -------------------------------------------------------------
+   862→    const links: Array<{ text: string; href: string }> = [];
+   863→    const linkPattern = /<a[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+   864→    let linkMatch: RegExpExecArray | null;
+   865→    while ((linkMatch = linkPattern.exec(content)) !== null) {
+   866→      const href = linkMatch[1].trim();
+   867→      const text = decodeEntities(stripAllTags(linkMatch[2])).trim();
+   868→      // Skip empty, anchor-only, javascript: links
+   869→      if (!text || href.startsWith('#') || href.startsWith('javascript:') || href === '') continue;
+   870→      // Deduplicate by href+text combo
+   871→      if (links.some(l => l.href === href && l.text === text)) continue;
+   872→      links.push({ text, href });
+   873→    }
+   874→    // Limit to a reasonable number
+   875→    if (links.length > 500) {
+   876→      links.length = 500;
+   877→    }
+   878→
+   879→    // -- Images ------------------------------------------------------------
+   880→    const images: Array<{ alt: string; src: string }> = [];
+   881→    const imgPattern = /<img[^>]*>/gi;
+   882→    let imgMatch: RegExpExecArray | null;
+   883→    while ((imgMatch = imgPattern.exec(content)) !== null) {
+   884→      const imgTag = imgMatch[0];
+   885→      const src = extractAttr(imgTag, 'src') || extractAttr(imgTag, 'data-src') || '';
+   886→      const alt = extractAttr(imgTag, 'alt') || '';
+   887→      if (src && !src.startsWith('data:')) {
+   888→        images.push({ alt: decodeEntities(alt), src });
+   889→      }
+   890→    }
+   891→    // Limit to a reasonable number
+   892→    if (images.length > 200) {
+   893→      images.length = 200;
+   894→    }
+   895→
+   896→    // -- Main Content ------------------------------------------------------
+   897→    const mainContent = extractMainContent(content);
+   898→
+   899→    // -- Word Count --------------------------------------------------------
+   900→    const wordCount = mainContent.split(/\s+/).filter(w => w.length > 0).length;
+   901→
+   902→    const result: ParsedOutput = {
+   903→      title,
+   904→      description,
+   905→      canonicalUrl,
+   906→      ogTags,
+   907→      author,
+   908→      publishedDate,
+   909→      headings,
+   910→      links,
+   911→      images,
+   912→      mainContent,
+   913→      wordCount,
+   914→    };
+   915→
+   916→    return result;
+   917→  } catch (err) {
+   918→    logger.error({ err: (err as Error).message }, 'Parsed extraction failed');
+   919→    return {
+   920→      title: '',
+   921→      description: '',
+   922→      canonicalUrl: url,
+   923→      ogTags: {},
+   924→      author: '',
+   925→      publishedDate: '',
+   926→      headings: [],
+   927→      links: [],
+   928→      images: [],
+   929→      mainContent: '',
+   930→      wordCount: 0,
+   931→    };
+   932→  }
+   933→}
+   934→
+   935→/**
+   936→ * Extract a meta tag content by name attribute.
+   937→ */
+   938→function extractMetaName(html: string, name: string): string {
+   939→  const pattern1 = new RegExp(`<meta[^>]*name=["']${escapeRegex(name)}["'][^>]*content=["']([^"']*)["']`, 'i');
+   940→  const pattern2 = new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*name=["']${escapeRegex(name)}["']`, 'i');
+   941→  return extractFirstMatch(html, pattern1) || extractFirstMatch(html, pattern2);
+   942→}
+   943→
+   944→/**
+   945→ * Extract a meta tag content by property attribute.
+   946→ */
+   947→function extractMetaProperty(html: string, property: string): string {
+   948→  const pattern1 = new RegExp(`<meta[^>]*property=["']${escapeRegex(property)}["'][^>]*content=["']([^"']*)["']`, 'i');
+   949→  const pattern2 = new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']${escapeRegex(property)}["']`, 'i');
+   950→  return extractFirstMatch(html, pattern1) || extractFirstMatch(html, pattern2);
+   951→}
+   952→
+   953→/**
+   954→ * Extract meta tag content -- tries both property and name variants.
+   955→ */
+   956→function extractMetaContent(html: string, key: string): string {
+   957→  return extractMetaProperty(html, key) || extractMetaName(html, key);
+   958→}
+   959→
+   960→/**
+   961→ * Extract the first capture group from a regex, with a fallback.
+   962→ */
+   963→function extractFirstMatch(html: string, pattern: RegExp, fallback: string = ''): string {
+   964→  try {
+   965→    const m = html.match(pattern);
+   966→    return m && m[1] !== undefined ? m[1].trim() : fallback;
+   967→  } catch {
+   968→    return fallback;
+   969→  }
+   970→}
+   971→
+   972→/**
+   973→ * Extract an attribute value from an HTML tag string.
+   974→ */
+   975→function extractAttr(tag: string, attr: string): string {
+   976→  const pattern = new RegExp(`${attr}=["']([^"']*)["']`, 'i');
+   977→  const m = tag.match(pattern);
+   978→  return m ? m[1] : '';
+   979→}
+   980→
+   981→/**
+   982→ * Escape special regex characters in a string.
+   983→ */
+   984→function escapeRegex(str: string): string {
+   985→  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+   986→}
+   987→
+   988→/**
+   989→ * Extract the main content from an HTML document.
+   990→ * Strategy:
+   991→ *   1. Look for <main>, <article>, or [role="main"] elements
+   992→ *   2. Fall back to the largest text block in <body>
+   993→ *   3. As a last resort, strip all tags and normalize
+   994→ */
+   995→function extractMainContent(html: string): string {
+   996→  // Strategy 1: <main> or <article>
+   997→  const mainContent = extractBalancedTag(html, 'main')
+   998→    || extractBalancedTag(html, 'article')
+   999→    || '';
+  1000→
+  1001→  if (mainContent && mainContent.length > 200) {
+  1002→    // Remove noise from the extracted content
+  1003→    let cleaned = mainContent;
+  1004→    cleaned = cleaned.replace(NOISE_ELEMENTS_RE, '');
+  1005→    cleaned = cleaned.replace(NOISE_SELF_CLOSING_RE, '');
+  1006→    cleaned = cleaned.replace(AD_NOISE_PATTERN, '');
+  1007→    cleaned = cleaned.replace(HTML_COMMENTS_RE, '');
+  1008→    const text = decodeEntities(stripAllTags(cleaned)).trim();
+  1009→    if (text.length > 100) return normalizeWhitespace(text);
+  1010→  }
+  1011→
+  1012→  // Strategy 2: Find <body> and extract the largest text block
+  1013→  const bodyMatch = html.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  1014→  const bodyContent = bodyMatch ? bodyMatch[1] : html;
+  1015→
+  1016→  // Split into block-level chunks and find the largest one
+  1017→  const chunks: Array<{ text: string; length: number }> = [];
+  1018→  const blockPattern = /<(div|section|article|main|p)[^>]*>([\s\S]*?)<\/\1>/gi;
+  1019→  let bMatch: RegExpExecArray | null;
+  1020→
+  1021→  while ((bMatch = blockPattern.exec(bodyContent)) !== null) {
+  1022→    let chunk = bMatch[2];
+  1023→    // Remove nested noise
+  1024→    chunk = chunk.replace(NOISE_ELEMENTS_RE, '');
+  1025→    chunk = chunk.replace(NOISE_SELF_CLOSING_RE, '');
+  1026→    chunk = chunk.replace(AD_NOISE_PATTERN, '');
+  1027→    const text = decodeEntities(stripAllTags(chunk)).trim();
+  1028→    if (text.length > 50) {
+  1029→      chunks.push({ text, length: text.length });
+  1030→    }
+  1031→  }
+  1032→
+  1033→  // Sort by length descending
+  1034→  chunks.sort((a, b) => b.length - a.length);
+  1035→
+  1036→  // Take the top chunks up to a reasonable limit
+  1037→  if (chunks.length > 0) {
+  1038→    const topChunks = chunks.slice(0, Math.min(5, chunks.length));
+  1039→    const combined = topChunks.map(c => c.text).join('\n\n');
+  1040→    return normalizeWhitespace(combined);
+  1041→  }
+  1042→
+  1043→  // Strategy 3: Just strip tags from body
+  1044→  const text = decodeEntities(stripAllTags(bodyContent)).trim();
+  1045→  return normalizeWhitespace(text);
+  1046→}
+  1047→
+  1048→// --- Auto-detection ------------------------------------------------------------
+  1049→
+  1050→/**
+  1051→ * Auto-detect the best output format based on HTML content characteristics.
+  1052→ *
+  1053→ * Heuristics:
+  1054→ *  - If the HTML is very short or appears to be an error page → 'text'
+  1055→ *  - If it has rich semantic structure (article, main, many headings) → 'markdown'
+  1056→ *  - If it's mostly boilerplate with some useful meta tags → 'parsed'
+  1057→ *  - If it has a lot of script/style noise relative to content → 'cleaned'
+  1058→ *  - Otherwise → 'markdown' (good default for most content)
+  1059→ */
+  1060→export function detectBestFormat(html: string): OutputFormat {
+  1061→  if (!html || html.length < 50) return 'text';
+  1062→
+  1063→  try {
+  1064→    const htmlLength = html.length;
+  1065→
+  1066→    // -- Check for error pages ---------------------------------------------
+  1067→    const lowerHtml = html.toLowerCase();
+  1068→    const isErrorPage = lowerHtml.includes('<title>404</title>')
+  1069→      || lowerHtml.includes('<title>403</title>')
+  1070→      || lowerHtml.includes('<title>500</title>')
+  1071→      || lowerHtml.includes('<title>error</title>')
+  1072→      || lowerHtml.includes('page not found')
+  1073→      || lowerHtml.includes('access denied');
+  1074→    if (isErrorPage) return 'text';
+  1075→
+  1076→    // -- Measure noise vs. content -----------------------------------------
+  1077→    const scriptSize = (html.match(/<script[\s>][\s\S]*?<\/script>/gi) || []).join('').length;
+  1078→    const styleSize = (html.match(/<style[\s>][\s\S]*?<\/style>/gi) || []).join('').length;
+  1079→    const navSize = (html.match(/<nav[\s>][\s\S]*?<\/nav>/gi) || []).join('').length;
+  1080→    const noiseSize = scriptSize + styleSize + navSize;
+  1081→
+  1082→    const noiseRatio = noiseSize / htmlLength;
+  1083→
+  1084→    // -- Check for rich semantic structure ---------------------------------
+  1085→    const hasArticle = /<article[\s>]/i.test(html);
+  1086→    const hasMain = /<main[\s>]/i.test(html);
+  1087→    const headingCount = (html.match(/<h[1-6][\s>]/gi) || []).length;
+  1088→    const paragraphCount = (html.match(/<p[\s>]/gi) || []).length;
+  1089→    const linkCount = (html.match(/<a[\s>]/gi) || []).length;
+  1090→
+  1091→    // -- Check for useful meta tags ----------------------------------------
+  1092→    const hasOgTags = /property=["']og:/i.test(html);
+  1093→    const hasMetaDescription = /name=["']description["']/i.test(html);
+  1094→    const hasJsonLd = /type=["']application\/ld\+json["']/i.test(html);
+  1095→
+  1096→    // -- Score each format -------------------------------------------------
+  1097→    let parsedScore = 0;
+  1098→    let markdownScore = 0;
+  1099→    let cleanedScore = 0;
+  1100→    let textScore = 0;
+  1101→
+  1102→    // Parsed format is best when there's rich metadata
+  1103→    if (hasOgTags) parsedScore += 3;
+  1104→    if (hasMetaDescription) parsedScore += 2;
+  1105→    if (hasJsonLd) parsedScore += 3;
+  1106→    if (hasArticle) parsedScore += 2;
+  1107→    if (headingCount >= 3) parsedScore += 2;
+  1108→    if (linkCount > 20) parsedScore += 1;
+  1109→
+  1110→    // Markdown format is best for readable content
+  1111→    if (hasArticle) markdownScore += 3;
+  1112→    if (hasMain) markdownScore += 2;
+  1113→    if (headingCount >= 2) markdownScore += 2;
+  1114→    if (paragraphCount >= 5) markdownScore += 2;
+  1115→    if (noiseRatio < 0.3) markdownScore += 2;
+  1116→    if (paragraphCount >= 10) markdownScore += 1;
+  1117→
+  1118→    // Cleaned format is best when there's a lot of noise
+  1119→    if (noiseRatio > 0.5) cleanedScore += 4;
+  1120→    if (noiseRatio > 0.3) cleanedScore += 2;
+  1121→    if (navSize > htmlLength * 0.1) cleanedScore += 2;
+  1122→
+  1123→    // Text format is best for simple / short content
+  1124→    if (htmlLength < 5000) textScore += 2;
+  1125→    if (paragraphCount < 3 && headingCount < 2) textScore += 2;
+  1126→    if (noiseRatio > 0.7) textScore += 3;
+  1127→
+  1128→    // -- Pick the highest scorer -------------------------------------------
+  1129→    const scores: Array<{ format: OutputFormat; score: number }> = [
+  1130→      { format: 'parsed', score: parsedScore },
+  1131→      { format: 'markdown', score: markdownScore },
+  1132→      { format: 'cleaned', score: cleanedScore },
+  1133→      { format: 'text', score: textScore },
+  1134→    ];
+  1135→
+  1136→    scores.sort((a, b) => b.score - a.score);
+  1137→
+  1138→    // If markdown and parsed are tied, prefer markdown (more versatile)
+  1139→    if (scores[0].score === 0) return 'markdown';
+  1140→
+  1141→    logger.debug({
+  1142→      scores: scores.map(s => `${s.format}=${s.score}`).join(', '),
+  1143→      htmlLength,
+  1144→      noiseRatio: noiseRatio.toFixed(2),
+  1145→      headingCount,
+  1146→      paragraphCount,
+  1147→    }, 'Auto-detected best format');
+  1148→
+  1149→    return scores[0].format;
+  1150→  } catch (err) {
+  1151→    logger.debug({ err: (err as Error).message }, 'Auto-detection failed, defaulting to markdown');
+  1152→    return 'markdown';
+  1153→  }
+  1154→}
+  1155→
+  1156→// --- OutputPipeline Class ------------------------------------------------------
+  1157→
+  1158→/**
+  1159→ * Multi-Format Output Pipeline.
+  1160→ *
+  1161→ * Transforms raw HTML into the requested output format with processing metrics.
+  1162→ *
+  1163→ * @example
+  1164→ *   const pipeline = new OutputPipeline();
+  1165→ *   const result = pipeline.process(html, url, { format: 'markdown' });
+  1166→ *   console.log(result.compressionRatio); // 0.35
+  1167→ *   console.log(result.processingMs);     // 12
+  1168→ */
+  1169→export class OutputPipeline {
+  1170→  /**
+  1171→   * Transform HTML to the requested output format.
+  1172→   *
+  1173→   * @param html    - The raw HTML string to process.
+  1174→   * @param url     - The URL of the page (used for canonical URL resolution in 'parsed' format).
+  1175→   * @param options - Output options controlling format, selector, truncation, etc.
+  1176→   * @returns An OutputResult with the transformed content and processing metrics.
+  1177→   */
+  1178→  process(html: string, url: string, options: OutputOptions): OutputResult {
+  1179→    const startTime = Date.now();
+  1180→    const originalSizeBytes = Buffer.byteLength(html, 'utf-8');
+  1181→
+  1182→    try {
+  1183→      if (!html || typeof html !== 'string') {
+  1184→        logger.warn('process() called with empty or non-string HTML');
+  1185→        return {
+  1186→          format: options.format || 'raw',
+  1187→          content: html || '',
+  1188→          originalSizeBytes,
+  1189→          outputSizeBytes: originalSizeBytes,
+  1190→          compressionRatio: 1,
+  1191→          processingMs: Date.now() - startTime,
+  1192→        };
+  1193→      }
+  1194→
+  1195→      const format = options.format || 'raw';
+  1196→      let content: string | ParsedOutput;
+  1197→
+  1198→      switch (format) {
+  1199→        case 'raw':
+  1200→          content = processRaw(html, options);
+  1201→          break;
+  1202→        case 'markdown':
+  1203→          content = processMarkdown(html, options);
+  1204→          break;
+  1205→        case 'cleaned':
+  1206→          content = processCleaned(html, options);
+  1207→          break;
+  1208→        case 'text':
+  1209→          content = processText(html, options);
+  1210→          break;
+  1211→        case 'parsed':
+  1212→          content = processParsed(html, url, options);
+  1213→          // Apply maxLength to mainContent if specified
+  1214→          if (options.maxLength && content.mainContent.length > options.maxLength) {
+  1215→            content = {
+  1216→              ...content,
+  1217→              mainContent: content.mainContent.substring(0, options.maxLength),
+  1218→              wordCount: content.mainContent.substring(0, options.maxLength).split(/\s+/).filter(w => w.length > 0).length,
+  1219→            };
+  1220→          }
+  1221→          break;
+  1222→        default:
+  1223→          logger.warn({ format }, 'Unknown output format, falling back to raw');
+  1224→          content = processRaw(html, options);
+  1225→      }
+  1226→
+  1227→      const outputSizeBytes = typeof content === 'string'
+  1228→        ? Buffer.byteLength(content, 'utf-8')
+  1229→        : Buffer.byteLength(JSON.stringify(content), 'utf-8');
+  1230→
+  1231→      const compressionRatio = originalSizeBytes > 0 ? outputSizeBytes / originalSizeBytes : 0;
+  1232→      const processingMs = Date.now() - startTime;
+  1233→
+  1234→      logger.debug({
+  1235→        format,
+  1236→        originalSizeBytes,
+  1237→        outputSizeBytes,
+  1238→        compressionRatio: compressionRatio.toFixed(3),
+  1239→        processingMs,
+  1240→        selector: options.selector || 'none',
+  1241→      }, 'Output pipeline processed');
+  1242→
+  1243→      return {
+  1244→        format,
+  1245→        content,
+  1246→        originalSizeBytes,
+  1247→        outputSizeBytes,
+  1248→        compressionRatio,
+  1249→        processingMs,
+  1250→      };
+  1251→    } catch (err) {
+  1252→      const processingMs = Date.now() - startTime;
+  1253→      logger.error({ err: (err as Error).message, format: options.format }, 'Output pipeline processing failed');
+  1254→
+  1255→      return {
+  1256→        format: options.format || 'raw',
+  1257→        content: html,
+  1258→        originalSizeBytes,
+  1259→        outputSizeBytes: originalSizeBytes,
+  1260→        compressionRatio: 1,
+  1261→        processingMs,
+  1262→      };
+  1263→    }
+  1264→  }
+  1265→}
+  1266→
+  1267→// --- Singleton Export ----------------------------------------------------------
+  1268→
+  1269→/** Singleton OutputPipeline instance for shared use across the application. */
+  1270→export const outputPipeline = new OutputPipeline();
+  1271→

@@ -1,0 +1,1384 @@
+     1→     1→import { db } from '../utils/db';
+     2→     2→import { redis, cacheGet, cacheSet } from '../utils/redis';
+     3→     3→import { createChildLogger } from '../utils/logger';
+     4→     4→import { calculateScrapeCredits } from '../utils/credits';
+     5→     5→import { domainIntelligence } from '../intelligence/domain';
+     6→     6→import { proxyManager } from '../proxy/manager';
+     7→     7→import { stealthEngine } from '../anti-bot/stealth';
+     8→     8→import { humanBehavior } from '../anti-bot/human-behavior';
+     9→     9→import { robotsParser } from '../robots/parser';
+    10→    10→import { webhookDispatcher } from '../scheduler/webhooks';
+    11→    11→import { genericParser } from '../structured/generic';
+    12→    12→import { amazonParser } from '../structured/amazon';
+    13→    13→import { googleSerpParser } from '../structured/google';
+    14→    14→import { browserPool, type BrowserLease } from '../browser-pool';
+    15→    15→import { captchaSolver } from '../captcha';
+    16→    16→import { proxyFetch, testProxy } from '../utils/proxy-fetch';
+    17→    17→import { tlsFingerprintFetcher } from '../anti-bot/tls-fingerprint';
+    18→    18→import { adaptiveRateLimiter } from '../rate-limiter';
+    19→    19→import { sessionManager } from '../session';
+    20→    20→import { templateRegistry } from '../templates';
+    21→    21→import { outputPipeline, type OutputFormat } from '../output';
+    22→    22→import type { ScrapeJobData, ScrapeJobResult, JobStrategy, AntiBotDetection } from '../types';
+    23→    23→import { deductCredits } from '../api/middleware/credits';
+    24→    24→
+    25→    25→const logger = createChildLogger('orchestrator');
+    26→    26→
+    27→    27→// --- Constants ----------------------------------------------------------------
+    28→    28→
+    29→    29→const DEFAULT_TIMEOUT = 30_000;
+    30→    30→const RATE_LIMIT_WINDOW_SECONDS = 1;
+    31→    31→const MAX_RETRIES = 3;  // Increased from 2 to support new retry scenarios
+    32→    32→const PROXY_RETRY_DELAY_MS = 2_000;  // Short delay before proxy rotation retry on 503
+    33→    33→const CAPTCHA_ROTATE_RETRY_DELAY_MS = 1_000;
+    34→    34→
+    35→    35→// --- Request Deduplication ----------------------------------------------------
+    36→    36→
+    37→    37→interface PendingRequest {
+    38→    38→  promise: Promise<ScrapeJobResult>;
+    39→    39→  resolve: (result: ScrapeJobResult) => void;
+    40→    40→  reject: (error: Error) => void;
+    41→    41→}
+    42→    42→
+    43→    43→const inflightRequests = new Map<string, PendingRequest>();
+    44→    44→
+    45→    45→function getDedupeKey(data: ScrapeJobData): string {
+    46→    46→  // Dedupe by URL + strategy + extraction instruction + session
+    47→    47→  return `${data.url}:${data.strategy || 'auto'}:${data.extract || ''}:${data.proxyTier || ''}:${data.proxyCountry || ''}:${data.proxyCity || ''}:${data.sessionId || ''}`;
+    48→    48→}
+    49→    49→
+    50→    50→// --- Orchestrator -------------------------------------------------------------
+    51→    51→
+    52→    52→export class Orchestrator {
+    53→    53→  /**
+    54→    54→   * Process a scrape job through the full pipeline:
+    55→    55→   *   dedupe → robots → cache → session → intelligence → adaptive rate limit →
+    56→    56→   *   proxy → stealth → fetch → smart retry → record → cache →
+    57→    57→   *   template extraction → structured → NL extract → captcha →
+    58→    58→   *   output pipeline → bill → persist
+    59→    59→   */
+    60→    60→  async processJob(data: ScrapeJobData): Promise<ScrapeJobResult> {
+    61→    61→    // -- Request Deduplication --------------------------------------------
+    62→    62→    const dedupeKey = getDedupeKey(data);
+    63→    63→    const existing = inflightRequests.get(dedupeKey);
+    64→    64→    if (existing) {
+    65→    65→      logger.info({ jobId: data.jobId, url: data.url }, 'Deduped -- waiting for identical in-flight request');
+    66→    66→      return existing.promise;
+    67→    67→    }
+    68→    68→
+    69→    69→    const pending: Partial<PendingRequest> = {};
+    70→    70→    pending.promise = new Promise<ScrapeJobResult>((resolve, reject) => {
+    71→    71→      pending.resolve = resolve;
+    72→    72→      pending.reject = reject;
+    73→    73→    });
+    74→    74→    inflightRequests.set(dedupeKey, pending as PendingRequest);
+    75→    75→
+    76→    76→    try {
+    77→    77→      const result = await this._processJob(data);
+    78→    78→      pending.resolve!(result);
+    79→    79→      return result;
+    80→    80→    } catch (err: any) {
+    81→    81→      const result: ScrapeJobResult = {
+    82→    82→        jobId: data.jobId,
+    83→    83→        status: 'failed',
+    84→    84→        strategy: 'http',
+    85→    85→        creditsUsed: 0,
+    86→    86→        creditsCharged: 0,
+    87→    87→        statusCode: 502,
+    88→    88→        responseMs: 0,
+    89→    89→        error: err.message,
+    90→    90→        cached: false,
+    91→    91→      };
+    92→    92→      pending.resolve!(result);
+    93→    93→      return result;
+    94→    94→    } finally {
+    95→    95→      inflightRequests.delete(dedupeKey);
+    96→    96→    }
+    97→    97→  }
+    98→    98→
+    99→    99→  private async _processJob(data: ScrapeJobData): Promise<ScrapeJobResult> {
+   100→   100→    const startTime = Date.now();
+   101→   101→    const domain = data.domain;
+   102→   102→    let strategy: JobStrategy = 'http';
+   103→   103→    let creditsUsed = 0;
+   104→   104→    let creditsCharged = 0;
+   105→   105→    let cached = false;
+   106→   106→    let html = '';
+   107→   107→    let statusCode = 200;
+   108→   108→    let extracted: Record<string, any> | undefined;
+   109→   109→    let structuredData: Record<string, any> | undefined;
+   110→   110→    let proxyId: string | undefined;
+   111→   111→    let proxyCountry: string | undefined;
+   112→   112→    let proxyUrl: string | undefined;
+   113→   113→    let captchaSolved = false;
+   114→   114→    let error: string | undefined;
+   115→   115→    let retryCount = 0;
+   116→   116→    let bandwidthBytes = 0;
+   117→   117→    let responseHeaders: Record<string, string> = {};
+   118→   118→    let finalUrl = data.url;
+   119→   119→    let outputCompressionRatio: number | undefined;
+   120→   120→    let appliedOutputFormat: OutputFormat | undefined;
+   121→   121→
+   122→   122→    // Session state -- populated when sessionId is provided
+   123→   123→    let sessionState: import('../session').SessionState | null = null;
+   124→   124→
+   125→   125→    try {
+   126→   126→      // -- Step 1: Check robots.txt --------------------------------------
+   127→   127→      if (data.respectRobotsTxt !== false) {
+   128→   128→        const robotsCheck = await robotsParser.isAllowed(data.url, 'ScrapeSuite');
+   129→   129→        if (!robotsCheck.allowed) {
+   130→   130→          logger.info({ jobId: data.jobId, url: data.url }, 'Blocked by robots.txt');
+   131→   131→          return {
+   132→   132→            jobId: data.jobId,
+   133→   133→            status: 'failed',
+   134→   134→            strategy: 'cache',
+   135→   135→            creditsUsed: 0,
+   136→   136→            creditsCharged: 0,
+   137→   137→            statusCode: 403,
+   138→   138→            responseMs: Date.now() - startTime,
+   139→   139→            error: 'URL disallowed by robots.txt',
+   140→   140→            cached: false,
+   141→   141→          };
+   142→   142→        }
+   143→   143→      }
+   144→   144→
+   145→   145→      // -- Step 2: Check Redis cache -------------------------------------
+   146→   146→      const cachedResult = await this.checkCache(data.url);
+   147→   147→      if (cachedResult) {
+   148→   148→        cached = true;
+   149→   149→        creditsUsed = 0;
+   150→   150→        creditsCharged = 0;
+   151→   151→        html = cachedResult.html;
+   152→   152→        statusCode = cachedResult.statusCode;
+   153→   153→        strategy = 'cache';
+   154→   154→        logger.info({ jobId: data.jobId, url: data.url, strategy: 'cache' }, 'Cache hit');
+   155→   155→      }
+   156→   156→
+   157→   157→      if (!cached) {
+   158→   158→        // -- Step 3: Session Manager Integration -------------------------
+   159→   159→        // If a sessionId is provided, retrieve or create the session state
+   160→   160→        // to reuse the same proxy and fingerprint for geo-consistency.
+   161→   161→        if (data.sessionId) {
+   162→   162→          try {
+   163→   163→            sessionState = await sessionManager.getSession(data.sessionId);
+   164→   164→            if (sessionState) {
+   165→   165→              // Refresh the session TTL on use (sliding window)
+   166→   166→              sessionState = await sessionManager.refreshSession(data.sessionId);
+   167→   167→              if (sessionState) {
+   168→   168→                logger.info(
+   169→   169→                  { jobId: data.jobId, sessionId: data.sessionId, proxyId: sessionState.proxyId, proxyCountry: sessionState.proxyCountry },
+   170→   170→                  'Session found -- using session proxy and fingerprint',
+   171→   171→                );
+   172→   172→                // Use the session's proxy and fingerprint
+   173→   173→                proxyUrl = sessionState.proxyUrl;
+   174→   174→                proxyId = sessionState.proxyId;
+   175→   175→                proxyCountry = sessionState.proxyCountry;
+   176→   176→              }
+   177→   177→            } else {
+   178→   178→              // Session doesn't exist or expired -- create a new one
+   179→   179→              logger.info(
+   180→   180→                { jobId: data.jobId, sessionId: data.sessionId },
+   181→   181→                'Session not found or expired -- creating new session',
+   182→   182→              );
+   183→   183→              try {
+   184→   184→                sessionState = await sessionManager.createSession({
+   185→   185→                  userId: data.userId,
+   186→   186→                  proxyTier: (data.proxyTier as any) || 'residential',
+   187→   187→                  proxyCountry: data.proxyCountry,
+   188→   188→                  proxyCity: data.proxyCity,
+   189→   189→                  proxyAsn: data.proxyAsn,
+   190→   190→                  domain,
+   191→   191→                });
+   192→   192→                proxyUrl = sessionState.proxyUrl;
+   193→   193→                proxyId = sessionState.proxyId;
+   194→   194→                proxyCountry = sessionState.proxyCountry;
+   195→   195→                logger.info(
+   196→   196→                  { jobId: data.jobId, sessionId: sessionState.sessionId, proxyId, proxyCountry },
+   197→   197→                  'New session created with proxy',
+   198→   198→                );
+   199→   199→              } catch (sessionErr: any) {
+   200→   200→                logger.warn(
+   201→   201→                  { jobId: data.jobId, sessionId: data.sessionId, error: sessionErr.message },
+   202→   202→                  'Failed to create session -- proceeding without session',
+   203→   203→                );
+   204→   204→              }
+   205→   205→            }
+   206→   206→          } catch (sessionErr: any) {
+   207→   207→            logger.warn(
+   208→   208→              { jobId: data.jobId, sessionId: data.sessionId, error: sessionErr.message },
+   209→   209→              'Session manager error -- proceeding without session',
+   210→   210→            );
+   211→   211→          }
+   212→   212→        }
+   213→   213→
+   214→   214→        // -- Step 4: Consult Domain Intelligence -------------------------
+   215→   215→        const recommendation = await domainIntelligence.recommendStrategy(domain);
+   216→   216→
+   217→   217→        // -- Step 5: Acquire adaptive rate limit token -------------------
+   218→   218→        // Uses the new AdaptiveRateLimiter instead of the simple Redis counter.
+   219→   219→        try {
+   220→   220→          const rateResult = await adaptiveRateLimiter.acquireToken(domain);
+   221→   221→          if (!rateResult.allowed) {
+   222→   222→            logger.info(
+   223→   223→              { jobId: data.jobId, domain, waitMs: rateResult.waitMs, currentRps: rateResult.currentRps },
+   224→   224→              'Rate limited -- waiting before proceeding',
+   225→   225→            );
+   226→   226→            await this.sleep(rateResult.waitMs);
+   227→   227→            // Try one more time after waiting
+   228→   228→            const retryResult = await adaptiveRateLimiter.acquireToken(domain);
+   229→   229→            if (!retryResult.allowed) {
+   230→   230→              logger.warn(
+   231→   231→                { jobId: data.jobId, domain, waitMs: retryResult.waitMs },
+   232→   232→                'Rate limit token still not available after wait -- proceeding anyway',
+   233→   233→              );
+   234→   234→            }
+   235→   235→          }
+   236→   236→        } catch (rateErr: any) {
+   237→   237→          logger.warn(
+   238→   238→            { jobId: data.jobId, domain, error: rateErr.message },
+   239→   239→            'Adaptive rate limiter error -- falling back to simple rate limit',
+   240→   240→          );
+   241→   241→          // Fallback to the old simple rate limiter
+   242→   242→          await this.acquireSimpleRateLimitToken(domain, recommendation.safeRps);
+   243→   243→        }
+   244→   244→
+   245→   245→        // -- Step 6: Get proxy from Smart IP Pool (v3.1+) -----------------
+   246→   246→        // Uses the unified mega-pool with reputation tracking, IP cooling,
+   247→   247→        // auto-scaling, and multi-provider aggregation. Falls back to
+   248→   248→        // legacy getProxy() if the smart pool fails.
+   249→   249→        // If session already provided a proxy, skip this step.
+   250→   250→        if (!proxyUrl) {
+   251→   251→          const proxySelection = await proxyManager.getSmartProxy(
+   252→   252→            domain,
+   253→   253→            (data.proxyTier as any) || recommendation.proxyTier,
+   254→   254→            data.proxyCountry,
+   255→   255→            {
+   256→   256→              city: data.proxyCity,
+   257→   257→              asn: data.proxyAsn,
+   258→   258→              sessionId: data.sessionId,
+   259→   259→              // For domains known to have anti-bot, require IPs with good reputation
+   260→   260→              requireReputation: recommendation.strategy === 'stealth-browser',
+   261→   261→            },
+   262→   262→          );
+   263→   263→
+   264→   264→          proxyUrl = proxySelection?.proxyUrl;
+   265→   265→          proxyId = proxySelection?.proxyId;
+   266→   266→          proxyCountry = proxySelection?.country;
+   267→   267→        }
+   268→   268→
+   269→   269→        // -- Step 7: Execute fetch (with smart retry logic) --------------
+   270→   270→        const effectiveStrategy: JobStrategy =
+   271→   271→          data.strategy === 'auto' || !data.strategy
+   272→   272→            ? recommendation.strategy
+   273→   273→            : (data.strategy as JobStrategy);
+   274→   274→
+   275→   275→        // If renderJs is requested, force browser strategy
+   276→   276→        const forceBrowser = data.renderJs === true;
+   277→   277→        let actualStrategy: JobStrategy = forceBrowser && effectiveStrategy === 'http'
+   278→   278→          ? 'browser'
+   279→   279→          : effectiveStrategy;
+   280→   280→
+   281→   281→        // If session has a fingerprint profile, use it for stealth browser requests
+   282→   282→        // (handled inside fetchViaStealthBrowser / fetchViaHttp via stealthEngine.getRandomProfile())
+   283→   283→
+   284→   284→        let fetchResult = await this.executeFetch(
+   285→   285→          actualStrategy, data.url, domain, proxyUrl,
+   286→   286→          data.waitForSelector, data.timeout, data.headers,
+   287→   287→        );
+   288→   288→
+   289→   289→        html = fetchResult.html;
+   290→   290→        statusCode = fetchResult.statusCode;
+   291→   291→        strategy = fetchResult.strategy;
+   292→   292→        bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   293→   293→        responseHeaders = fetchResult.headers || {};
+   294→   294→        finalUrl = fetchResult.finalUrl || data.url;
+   295→   295→
+   296→   296→        // Record the initial response to the adaptive rate limiter
+   297→   297→        const isSuccess = statusCode >= 200 && statusCode < 400;
+   298→   298→        try {
+   299→   299→          await adaptiveRateLimiter.recordResponse(domain, {
+   300→   300→            success: isSuccess,
+   301→   301→            statusCode,
+   302→   302→            responseMs: Date.now() - startTime,
+   303→   303→          });
+   304→   304→        } catch (rateErr: any) {
+   305→   305→          logger.debug({ domain, error: rateErr.message }, 'Failed to record response to adaptive rate limiter');
+   306→   306→        }
+   307→   307→
+   308→   308→        // -- Step 8: Smart Retry -- Empty HTML → browser -----------------
+   309→   309→        if (strategy === 'http' && this.isEmptyHtml(html) && retryCount < MAX_RETRIES) {
+   310→   310→          retryCount++;
+   311→   311→          logger.info({ jobId: data.jobId, url: data.url, retry: retryCount }, 'Empty HTML -- escalating to browser');
+   312→   312→
+   313→   313→          // Rotate fingerprint before retry
+   314→   314→          const rotatedProfile = stealthEngine.getRandomProfile();
+   315→   315→          logger.debug(
+   316→   316→            { jobId: data.jobId, userAgent: rotatedProfile.userAgent },
+   317→   317→            'Rotated fingerprint profile for retry',
+   318→   318→          );
+   319→   319→
+   320→   320→          fetchResult = await this.executeFetch(
+   321→   321→            'browser', data.url, domain, proxyUrl,
+   322→   322→            data.waitForSelector, data.timeout, data.headers,
+   323→   323→          );
+   324→   324→          html = fetchResult.html;
+   325→   325→          statusCode = fetchResult.statusCode;
+   326→   326→          strategy = fetchResult.strategy;
+   327→   327→          bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   328→   328→          responseHeaders = fetchResult.headers || {};
+   329→   329→
+   330→   330→          // Record retry outcome
+   331→   331→          try {
+   332→   332→            await adaptiveRateLimiter.recordResponse(domain, {
+   333→   333→              success: statusCode >= 200 && statusCode < 400,
+   334→   334→              statusCode,
+   335→   335→              responseMs: Date.now() - startTime,
+   336→   336→            });
+   337→   337→          } catch {}
+   338→   338→        }
+   339→   339→
+   340→   340→        // -- Step 9: Smart Retry -- 429 Rate Limited ---------------------
+   341→   341→        if (statusCode === 429 && retryCount < MAX_RETRIES) {
+   342→   342→          retryCount++;
+   343→   343→          logger.info(
+   344→   344→            { jobId: data.jobId, url: data.url, retry: retryCount, currentRps: (await adaptiveRateLimiter.getDomainStatus(domain)).currentRps },
+   345→   345→            '429 rate-limited -- waiting cooldown then retrying with different proxy',
+   346→   346→          );
+   347→   347→
+   348→   348→          // Wait based on adaptive rate limiter's cooldown
+   349→   349→          const domainStatus = await adaptiveRateLimiter.getDomainStatus(domain).catch(() => null);
+   350→   350→          const cooldownMs = domainStatus?.cooldownRemainingMs || 5_000;
+   351→   351→          logger.info({ jobId: data.jobId, domain, cooldownMs }, 'Waiting for rate limit cooldown');
+   352→   352→          await this.sleep(cooldownMs + 500); // Add small buffer
+   353→   353→
+   354→   354→          // Get a DIFFERENT proxy for the retry
+   355→   355→          const retryProxy = await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random');
+   356→   356→          const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   357→   357→
+   358→   358→          // Rotate fingerprint
+   359→   359→          stealthEngine.getRandomProfile();
+   360→   360→
+   361→   361→          // Re-acquire rate limit token after cooldown
+   362→   362→          try {
+   363→   363→            const retryToken = await adaptiveRateLimiter.acquireToken(domain);
+   364→   364→            if (!retryToken.allowed) {
+   365→   365→              await this.sleep(retryToken.waitMs);
+   366→   366→            }
+   367→   367→          } catch {}
+   368→   368→
+   369→   369→          // Retry with stealth browser (more resilient to rate limits)
+   370→   370→          fetchResult = await this.executeFetch(
+   371→   371→            'stealth-browser', data.url, domain, retryProxyUrl,
+   372→   372→            data.waitForSelector, data.timeout, data.headers,
+   373→   373→          );
+   374→   374→
+   375→   375→          if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   376→   376→            html = fetchResult.html;
+   377→   377→            statusCode = fetchResult.statusCode;
+   378→   378→            strategy = fetchResult.strategy;
+   379→   379→            bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   380→   380→            responseHeaders = fetchResult.headers || {};
+   381→   381→            if (retryProxy) {
+   382→   382→              proxyId = retryProxy.proxyId;
+   383→   383→              proxyCountry = retryProxy.country;
+   384→   384→              proxyUrl = retryProxyUrl;
+   385→   385→            }
+   386→   386→          }
+   387→   387→
+   388→   388→          // Record retry outcome
+   389→   389→          try {
+   390→   390→            await adaptiveRateLimiter.recordResponse(domain, {
+   391→   391→              success: fetchResult.statusCode >= 200 && fetchResult.statusCode < 400,
+   392→   392→              statusCode: fetchResult.statusCode,
+   393→   393→              responseMs: Date.now() - startTime,
+   394→   394→            });
+   395→   395→          } catch {}
+   396→   396→        }
+   397→   397→
+   398→   398→        // -- Step 10: Smart Retry -- 403 with Anti-bot -------------------
+   399→   399→        const antiBot = this.detectAntiBot(html);
+   400→   400→        if (
+   401→   401→          (statusCode === 403 && (antiBot.confidenceScore > 0.3 || antiBot.cloudflare || antiBot.datadome || antiBot.akamai)) &&
+   402→   402→          retryCount < MAX_RETRIES
+   403→   403→        ) {
+   404→   404→          retryCount++;
+   405→   405→          logger.info(
+   406→   406→            { jobId: data.jobId, url: data.url, retry: retryCount, antiBotScore: antiBot.confidenceScore },
+   407→   407→            '403 with anti-bot detected -- rotating proxy AND fingerprint, retrying with stealth',
+   408→   408→          );
+   409→   409→
+   410→   410→          // Rotate BOTH proxy AND fingerprint
+   411→   411→          const retryProxy = await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random');
+   412→   412→          const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   413→   413→          const rotatedProfile = stealthEngine.getRandomProfile();
+   414→   414→          logger.debug(
+   415→   415→            { jobId: data.jobId, rotatedUserAgent: rotatedProfile.userAgent, rotatedPlatform: rotatedProfile.platform },
+   416→   416→            'Rotated fingerprint profile for anti-bot retry',
+   417→   417→          );
+   418→   418→
+   419→   419→          fetchResult = await this.executeFetch(
+   420→   420→            'stealth-browser', data.url, domain, retryProxyUrl,
+   421→   421→            data.waitForSelector, data.timeout, data.headers,
+   422→   422→          );
+   423→   423→
+   424→   424→          if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   425→   425→            html = fetchResult.html;
+   426→   426→            statusCode = fetchResult.statusCode;
+   427→   427→            strategy = fetchResult.strategy;
+   428→   428→            bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   429→   429→            responseHeaders = fetchResult.headers || {};
+   430→   430→            if (retryProxy) {
+   431→   431→              proxyId = retryProxy.proxyId;
+   432→   432→              proxyCountry = retryProxy.country;
+   433→   433→              proxyUrl = retryProxyUrl;
+   434→   434→            }
+   435→   435→          }
+   436→   436→
+   437→   437→          // Record retry outcome
+   438→   438→          try {
+   439→   439→            await adaptiveRateLimiter.recordResponse(domain, {
+   440→   440→              success: fetchResult.statusCode >= 200 && fetchResult.statusCode < 400,
+   441→   441→              statusCode: fetchResult.statusCode,
+   442→   442→              responseMs: Date.now() - startTime,
+   443→   443→              hadAntiBot: true,
+   444→   444→            });
+   445→   445→          } catch {}
+   446→   446→        }
+   447→   447→
+   448→   448→        // -- Step 11: Smart Retry -- 503 Service Unavailable --------------
+   449→   449→        if (statusCode === 503 && retryCount < MAX_RETRIES) {
+   450→   450→          retryCount++;
+   451→   451→          logger.info(
+   452→   452→            { jobId: data.jobId, url: data.url, retry: retryCount },
+   453→   453→            '503 service unavailable -- retrying with different proxy after delay',
+   454→   454→          );
+   455→   455→
+   456→   456→          // Short delay before retry
+   457→   457→          await this.sleep(PROXY_RETRY_DELAY_MS);
+   458→   458→
+   459→   459→          // Get a different proxy
+   460→   460→          const retryProxy = await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random');
+   461→   461→          const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   462→   462→
+   463→   463→          // Rotate fingerprint
+   464→   464→          stealthEngine.getRandomProfile();
+   465→   465→
+   466→   466→          fetchResult = await this.executeFetch(
+   467→   467→            actualStrategy, data.url, domain, retryProxyUrl,
+   468→   468→            data.waitForSelector, data.timeout, data.headers,
+   469→   469→          );
+   470→   470→
+   471→   471→          if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   472→   472→            html = fetchResult.html;
+   473→   473→            statusCode = fetchResult.statusCode;
+   474→   474→            strategy = fetchResult.strategy;
+   475→   475→            bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   476→   476→            responseHeaders = fetchResult.headers || {};
+   477→   477→            if (retryProxy) {
+   478→   478→              proxyId = retryProxy.proxyId;
+   479→   479→              proxyCountry = retryProxy.country;
+   480→   480→              proxyUrl = retryProxyUrl;
+   481→   481→            }
+   482→   482→          }
+   483→   483→
+   484→   484→          // Record retry outcome
+   485→   485→          try {
+   486→   486→            await adaptiveRateLimiter.recordResponse(domain, {
+   487→   487→              success: fetchResult.statusCode >= 200 && fetchResult.statusCode < 400,
+   488→   488→              statusCode: fetchResult.statusCode,
+   489→   489→              responseMs: Date.now() - startTime,
+   490→   490→            });
+   491→   491→          } catch {}
+   492→   492→        }
+   493→   493→
+   494→   494→        // -- Step 12: Anti-bot detected (existing escalation) ------------
+   495→   495→        // Kept as a fallback for cases where status is 403 but no anti-bot was
+   496→   496→        // specifically detected, or anti-bot is detected on other status codes.
+   497→   497→        const recheckAntiBot = this.detectAntiBot(html);
+   498→   498→        if (
+   499→   499→          (statusCode === 403 || recheckAntiBot.confidenceScore > 0.5) &&
+   500→   500→          strategy !== 'stealth-browser' &&
+   501→   501→          retryCount < MAX_RETRIES &&
+   502→   502→          // Don't double-retry if we already handled 403+anti-bot above
+   503→   503→          !(statusCode === 403 && (antiBot.confidenceScore > 0.3 || antiBot.cloudflare || antiBot.datadome || antiBot.akamai))
+   504→   504→        ) {
+   505→   505→          retryCount++;
+   506→   506→          logger.info({ jobId: data.jobId, url: data.url, retry: retryCount }, 'Anti-bot detected -- escalating to stealth');
+   507→   507→
+   508→   508→          // Try getting a different proxy for the retry
+   509→   509→          const retryProxy = retryCount > 1
+   510→   510→            ? await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random')
+   511→   511→            : null;
+   512→   512→          const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   513→   513→
+   514→   514→          // Rotate fingerprint
+   515→   515→          stealthEngine.getRandomProfile();
+   516→   516→
+   517→   517→          fetchResult = await this.executeFetch(
+   518→   518→            'stealth-browser', data.url, domain, retryProxyUrl,
+   519→   519→            data.waitForSelector, data.timeout, data.headers,
+   520→   520→          );
+   521→   521→          if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   522→   522→            html = fetchResult.html;
+   523→   523→            statusCode = fetchResult.statusCode;
+   524→   524→            strategy = fetchResult.strategy;
+   525→   525→            bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   526→   526→            responseHeaders = fetchResult.headers || {};
+   527→   527→            if (retryProxy) {
+   528→   528→              proxyId = retryProxy.proxyId;
+   529→   529→              proxyCountry = retryProxy.country;
+   530→   530→              proxyUrl = retryProxyUrl;
+   531→   531→            }
+   532→   532→          }
+   533→   533→
+   534→   534→          // Record retry outcome
+   535→   535→          try {
+   536→   536→            await adaptiveRateLimiter.recordResponse(domain, {
+   537→   537→              success: fetchResult.statusCode >= 200 && fetchResult.statusCode < 400,
+   538→   538→              statusCode: fetchResult.statusCode,
+   539→   539→              responseMs: Date.now() - startTime,
+   540→   540→              hadAntiBot: true,
+   541→   541→            });
+   542→   542→          } catch {}
+   543→   543→        }
+   544→   544→
+   545→   545→        // -- Step 13: CAPTCHA solving (with fallback to proxy rotation) --
+   546→   546→        const finalAntiBot = this.detectAntiBot(html);
+   547→   547→        const hasCaptcha = finalAntiBot.reCaptcha || finalAntiBot.hCaptcha || finalAntiBot.cloudflareVariant === 'turnstile';
+   548→   548→
+   549→   549→        if (
+   550→   550→          hasCaptcha &&
+   551→   551→          data.solveCaptcha !== false &&
+   552→   552→          captchaSolver.isConfigured
+   553→   553→        ) {
+   554→   554→          try {
+   555→   555→            const captchaType = finalAntiBot.reCaptcha ? 'recaptcha_v2'
+   556→   556→              : finalAntiBot.hCaptcha ? 'hcaptcha'
+   557→   557→              : 'turnstile';
+   558→   558→
+   559→   559→            // Extract site key from HTML
+   560→   560→            const siteKey = this.extractCaptchaSiteKey(html, captchaType);
+   561→   561→            if (siteKey) {
+   562→   562→              logger.info({ jobId: data.jobId, type: captchaType, siteKey }, 'Attempting CAPTCHA solve');
+   563→   563→
+   564→   564→              const solveResult = await captchaSolver.solve({
+   565→   565→                url: data.url,
+   566→   566→                siteKey,
+   567→   567→                type: captchaType as any,
+   568→   568→                proxyUrl,
+   569→   569→              });
+   570→   570→
+   571→   571→              if (solveResult.success) {
+   572→   572→                captchaSolved = true;
+   573→   573→                creditsUsed += 3; // CAPTCHA_SOLVE cost
+   574→   574→
+   575→   575→                // Retry with the CAPTCHA token -- inject it into the page
+   576→   576→                if (strategy === 'browser' || strategy === 'stealth-browser') {
+   577→   577→                  const retryResult = await this.retryWithCaptchaToken(
+   578→   578→                    data.url, domain, proxyUrl, solveResult.token,
+   579→   579→                    captchaType, data.waitForSelector, data.timeout,
+   580→   580→                  );
+   581→   581→                  if (retryResult.statusCode >= 200 && retryResult.statusCode < 400) {
+   582→   582→                    html = retryResult.html;
+   583→   583→                    statusCode = retryResult.statusCode;
+   584→   584→                    bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   585→   585→                  }
+   586→   586→                }
+   587→   587→              } else {
+   588→   588→                // -- CAPTCHA solving failed -- rotate proxy and retry with stealth --
+   589→   589→                if (retryCount < MAX_RETRIES) {
+   590→   590→                  retryCount++;
+   591→   591→                  logger.info(
+   592→   592→                    { jobId: data.jobId, retry: retryCount },
+   593→   593→                    'CAPTCHA solving failed -- rotating proxy and retrying with stealth',
+   594→   594→                  );
+   595→   595→
+   596→   596→                  await this.sleep(CAPTCHA_ROTATE_RETRY_DELAY_MS);
+   597→   597→
+   598→   598→                  const retryProxy = await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random');
+   599→   599→                  const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   600→   600→                  stealthEngine.getRandomProfile(); // Rotate fingerprint
+   601→   601→
+   602→   602→                  fetchResult = await this.executeFetch(
+   603→   603→                    'stealth-browser', data.url, domain, retryProxyUrl,
+   604→   604→                    data.waitForSelector, data.timeout, data.headers,
+   605→   605→                  );
+   606→   606→
+   607→   607→                  if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   608→   608→                    html = fetchResult.html;
+   609→   609→                    statusCode = fetchResult.statusCode;
+   610→   610→                    strategy = fetchResult.strategy;
+   611→   611→                    bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   612→   612→                    responseHeaders = fetchResult.headers || {};
+   613→   613→                    if (retryProxy) {
+   614→   614→                      proxyId = retryProxy.proxyId;
+   615→   615→                      proxyCountry = retryProxy.country;
+   616→   616→                      proxyUrl = retryProxyUrl;
+   617→   617→                    }
+   618→   618→                  }
+   619→   619→                }
+   620→   620→              }
+   621→   621→            }
+   622→   622→          } catch (captchaErr: any) {
+   623→   623→            logger.warn({ jobId: data.jobId, error: captchaErr.message }, 'CAPTCHA solving failed');
+   624→   624→
+   625→   625→            // On CAPTCHA error, try proxy rotation + stealth as last resort
+   626→   626→            if (retryCount < MAX_RETRIES) {
+   627→   627→              retryCount++;
+   628→   628→              logger.info(
+   629→   629→                { jobId: data.jobId, retry: retryCount },
+   630→   630→                'CAPTCHA error -- rotating proxy and retrying with stealth',
+   631→   631→              );
+   632→   632→
+   633→   633→              try {
+   634→   634→                const retryProxy = await proxyManager.getProxy(domain, 'residential', data.proxyCountry, 'random');
+   635→   635→                const retryProxyUrl = retryProxy?.proxyUrl || proxyUrl;
+   636→   636→                stealthEngine.getRandomProfile();
+   637→   637→
+   638→   638→                fetchResult = await this.executeFetch(
+   639→   639→                  'stealth-browser', data.url, domain, retryProxyUrl,
+   640→   640→                  data.waitForSelector, data.timeout, data.headers,
+   641→   641→                );
+   642→   642→
+   643→   643→                if (fetchResult.statusCode >= 200 && fetchResult.statusCode < 400) {
+   644→   644→                  html = fetchResult.html;
+   645→   645→                  statusCode = fetchResult.statusCode;
+   646→   646→                  strategy = fetchResult.strategy;
+   647→   647→                  bandwidthBytes = Buffer.byteLength(html, 'utf8');
+   648→   648→                  responseHeaders = fetchResult.headers || {};
+   649→   649→                  if (retryProxy) {
+   650→   650→                    proxyId = retryProxy.proxyId;
+   651→   651→                    proxyCountry = retryProxy.country;
+   652→   652→                    proxyUrl = retryProxyUrl;
+   653→   653→                  }
+   654→   654→                }
+   655→   655→              } catch (rotateErr: any) {
+   656→   656→                logger.warn(
+   657→   657→                  { jobId: data.jobId, error: rotateErr.message },
+   658→   658→                  'Post-CAPTCHA proxy rotation also failed',
+   659→   659→                );
+   660→   660→              }
+   661→   661→            }
+   662→   662→          }
+   663→   663→        }
+   664→   664→
+   665→   665→        // -- Step 14: Record anti-bot detection --------------------------
+   666→   666→        if (finalAntiBot.cloudflare || finalAntiBot.datadome || finalAntiBot.akamai) {
+   667→   667→          logger.warn(
+   668→   668→            { jobId: data.jobId, url: data.url, ...finalAntiBot },
+   669→   669→            'Anti-bot protection detected',
+   670→   670→          );
+   671→   671→        }
+   672→   672→
+   673→   673→        // -- Step 15: Record proxy outcome -------------------------------
+   674→   674→        if (proxyId) {
+   675→   675→          await proxyManager.recordOutcome({
+   676→   676→            proxyId,
+   677→   677→            domain,
+   678→   678→            success: statusCode >= 200 && statusCode < 400,
+   679→   679→            statusCode,
+   680→   680→            latencyMs: Date.now() - startTime,
+   681→   681→          });
+   682→   682→        }
+   683→   683→
+   684→   684→        // -- Step 16: Record outcome to domain intelligence --------------
+   685→   685→        await domainIntelligence.recordOutcome(domain, {
+   686→   686→          success: statusCode >= 200 && statusCode < 400,
+   687→   687→          statusCode,
+   688→   688→          responseMs: Date.now() - startTime,
+   689→   689→          strategy: strategy === 'stealth-browser' ? 'browser' : strategy as 'http' | 'browser',
+   690→   690→          usedBrowser: strategy === 'browser' || strategy === 'stealth-browser',
+   691→   691→          detectedCloudflare: finalAntiBot.cloudflare,
+   692→   692→          detectedDataDome: finalAntiBot.datadome,
+   693→   693→          pageSizeKb: Math.round(bandwidthBytes / 1024),
+   694→   694→          hadEmptyHtml: this.isEmptyHtml(html),
+   695→   695→        });
+   696→   696→
+   697→   697→        // -- Step 17: Record session request (if session is active) ------
+   698→   698→        if (data.sessionId && sessionState) {
+   699→   699→          try {
+   700→   700→            await sessionManager.recordSessionRequest(data.sessionId, {
+   701→   701→              success: statusCode >= 200 && statusCode < 400,
+   702→   702→              responseMs: Date.now() - startTime,
+   703→   703→              bandwidthBytes,
+   704→   704→              creditsUsed: 0, // Will be updated after billing
+   705→   705→            });
+   706→   706→          } catch (sessionErr: any) {
+   707→   707→            logger.debug(
+   708→   708→              { jobId: data.jobId, sessionId: data.sessionId, error: sessionErr.message },
+   709→   709→              'Failed to record session request',
+   710→   710→            );
+   711→   711→          }
+   712→   712→        }
+   713→   713→
+   714→   714→        // -- Step 18: Cache successful results ---------------------------
+   715→   715→        if (statusCode >= 200 && statusCode < 400) {
+   716→   716→          const profile = await domainIntelligence.getProfile(domain);
+   717→   717→          const ttl = data.cacheTtl || profile.cacheTtlSeconds;
+   718→   718→          await cacheSet(`scrape:${data.url}`, { html, statusCode, responseMs: Date.now() - startTime }, ttl);
+   719→   719→        }
+   720→   720→      }
+   721→   721→
+   722→   722→      // -- Step 19: Template-based extraction -------------------------------
+   723→   723→      // If templateId is specified, or extract is "auto", use the template registry
+   724→   724→      // to detect and extract structured data using pre-built templates.
+   725→   725→      if (html) {
+   726→   726→        try {
+   727→   727→          let templateId = data.templateId;
+   728→   728→          let templateMatch: import('../templates').TemplateMatch | null = null;
+   729→   729→
+   730→   730→          // Auto-detect template if templateId not specified but extract is "auto"
+   731→   731→          if (!templateId && data.extract === 'auto') {
+   732→   732→            templateMatch = templateRegistry.detectTemplate(data.url);
+   733→   733→            if (templateMatch && templateMatch.confidence >= 0.5) {
+   734→   734→              templateId = templateMatch.templateId;
+   735→   735→              logger.info(
+   736→   736→                { jobId: data.jobId, url: data.url, templateId, confidence: templateMatch.confidence },
+   737→   737→                'Auto-detected template for extraction',
+   738→   738→              );
+   739→   739→            }
+   740→   740→          }
+   741→   741→
+   742→   742→          // If a template is specified or auto-detected, extract with it
+   743→   743→          if (templateId) {
+   744→   744→            const templateResult = templateRegistry.extractWithTemplate(templateId, html, data.url);
+   745→   745→            if (templateResult && Object.keys(templateResult).length > 0) {
+   746→   746→              structuredData = {
+   747→   747→                ...(structuredData || {}),
+   748→   748→                template: {
+   749→   749→                  templateId,
+   750→   750→                  data: templateResult,
+   751→   751→                },
+   752→   752→              };
+   753→   753→              logger.info(
+   754→   754→                { jobId: data.jobId, templateId, fieldsExtracted: Object.keys(templateResult).length },
+   755→   755→                'Template extraction successful',
+   756→   756→              );
+   757→   757→            }
+   758→   758→          }
+   759→   759→        } catch (templateErr: any) {
+   760→   760→          logger.warn(
+   761→   761→            { jobId: data.jobId, templateId: data.templateId, error: templateErr.message },
+   762→   762→            'Template extraction failed -- falling back to standard extraction',
+   763→   763→          );
+   764→   764→        }
+   765→   765→      }
+   766→   766→
+   767→   767→      // -- Step 20: Structured data parsing (existing logic) ---------------
+   768→   768→      if (data.structured && html) {
+   769→   769→        try {
+   770→   770→          const existingStructured = structuredData || {};
+   771→   771→          const parsedStructured = this.parseStructuredData(html, data.url);
+   772→   772→          structuredData = { ...existingStructured, ...parsedStructured };
+   773→   773→          creditsUsed += 2;
+   774→   774→        } catch (err: any) {
+   775→   775→          logger.warn({ jobId: data.jobId, error: err.message }, 'Structured data parsing failed');
+   776→   776→        }
+   777→   777→      }
+   778→   778→
+   779→   779→      // -- Step 21: NL Extraction ------------------------------------------
+   780→   780→      if (data.extract && data.extract !== 'auto' && html) {
+   781→   781→        try {
+   782→   782→          const { nlExtractor } = await import('../extractor/nl-extractor');
+   783→   783→          const extractResult = await nlExtractor.extract({
+   784→   784→            html,
+   785→   785→            url: data.url,
+   786→   786→            instruction: data.extract,
+   787→   787→          });
+   788→   788→          extracted = extractResult.data ?? undefined;
+   789→   789→          creditsUsed += 3;
+   790→   790→        } catch (extractErr: any) {
+   791→   791→          logger.error(
+   792→   792→            { jobId: data.jobId, url: data.url, error: extractErr.message },
+   793→   793→            'NL extraction failed',
+   794→   794→          );
+   795→   795→        }
+   796→   796→      }
+   797→   797→
+   798→   798→      // -- Step 22: Output Pipeline Integration ----------------------------
+   799→   799→      // If outputFormat is specified, process the HTML through the output pipeline.
+   800→   800→      let processedHtml = html;
+   801→   801→      if (data.outputFormat && html && data.outputFormat !== 'raw') {
+   802→   802→        try {
+   803→   803→          const outputResult = outputPipeline.process(html, data.url, {
+   804→   804→            format: data.outputFormat as OutputFormat,
+   805→   805→          });
+   806→   806→
+   807→   807→          processedHtml = typeof outputResult.content === 'string'
+   808→   808→            ? outputResult.content
+   809→   809→            : JSON.stringify(outputResult.content);
+   810→   810→          appliedOutputFormat = data.outputFormat;
+   811→   811→          outputCompressionRatio = outputResult.compressionRatio;
+   812→   812→
+   813→   813→          logger.info(
+   814→   814→            {
+   815→   815→              jobId: data.jobId,
+   816→   816→              format: data.outputFormat,
+   817→   817→              originalSizeBytes: outputResult.originalSizeBytes,
+   818→   818→              outputSizeBytes: outputResult.outputSizeBytes,
+   819→   819→              compressionRatio: outputResult.compressionRatio,
+   820→   820→              processingMs: outputResult.processingMs,
+   821→   821→            },
+   822→   822→            'Output pipeline processing completed',
+   823→   823→          );
+   824→   824→        } catch (outputErr: any) {
+   825→   825→          logger.warn(
+   826→   826→            { jobId: data.jobId, format: data.outputFormat, error: outputErr.message },
+   827→   827→            'Output pipeline processing failed -- returning raw HTML',
+   828→   828→          );
+   829→   829→          // Gracefully fall back to raw HTML
+   830→   830→          appliedOutputFormat = data.outputFormat;
+   831→   831→          outputCompressionRatio = 1;
+   832→   832→        }
+   833→   833→      }
+   834→   834→
+   835→   835→      // -- Step 23: Calculate credits -------------------------------------
+   836→   836→      const isSuccess = statusCode >= 200 && statusCode < 400;
+   837→   837→      creditsUsed += calculateScrapeCredits(strategy as 'cache' | 'http' | 'browser', !!data.extract);
+   838→   838→
+   839→   839→      // -- Step 24: Success-Only Billing ----------------------------------
+   840→   840→      if (isSuccess && creditsUsed > 0) {
+   841→   841→        const deducted = await deductCredits(data.userId, data.apiKeyId, creditsUsed);
+   842→   842→        creditsCharged = deducted ? creditsUsed : 0;
+   843→   843→      } else {
+   844→   844→        creditsCharged = 0;
+   845→   845→      }
+   846→   846→
+   847→   847→      const responseMs = Date.now() - startTime;
+   848→   848→
+   849→   849→      // NOTE: Do NOT update job status here -- the worker handles it.
+   850→   850→      // This fixes the double-update race condition.
+   851→   851→      // Only update non-status fields (result data, credits, etc.)
+   852→   852→      await db.scrapeJob.update({
+   853→   853→        where: { id: data.jobId },
+   854→   854→        data: {
+   855→   855→          strategy,
+   856→   856→          creditsUsed,
+   857→   857→          creditsCharged,
+   858→   858→          bandwidthBytes,
+   859→   859→          result: { html: processedHtml.substring(0, 50000) },
+   860→   860→          extractedData: extracted ?? undefined,
+   861→   861→          structuredData: structuredData ?? undefined,
+   862→   862→          statusCode,
+   863→   863→          responseMs,
+   864→   864→          proxyId,
+   865→   865→          proxyCountry,
+   866→   866→          captchaSolved,
+   867→   867→          retryCount,
+   868→   868→        },
+   869→   869→      });
+   870→   870→
+   871→   871→      // Update API key bandwidth tracking
+   872→   872→      try {
+   873→   873→        await db.apiKey.update({
+   874→   874→          where: { id: data.apiKeyId },
+   875→   875→          data: { bandwidthBytes: { increment: bandwidthBytes } },
+   876→   876→        });
+   877→   877→      } catch {}
+   878→   878→
+   879→   879→      // -- Step 25: Fire webhooks -----------------------------------------
+   880→   880→      webhookDispatcher.fire(data.userId, 'job_completed', {
+   881→   881→        jobId: data.jobId,
+   882→   882→        url: data.url,
+   883→   883→        strategy,
+   884→   884→        statusCode,
+   885→   885→        responseMs,
+   886→   886→        creditsCharged,
+   887→   887→        cached,
+   888→   888→        captchaSolved,
+   889→   889→        bandwidthBytes,
+   890→   890→        outputFormat: appliedOutputFormat,
+   891→   891→        outputCompressionRatio,
+   892→   892→      }).catch(() => {});
+   893→   893→
+   894→   894→      logger.info(
+   895→   895→        { jobId: data.jobId, url: data.url, strategy, statusCode, responseMs, creditsUsed, creditsCharged, cached, captchaSolved, bandwidthBytes, retryCount, outputFormat: appliedOutputFormat, outputCompressionRatio },
+   896→   896→        'Scrape job completed',
+   897→   897→      );
+   898→   898→
+   899→   899→      return {
+   900→   900→        jobId: data.jobId,
+   901→   901→        status: 'done',
+   902→   902→        strategy,
+   903→   903→        html: cached ? undefined : processedHtml,
+   904→   904→        extracted,
+   905→   905→        structuredData,
+   906→   906→        statusCode,
+   907→   907→        responseMs,
+   908→   908→        creditsUsed,
+   909→   909→        creditsCharged,
+   910→   910→        proxyId,
+   911→   911→        proxyCountry,
+   912→   912→        captchaSolved,
+   913→   913→        cached,
+   914→   914→        bandwidthBytes,
+   915→   915→        finalUrl,
+   916→   916→        outputFormat: appliedOutputFormat,
+   917→   917→        outputCompressionRatio,
+   918→   918→      };
+   919→   919→    } catch (err: any) {
+   920→   920→      error = err.message || String(err);
+   921→   921→      const responseMs = Date.now() - startTime;
+   922→   922→
+   923→   923→      logger.error({ jobId: data.jobId, url: data.url, error, responseMs }, 'Scrape job failed');
+   924→   924→
+   925→   925→      // Fire failure webhook
+   926→   926→      webhookDispatcher.fire(data.userId, 'job_failed', {
+   927→   927→        jobId: data.jobId,
+   928→   928→        url: data.url,
+   929→   929→        error,
+   930→   930→        statusCode,
+   931→   931→      }).catch(() => {});
+   932→   932→
+   933→   933→      return {
+   934→   934→        jobId: data.jobId,
+   935→   935→        status: 'failed',
+   936→   936→        strategy,
+   937→   937→        creditsUsed: 0,
+   938→   938→        creditsCharged: 0,
+   939→   939→        statusCode,
+   940→   940→        responseMs,
+   941→   941→        error,
+   942→   942→        cached: false,
+   943→   943→      };
+   944→   944→    }
+   945→   945→  }
+   946→   946→
+   947→   947→  // --- Private Methods ------------------------------------------------------
+   948→   948→
+   949→   949→  private async executeFetch(
+   950→   950→    strategy: JobStrategy,
+   951→   951→    url: string,
+   952→   952→    domain: string,
+   953→   953→    proxyUrl?: string,
+   954→   954→    waitForSelector?: string,
+   955→   955→    timeout?: number,
+   956→   956→    headers?: Record<string, string>,
+   957→   957→  ): Promise<{ html: string; statusCode: number; strategy: JobStrategy; headers?: Record<string, string>; finalUrl?: string }> {
+   958→   958→    if (strategy === 'stealth-browser') {
+   959→   959→      return this.fetchViaStealthBrowser(url, domain, proxyUrl, waitForSelector, timeout);
+   960→   960→    } else if (strategy === 'browser') {
+   961→   961→      return this.fetchViaBrowser(url, domain, proxyUrl, waitForSelector, timeout);
+   962→   962→    } else {
+   963→   963→      return this.fetchViaHttp(url, domain, proxyUrl, headers, timeout);
+   964→   964→    }
+   965→   965→  }
+   966→   966→
+   967→   967→  private async checkCache(
+   968→   968→    url: string,
+   969→   969→  ): Promise<{ html: string; statusCode: number; responseMs: number } | null> {
+   970→   970→    try {
+   971→   971→      const cached = await cacheGet<{ html: string; statusCode: number; responseMs: number }>(
+   972→   972→        `scrape:${url}`,
+   973→   973→      );
+   974→   974→      return cached;
+   975→   975→    } catch (err: any) {
+   976→   976→      logger.warn({ url, error: err.message }, 'Cache lookup failed');
+   977→   977→      return null;
+   978→   978→    }
+   979→   979→  }
+   980→   980→
+   981→   981→  /**
+   982→   982→   * HTTP fetch with TLS fingerprint randomization via got-scraping.
+   983→   983→   * Uses tlsFingerprintFetcher first (randomizes JA3/JA4 fingerprints),
+   984→   984→   * then falls back to proxyFetch if got-scraping is unavailable or fails.
+   985→   985→   *
+   986→   986→   * This is the #1 most impactful fix for bypassing Cloudflare, Akamai, and DataDome,
+   987→   987→   * which use TLS fingerprinting to instantly identify automated traffic.
+   988→   988→   */
+   989→   989→  private async fetchViaHttp(
+   990→   990→    url: string,
+   991→   991→    _domain: string,
+   992→   992→    proxyUrl?: string,
+   993→   993→    headers?: Record<string, string>,
+   994→   994→    timeout?: number,
+   995→   995→  ): Promise<{ html: string; statusCode: number; strategy: JobStrategy; headers: Record<string, string>; finalUrl: string }> {
+   996→   996→    const requestTimeout = timeout || DEFAULT_TIMEOUT;
+   997→   997→
+   998→   998→    // Build fallback headers for proxyFetch (used when got-scraping is unavailable)
+   999→   999→    const profile = stealthEngine.getRandomProfile();
+  1000→  1000→    const fallbackHeaders: Record<string, string> = {
+  1001→  1001→      'User-Agent': profile.userAgent,
+  1002→  1002→      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+  1003→  1003→      'Accept-Language': `${profile.locale},en;q=0.9`,
+  1004→  1004→      'Accept-Encoding': 'gzip, deflate, br',
+  1005→  1005→      'Cache-Control': 'no-cache',
+  1006→  1006→      'Sec-Ch-Ua': '"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"',
+  1007→  1007→      'Sec-Ch-Ua-Mobile': '?0',
+  1008→  1008→      'Sec-Ch-Ua-Platform': `"${profile.platform}"`,
+  1009→  1009→      'Sec-Fetch-Dest': 'document',
+  1010→  1010→      'Sec-Fetch-Mode': 'navigate',
+  1011→  1011→      'Sec-Fetch-Site': 'none',
+  1012→  1012→      'Sec-Fetch-User': '?1',
+  1013→  1013→      'Upgrade-Insecure-Requests': '1',
+  1014→  1014→      ...headers,
+  1015→  1015→    };
+  1016→  1016→
+  1017→  1017→    // Define the fallback function that uses proxyFetch
+  1018→  1018→    const fallbackFn = async (
+  1019→  1019→      fbUrl: string,
+  1020→  1020→      fbProxyUrl?: string,
+  1021→  1021→      fbOpts?: any,
+  1022→  1022→    ): Promise<{ text: string; status: number; headers: Record<string, string>; url: string; ok: boolean }> => {
+  1023→  1023→      const controller = new AbortController();
+  1024→  1024→      const timeoutId = setTimeout(() => controller.abort(), requestTimeout);
+  1025→  1025→      try {
+  1026→  1026→        return await proxyFetch(fbUrl, fbProxyUrl, {
+  1027→  1027→          headers: fallbackHeaders,
+  1028→  1028→          signal: controller.signal,
+  1029→  1029→          redirect: 'follow',
+  1030→  1030→        });
+  1031→  1031→      } finally {
+  1032→  1032→        clearTimeout(timeoutId);
+  1033→  1033→      }
+  1034→  1034→    };
+  1035→  1035→
+  1036→  1036→    try {
+  1037→  1037→      // Try TLS-fingerprint-aware fetch first (got-scraping)
+  1038→  1038→      // This randomizes JA3/JA4 fingerprints to mimic real browsers
+  1039→  1039→      const response = await tlsFingerprintFetcher.fetch(
+  1040→  1040→        url,
+  1041→  1041→        proxyUrl,
+  1042→  1042→        {
+  1043→  1043→          headers,
+  1044→  1044→          timeout: requestTimeout,
+  1045→  1045→        },
+  1046→  1046→        fallbackFn, // Fallback to proxyFetch if got-scraping fails
+  1047→  1047→      );
+  1048→  1048→
+  1049→  1049→      const html = response.text;
+  1050→  1050→
+  1051→  1051→      // Extract useful response headers
+  1052→  1052→      const responseHeaders: Record<string, string> = {};
+  1053→  1053→      const headerWhitelist = [
+  1054→  1054→        'content-type', 'server', 'x-powered-by', 'cf-ray',
+  1055→  1055→        'x-cache', 'content-encoding', 'content-length',
+  1056→  1056→        'x-request-id', 'strict-transport-security',
+  1057→  1057→      ];
+  1058→  1058→      for (const [key, value] of Object.entries(response.headers)) {
+  1059→  1059→        if (headerWhitelist.includes(key.toLowerCase())) {
+  1060→  1060→          responseHeaders[key] = value;
+  1061→  1061→        }
+  1062→  1062→      }
+  1063→  1063→
+  1064→  1064→      const finalUrl = response.url || url;
+  1065→  1065→
+  1066→  1066→      return { html, statusCode: response.status, strategy: 'http', headers: responseHeaders, finalUrl };
+  1067→  1067→    } catch (err: any) {
+  1068→  1068→      if (err.name === 'AbortError') return { html: '', statusCode: 408, strategy: 'http', headers: {}, finalUrl: url };
+  1069→  1069→      return { html: '', statusCode: 502, strategy: 'http', headers: {}, finalUrl: url };
+  1070→  1070→    }
+  1071→  1071→  }
+  1072→  1072→
+  1073→  1073→  private async fetchViaBrowser(
+  1074→  1074→    url: string,
+  1075→  1075→    _domain: string,
+  1076→  1076→    proxyUrl?: string,
+  1077→  1077→    waitForSelector?: string,
+  1078→  1078→    timeout?: number,
+  1079→  1079→  ): Promise<{ html: string; statusCode: number; strategy: JobStrategy; headers?: Record<string, string>; finalUrl?: string }> {
+  1080→  1080→    const requestTimeout = timeout || DEFAULT_TIMEOUT;
+  1081→  1081→    let lease: BrowserLease | undefined;
+  1082→  1082→
+  1083→  1083→    try {
+  1084→  1084→      lease = await browserPool.acquire(proxyUrl, false);
+  1085→  1085→
+  1086→  1086→      const response = await lease.page.goto(url, { waitUntil: 'networkidle', timeout: requestTimeout });
+  1087→  1087→      const statusCode = response ? response.status() : 200;
+  1088→  1088→
+  1089→  1089→      if (waitForSelector) {
+  1090→  1090→        try { await lease.page.waitForSelector(waitForSelector, { timeout: 10_000 }); } catch {}
+  1091→  1091→      }
+  1092→  1092→
+  1093→  1093→      // Simulate human behavior for anti-bot evasion
+  1094→  1094→      if (statusCode < 400) {
+  1095→  1095→        try {
+  1096→  1096→          await humanBehavior.simulatePageInteraction(lease.page);
+  1097→  1097→        } catch (behaviorErr: any) {
+  1098→  1098→          logger.debug({ error: behaviorErr.message }, 'Human behavior simulation failed (non-critical)');
+  1099→  1099→        }
+  1100→  1100→      }
+  1101→  1101→
+  1102→  1102→      const html = await lease.page.content();
+  1103→  1103→      const finalUrl = lease.page.url();
+  1104→  1104→
+  1105→  1105→      return { html, statusCode, strategy: 'browser', finalUrl };
+  1106→  1106→    } catch (err: any) {
+  1107→  1107→      if (err.message?.includes('Timeout') || err.name === 'TimeoutError') {
+  1108→  1108→        return { html: '', statusCode: 408, strategy: 'browser' };
+  1109→  1109→      }
+  1110→  1110→      return { html: '', statusCode: 502, strategy: 'browser' };
+  1111→  1111→    } finally {
+  1112→  1112→      if (lease) await browserPool.release(lease);
+  1113→  1113→    }
+  1114→  1114→  }
+  1115→  1115→
+  1116→  1116→  private async fetchViaStealthBrowser(
+  1117→  1117→    url: string,
+  1118→  1118→    _domain: string,
+  1119→  1119→    proxyUrl?: string,
+  1120→  1120→    waitForSelector?: string,
+  1121→  1121→    timeout?: number,
+  1122→  1122→  ): Promise<{ html: string; statusCode: number; strategy: JobStrategy; headers?: Record<string, string>; finalUrl?: string }> {
+  1123→  1123→    const requestTimeout = timeout || DEFAULT_TIMEOUT;
+  1124→  1124→    let lease: BrowserLease | undefined;
+  1125→  1125→
+  1126→  1126→    try {
+  1127→  1127→      lease = await browserPool.acquire(proxyUrl, true);
+  1128→  1128→
+  1129→  1129→      const response = await lease.page.goto(url, {
+  1130→  1130→        waitUntil: 'domcontentloaded',
+  1131→  1131→        timeout: requestTimeout,
+  1132→  1132→      });
+  1133→  1133→      const statusCode = response ? response.status() : 200;
+  1134→  1134→
+  1135→  1135→      if (waitForSelector) {
+  1136→  1136→        try { await lease.page.waitForSelector(waitForSelector, { timeout: 15_000 }); } catch {}
+  1137→  1137→      } else {
+  1138→  1138→        try {
+  1139→  1139→          await lease.page.waitForFunction(() => document.body?.innerText?.length > 100, { timeout: 10_000 });
+  1140→  1140→        } catch {}
+  1141→  1141→      }
+  1142→  1142→
+  1143→  1143→      // Simulate human behavior for anti-bot evasion
+  1144→  1144→      if (statusCode < 400) {
+  1145→  1145→        try {
+  1146→  1146→          await humanBehavior.simulatePageInteraction(lease.page);
+  1147→  1147→        } catch (behaviorErr: any) {
+  1148→  1148→          logger.debug({ error: behaviorErr.message }, 'Human behavior simulation failed (non-critical)');
+  1149→  1149→        }
+  1150→  1150→      }
+  1151→  1151→
+  1152→  1152→      const html = await lease.page.content();
+  1153→  1153→      const finalUrl = lease.page.url();
+  1154→  1154→
+  1155→  1155→      return { html, statusCode, strategy: 'stealth-browser', finalUrl };
+  1156→  1156→    } catch (err: any) {
+  1157→  1157→      if (err.message?.includes('Timeout') || err.name === 'TimeoutError') {
+  1158→  1158→        return { html: '', statusCode: 408, strategy: 'stealth-browser' };
+  1159→  1159→      }
+  1160→  1160→      return { html: '', statusCode: 502, strategy: 'stealth-browser' };
+  1161→  1161→    } finally {
+  1162→  1162→      if (lease) await browserPool.release(lease);
+  1163→  1163→    }
+  1164→  1164→  }
+  1165→  1165→
+  1166→  1166→  /**
+  1167→  1167→   * Take a screenshot of the current page (used by the screenshot API).
+  1168→  1168→   */
+  1169→  1169→  async takeScreenshot(
+  1170→  1170→    url: string,
+  1171→  1171→    domain: string,
+  1172→  1172→    options: {
+  1173→  1173→      proxyUrl?: string;
+  1174→  1174→      stealth?: boolean;
+  1175→  1175→      fullPage?: boolean;
+  1176→  1176→      waitForSelector?: string;
+  1177→  1177→      timeout?: number;
+  1178→  1178→    } = {},
+  1179→  1179→  ): Promise<{ screenshot: Buffer; statusCode: number; responseMs: number }> {
+  1180→  1180→    const startTime = Date.now();
+  1181→  1181→    const requestTimeout = options.timeout || DEFAULT_TIMEOUT;
+  1182→  1182→    let lease: BrowserLease | undefined;
+  1183→  1183→
+  1184→  1184→    try {
+  1185→  1185→      lease = await browserPool.acquire(options.proxyUrl, options.stealth ?? true);
+  1186→  1186→
+  1187→  1187→      const response = await lease.page.goto(url, {
+  1188→  1188→        waitUntil: 'domcontentloaded',
+  1189→  1189→        timeout: requestTimeout,
+  1190→  1190→      });
+  1191→  1191→      const statusCode = response ? response.status() : 200;
+  1192→  1192→
+  1193→  1193→      if (options.waitForSelector) {
+  1194→  1194→        try { await lease.page.waitForSelector(options.waitForSelector, { timeout: 10_000 }); } catch {}
+  1195→  1195→      } else {
+  1196→  1196→        try {
+  1197→  1197→          await lease.page.waitForFunction(() => document.body?.innerText?.length > 50, { timeout: 8_000 });
+  1198→  1198→        } catch {}
+  1199→  1199→      }
+  1200→  1200→
+  1201→  1201→      const screenshot = await lease.page.screenshot({
+  1202→  1202→        fullPage: options.fullPage ?? false,
+  1203→  1203→        type: 'png',
+  1204→  1204→      });
+  1205→  1205→
+  1206→  1206→      return {
+  1207→  1207→        screenshot: Buffer.from(screenshot),
+  1208→  1208→        statusCode,
+  1209→  1209→        responseMs: Date.now() - startTime,
+  1210→  1210→      };
+  1211→  1211→    } finally {
+  1212→  1212→      if (lease) await browserPool.release(lease);
+  1213→  1213→    }
+  1214→  1214→  }
+  1215→  1215→
+  1216→  1216→  /**
+  1217→  1217→   * Retry a page load with a CAPTCHA token injected.
+  1218→  1218→   */
+  1219→  1219→  private async retryWithCaptchaToken(
+  1220→  1220→    url: string,
+  1221→  1221→    _domain: string,
+  1222→  1222→    proxyUrl: string | undefined,
+  1223→  1223→    token: string,
+  1224→  1224→    captchaType: string,
+  1225→  1225→    waitForSelector?: string,
+  1226→  1226→    timeout?: number,
+  1227→  1227→  ): Promise<{ html: string; statusCode: number }> {
+  1228→  1228→    const requestTimeout = timeout || DEFAULT_TIMEOUT;
+  1229→  1229→    let lease: BrowserLease | undefined;
+  1230→  1230→
+  1231→  1231→    try {
+  1232→  1232→      lease = await browserPool.acquire(proxyUrl, true);
+  1233→  1233→
+  1234→  1234→      const response = await lease.page.goto(url, {
+  1235→  1235→        waitUntil: 'domcontentloaded',
+  1236→  1236→        timeout: requestTimeout,
+  1237→  1237→      });
+  1238→  1238→      const statusCode = response ? response.status() : 200;
+  1239→  1239→
+  1240→  1240→      // Inject the CAPTCHA token
+  1241→  1241→      if (captchaType === 'recaptcha_v2' || captchaType === 'recaptcha_v3') {
+  1242→  1242→        await lease.page.evaluate((t) => {
+  1243→  1243→          const el = document.querySelector('#g-recaptcha-response') as HTMLTextAreaElement;
+  1244→  1244→          if (el) el.value = t;
+  1245→  1245→          // Trigger callback if available
+  1246→  1246→          try {
+  1247→  1247→            const cfg = (window as any).___grecaptcha_cfg;
+  1248→  1248→            if (cfg?.clients) {
+  1249→  1249→              for (const client of Object.values(cfg.clients) as any[]) {
+  1250→  1250→                for (const [, value] of Object.entries(client)) {
+  1251→  1251→                  const v = value as any;
+  1252→  1252→                  if (typeof v?.callback === 'function') {
+  1253→  1253→                    v.callback(t);
+  1254→  1254→                  }
+  1255→  1255→                }
+  1256→  1256→              }
+  1257→  1257→            }
+  1258→  1258→          } catch {}
+  1259→  1259→        }, token);
+  1260→  1260→      } else if (captchaType === 'hcaptcha') {
+  1261→  1261→        await lease.page.evaluate((t) => {
+  1262→  1262→          const el = document.querySelector('[name="h-captcha-response"]') as HTMLTextAreaElement;
+  1263→  1263→          if (el) el.value = t;
+  1264→  1264→          if ((window as any).hcaptcha) {
+  1265→  1265→            (window as any).hcaptcha.setResponse(t);
+  1266→  1266→          }
+  1267→  1267→        }, token);
+  1268→  1268→      } else if (captchaType === 'turnstile') {
+  1269→  1269→        await lease.page.evaluate((t) => {
+  1270→  1270→          const el = document.querySelector('[name="cf-turnstile-response"]') as HTMLTextAreaElement;
+  1271→  1271→          if (el) el.value = t;
+  1272→  1272→          if ((window as any).turnstile) {
+  1273→  1273→            (window as any).turnstile.getResponse = () => t;
+  1274→  1274→          }
+  1275→  1275→        }, token);
+  1276→  1276→      }
+  1277→  1277→
+  1278→  1278→      // Wait for navigation/content after CAPTCHA
+  1279→  1279→      try {
+  1280→  1280→        await lease.page.waitForFunction(
+  1281→  1281→          () => document.body?.innerText?.length > 200,
+  1282→  1282→          { timeout: 10_000 },
+  1283→  1283→        );
+  1284→  1284→      } catch {}
+  1285→  1285→
+  1286→  1286→      if (waitForSelector) {
+  1287→  1287→        try { await lease.page.waitForSelector(waitForSelector, { timeout: 10_000 }); } catch {}
+  1288→  1288→      }
+  1289→  1289→
+  1290→  1290→      const html = await lease.page.content();
+  1291→  1291→      return { html, statusCode };
+  1292→  1292→    } catch (err: any) {
+  1293→  1293→      return { html: '', statusCode: 502 };
+  1294→  1294→    } finally {
+  1295→  1295→      if (lease) await browserPool.release(lease);
+  1296→  1296→    }
+  1297→  1297→  }
+  1298→  1298→
+  1299→  1299→  private detectAntiBot(html: string): AntiBotDetection {
+  1300→  1300→    return stealthEngine.detectAntiBot(html);
+  1301→  1301→  }
+  1302→  1302→
+  1303→  1303→  private parseStructuredData(html: string, url?: string): Record<string, any> {
+  1304→  1304→    const result: Record<string, any> = {};
+  1305→  1305→    const generic = genericParser.parse(html, url);
+  1306→  1306→    result.generic = generic;
+  1307→  1307→
+  1308→  1308→    if (url) {
+  1309→  1309→      try {
+  1310→  1310→        const domain = new URL(url).hostname.replace(/^www\./, '');
+  1311→  1311→        if (domain.includes('amazon.')) {
+  1312→  1312→          result.amazon = amazonParser.parse(html);
+  1313→  1313→        } else if (domain.includes('google.')) {
+  1314→  1314→          result.google = googleSerpParser.parse(html);
+  1315→  1315→        }
+  1316→  1316→      } catch {}
+  1317→  1317→    }
+  1318→  1318→
+  1319→  1319→    return result;
+  1320→  1320→  }
+  1321→  1321→
+  1322→  1322→  private extractCaptchaSiteKey(html: string, type: string): string | null {
+  1323→  1323→    try {
+  1324→  1324→      switch (type) {
+  1325→  1325→        case 'recaptcha_v2':
+  1326→  1326→        case 'recaptcha_v3': {
+  1327→  1327→          const match = html.match(/data-sitekey="([^"]+)"/);
+  1328→  1328→          return match ? match[1] : null;
+  1329→  1329→        }
+  1330→  1330→        case 'hcaptcha': {
+  1331→  1331→          const match = html.match(/data-sitekey="([^"]+)"/);
+  1332→  1332→          return match ? match[1] : null;
+  1333→  1333→        }
+  1334→  1334→        case 'turnstile': {
+  1335→  1335→          const match = html.match(/sitekey["\s:=]+["']([^"']+)["']/);
+  1336→  1336→          return match ? match[1] : null;
+  1337→  1337→        }
+  1338→  1338→        default:
+  1339→  1339→          return null;
+  1340→  1340→      }
+  1341→  1341→    } catch {
+  1342→  1342→      return null;
+  1343→  1343→    }
+  1344→  1344→  }
+  1345→  1345→
+  1346→  1346→  private isEmptyHtml(html: string): boolean {
+  1347→  1347→    if (!html || html.length < 50) return true;
+  1348→  1348→    const lowerHtml = html.toLowerCase();
+  1349→  1349→    if (!lowerHtml.includes('<body')) return true;
+  1350→  1350→    const textOnly = html.replace(/<[^>]*>/g, '').trim();
+  1351→  1351→    if (textOnly.length < 100) return true;
+  1352→  1352→    const tagCount = (html.match(/<[a-zA-Z][^>]*>/g) || []).length;
+  1353→  1353→    if (tagCount < 5) return true;
+  1354→  1354→    return false;
+  1355→  1355→  }
+  1356→  1356→
+  1357→  1357→  /**
+  1358→  1358→   * Simple rate limiter -- fallback used when the adaptive rate limiter
+  1359→  1359→   * encounters an error. This preserves the original Redis-counter approach.
+  1360→  1360→   */
+  1361→  1361→  private async acquireSimpleRateLimitToken(domain: string, safeRps: number): Promise<void> {
+  1362→  1362→    const key = `ratelimit:${domain}`;
+  1363→  1363→    const maxRetries = 50;
+  1364→  1364→    const retryDelayMs = 100;
+  1365→  1365→
+  1366→  1366→    for (let attempt = 0; attempt < maxRetries; attempt++) {
+  1367→  1367→      const current = await redis.incr(key);
+  1368→  1368→      if (current === 1) await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
+  1369→  1369→      if (current <= Math.max(1, Math.ceil(safeRps))) return;
+  1370→  1370→      await this.sleep(retryDelayMs);
+  1371→  1371→    }
+  1372→  1372→
+  1373→  1373→    logger.warn({ domain, safeRps }, 'Rate limit token acquisition timed out');
+  1374→  1374→  }
+  1375→  1375→
+  1376→  1376→  private sleep(ms: number): Promise<void> {
+  1377→  1377→    return new Promise((resolve) => setTimeout(resolve, ms));
+  1378→  1378→  }
+  1379→  1379→}
+  1380→  1380→
+  1381→  1381→// --- Singleton export ---------------------------------------------------------
+  1382→  1382→
+  1383→  1383→export const orchestrator = new Orchestrator();
+  1384→  1384→

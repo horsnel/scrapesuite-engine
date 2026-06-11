@@ -1,0 +1,887 @@
+     1→import { db } from '../utils/db';
+     2→import { redis, cacheGet, cacheSet } from '../utils/redis';
+     3→import { createChildLogger } from '../utils/logger';
+     4→
+     5→const logger = createChildLogger('captcha');
+     6→
+     7→// --- Types --------------------------------------------------------------------
+     8→
+     9→export interface CaptchaSolveRequest {
+    10→  url: string;
+    11→  siteKey: string;
+    12→  type: 'recaptcha_v2' | 'recaptcha_v3' | 'hcaptcha' | 'turnstile' | 'funcaptcha' | 'image';
+    13→  action?: string;
+    14→  minScore?: number;
+    15→  imageData?: string;
+    16→  proxyUrl?: string;
+    17→}
+    18→
+    19→export interface CaptchaSolveResult {
+    20→  success: boolean;
+    21→  token: string;
+    22→  solveTimeMs: number;
+    23→  cost: number;
+    24→  provider: string;
+    25→}
+    26→
+    27→interface CaptchaProvider {
+    28→  name: string;
+    29→  solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult>;
+    30→  getBalance(): Promise<number>;
+    31→}
+    32→
+    33→// --- 2Captcha Provider -------------------------------------------------------
+    34→
+    35→class TwoCaptchaProvider implements CaptchaProvider {
+    36→  name = '2captcha';
+    37→  private apiKey: string;
+    38→  private baseUrl = 'https://api.2captcha.com';
+    39→
+    40→  constructor() {
+    41→    this.apiKey = process.env.TWOCAPTCHA_API_KEY || '';
+    42→    if (!this.apiKey) {
+    43→      logger.warn('TWOCAPTCHA_API_KEY not set -- 2Captcha provider disabled');
+    44→    }
+    45→  }
+    46→
+    47→  get isConfigured(): boolean {
+    48→    return !!this.apiKey;
+    49→  }
+    50→
+    51→  async solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult> {
+    52→    if (!this.isConfigured) throw new Error('2Captcha not configured');
+    53→
+    54→    const startTime = Date.now();
+    55→
+    56→    const submitParams: Record<string, string> = {
+    57→      key: this.apiKey,
+    58→      json: '1',
+    59→      soft_id: '5527',
+    60→    };
+    61→
+    62→    switch (request.type) {
+    63→      case 'recaptcha_v2':
+    64→        submitParams.method = 'userrecaptcha';
+    65→        submitParams.googlekey = request.siteKey;
+    66→        submitParams.pageurl = request.url;
+    67→        break;
+    68→      case 'recaptcha_v3':
+    69→        submitParams.method = 'userrecaptcha';
+    70→        submitParams.googlekey = request.siteKey;
+    71→        submitParams.pageurl = request.url;
+    72→        submitParams.version = 'v3';
+    73→        if (request.action) submitParams.action = request.action;
+    74→        if (request.minScore) submitParams.min_score = String(request.minScore);
+    75→        break;
+    76→      case 'hcaptcha':
+    77→        submitParams.method = 'hcaptcha';
+    78→        submitParams.sitekey = request.siteKey;
+    79→        submitParams.pageurl = request.url;
+    80→        break;
+    81→      case 'turnstile':
+    82→        submitParams.method = 'turnstile';
+    83→        submitParams.sitekey = request.siteKey;
+    84→        submitParams.pageurl = request.url;
+    85→        break;
+    86→      case 'image':
+    87→        submitParams.method = 'base64';
+    88→        submitParams.body = request.imageData || '';
+    89→        break;
+    90→      default:
+    91→        throw new Error(`2Captcha: unsupported type ${request.type}`);
+    92→    }
+    93→
+    94→    if (request.proxyUrl) {
+    95→      try {
+    96→        const proxyUrl = new URL(request.proxyUrl);
+    97→        submitParams.proxy = `${proxyUrl.hostname}:${proxyUrl.port}`;
+    98→        submitParams.proxytype = proxyUrl.protocol === 'https:' ? 'HTTPS' : 'HTTP';
+    99→        if (proxyUrl.username) {
+   100→          submitParams.proxy += `:${proxyUrl.username}:${proxyUrl.password}`;
+   101→        }
+   102→      } catch {}
+   103→    }
+   104→
+   105→    const submitResponse = await fetch(`${this.baseUrl}/in.php`, {
+   106→      method: 'POST',
+   107→      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+   108→      body: new URLSearchParams(submitParams).toString(),
+   109→    });
+   110→
+   111→    const submitData = await submitResponse.json() as any;
+   112→    if (submitData.status !== 1) {
+   113→      throw new Error(`2Captcha submit failed: ${submitData.request || submitData.error_text}`);
+   114→    }
+   115→
+   116→    const taskId = submitData.request;
+   117→
+   118→    for (let i = 0; i < 24; i++) {
+   119→      await this.sleep(5000);
+   120→
+   121→      const resultParams = new URLSearchParams({
+   122→        key: this.apiKey,
+   123→        action: 'get',
+   124→        id: taskId,
+   125→        json: '1',
+   126→      });
+   127→
+   128→      const resultResponse = await fetch(`${this.baseUrl}/res.php?${resultParams}`);
+   129→      const resultData = await resultResponse.json() as any;
+   130→
+   131→      if (resultData.status === 1) {
+   132→        const solveTimeMs = Date.now() - startTime;
+   133→        const cost = this.calculateCost(request.type);
+   134→
+   135→        return {
+   136→          success: true,
+   137→          token: resultData.request,
+   138→          solveTimeMs,
+   139→          cost,
+   140→          provider: this.name,
+   141→        };
+   142→      }
+   143→
+   144→      if (resultData.request !== 'CAPCHA_NOT_READY') {
+   145→        throw new Error(`2Captcha solve failed: ${resultData.request}`);
+   146→      }
+   147→    }
+   148→
+   149→    throw new Error('2Captcha solve timeout (120s)');
+   150→  }
+   151→
+   152→  async getBalance(): Promise<number> {
+   153→    if (!this.isConfigured) return 0;
+   154→    try {
+   155→      const response = await fetch(
+   156→        `${this.baseUrl}/res.php?key=${this.apiKey}&action=getbalance&json=1`,
+   157→      );
+   158→      const data = await response.json() as any;
+   159→      return data.request ? parseFloat(data.request) : 0;
+   160→    } catch { return 0; }
+   161→  }
+   162→
+   163→  private calculateCost(type: string): number {
+   164→    const costs: Record<string, number> = {
+   165→      recaptcha_v2: 0.003, recaptcha_v3: 0.003, hcaptcha: 0.003,
+   166→      turnstile: 0.003, funcaptcha: 0.02, image: 0.001,
+   167→    };
+   168→    return costs[type] || 0.003;
+   169→  }
+   170→
+   171→  private sleep(ms: number): Promise<void> {
+   172→    return new Promise((resolve) => setTimeout(resolve, ms));
+   173→  }
+   174→}
+   175→
+   176→// --- CapSolver Provider ------------------------------------------------------
+   177→
+   178→class CapSolverProvider implements CaptchaProvider {
+   179→  name = 'capsolver';
+   180→  private apiKey: string;
+   181→  private baseUrl = 'https://api.capsolver.com';
+   182→
+   183→  constructor() {
+   184→    this.apiKey = process.env.CAPSOLVER_API_KEY || '';
+   185→    if (!this.apiKey) {
+   186→      logger.warn('CAPSOLVER_API_KEY not set -- CapSolver provider disabled');
+   187→    }
+   188→  }
+   189→
+   190→  get isConfigured(): boolean {
+   191→    return !!this.apiKey;
+   192→  }
+   193→
+   194→  async solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult> {
+   195→    if (!this.isConfigured) throw new Error('CapSolver not configured');
+   196→
+   197→    const startTime = Date.now();
+   198→
+   199→    const taskPayload: Record<string, any> = {};
+   200→
+   201→    switch (request.type) {
+   202→      case 'recaptcha_v2':
+   203→        taskPayload.type = 'ReCaptchaV2TaskProxyLess';
+   204→        taskPayload.websiteURL = request.url;
+   205→        taskPayload.websiteKey = request.siteKey;
+   206→        break;
+   207→      case 'recaptcha_v3':
+   208→        taskPayload.type = 'ReCaptchaV3TaskProxyLess';
+   209→        taskPayload.websiteURL = request.url;
+   210→        taskPayload.websiteKey = request.siteKey;
+   211→        if (request.action) taskPayload.pageAction = request.action;
+   212→        if (request.minScore) taskPayload.minScore = request.minScore;
+   213→        break;
+   214→      case 'hcaptcha':
+   215→        taskPayload.type = 'HCaptchaTaskProxyLess';
+   216→        taskPayload.websiteURL = request.url;
+   217→        taskPayload.websiteKey = request.siteKey;
+   218→        break;
+   219→      case 'turnstile':
+   220→        taskPayload.type = 'AntiTurnstileTaskProxyLess';
+   221→        taskPayload.websiteURL = request.url;
+   222→        taskPayload.websiteKey = request.siteKey;
+   223→        break;
+   224→      case 'image':
+   225→        taskPayload.type = 'ImageToTextTask';
+   226→        taskPayload.body = request.imageData;
+   227→        break;
+   228→      default:
+   229→        throw new Error(`CapSolver: unsupported type ${request.type}`);
+   230→    }
+   231→
+   232→    if (request.proxyUrl) {
+   233→      taskPayload.proxyUrl = request.proxyUrl;
+   234→      if (taskPayload.type.includes('ProxyLess')) {
+   235→        taskPayload.type = taskPayload.type.replace('ProxyLess', '');
+   236→      }
+   237→    }
+   238→
+   239→    const createResponse = await fetch(`${this.baseUrl}/createTask`, {
+   240→      method: 'POST',
+   241→      headers: { 'Content-Type': 'application/json' },
+   242→      body: JSON.stringify({ clientKey: this.apiKey, task: taskPayload }),
+   243→    });
+   244→
+   245→    const createData = await createResponse.json() as any;
+   246→    if (createData.errorId && createData.errorId !== 0) {
+   247→      throw new Error(`CapSolver create task failed: ${createData.errorDescription}`);
+   248→    }
+   249→
+   250→    const taskId = createData.taskId;
+   251→
+   252→    for (let i = 0; i < 60; i++) {
+   253→      await this.sleep(2000);
+   254→
+   255→      const resultResponse = await fetch(`${this.baseUrl}/getTaskResult`, {
+   256→        method: 'POST',
+   257→        headers: { 'Content-Type': 'application/json' },
+   258→        body: JSON.stringify({ clientKey: this.apiKey, taskId }),
+   259→      });
+   260→
+   261→      const resultData = await resultResponse.json() as any;
+   262→
+   263→      if (resultData.status === 'ready') {
+   264→        const solveTimeMs = Date.now() - startTime;
+   265→        const cost = this.calculateCost(request.type);
+   266→
+   267→        const token = resultData.solution?.gRecaptchaResponse
+   268→          || resultData.solution?.captchaKey
+   269→          || resultData.solution?.token
+   270→          || resultData.solution?.text
+   271→          || '';
+   272→
+   273→        return { success: true, token, solveTimeMs, cost, provider: this.name };
+   274→      }
+   275→
+   276→      if (resultData.errorId && resultData.errorId !== 0) {
+   277→        throw new Error(`CapSolver solve failed: ${resultData.errorDescription}`);
+   278→      }
+   279→    }
+   280→
+   281→    throw new Error('CapSolver solve timeout (120s)');
+   282→  }
+   283→
+   284→  async getBalance(): Promise<number> {
+   285→    if (!this.isConfigured) return 0;
+   286→    try {
+   287→      const response = await fetch(`${this.baseUrl}/getBalance`, {
+   288→        method: 'POST',
+   289→        headers: { 'Content-Type': 'application/json' },
+   290→        body: JSON.stringify({ clientKey: this.apiKey }),
+   291→      });
+   292→      const data = await response.json() as any;
+   293→      return data.balance || 0;
+   294→    } catch { return 0; }
+   295→  }
+   296→
+   297→  private calculateCost(type: string): number {
+   298→    const costs: Record<string, number> = {
+   299→      recaptcha_v2: 0.002, recaptcha_v3: 0.002, hcaptcha: 0.002,
+   300→      turnstile: 0.002, funcaptcha: 0.015, image: 0.0008,
+   301→    };
+   302→    return costs[type] || 0.002;
+   303→  }
+   304→
+   305→  private sleep(ms: number): Promise<void> {
+   306→    return new Promise((resolve) => setTimeout(resolve, ms));
+   307→  }
+   308→}
+   309→
+   310→// --- Anti-Captcha Provider ---------------------------------------------------
+   311→
+   312→class AntiCaptchaProvider implements CaptchaProvider {
+   313→  name = 'anticaptcha';
+   314→  private apiKey: string;
+   315→  private baseUrl = 'https://api.anti-captcha.com';
+   316→
+   317→  constructor() {
+   318→    this.apiKey = process.env.ANTICAPTCHA_API_KEY || '';
+   319→    if (!this.apiKey) {
+   320→      logger.warn('ANTICAPTCHA_API_KEY not set -- Anti-Captcha provider disabled');
+   321→    }
+   322→  }
+   323→
+   324→  get isConfigured(): boolean {
+   325→    return !!this.apiKey;
+   326→  }
+   327→
+   328→  async solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult> {
+   329→    if (!this.isConfigured) throw new Error('Anti-Captcha not configured');
+   330→
+   331→    const startTime = Date.now();
+   332→
+   333→    const taskPayload: Record<string, any> = {};
+   334→
+   335→    switch (request.type) {
+   336→      case 'recaptcha_v2':
+   337→        taskPayload.type = 'RecaptchaV2TaskProxyless';
+   338→        taskPayload.websiteURL = request.url;
+   339→        taskPayload.websiteKey = request.siteKey;
+   340→        break;
+   341→      case 'recaptcha_v3':
+   342→        taskPayload.type = 'RecaptchaV3TaskProxyless';
+   343→        taskPayload.websiteURL = request.url;
+   344→        taskPayload.websiteKey = request.siteKey;
+   345→        if (request.action) taskPayload.pageAction = request.action;
+   346→        if (request.minScore) taskPayload.minScore = request.minScore;
+   347→        break;
+   348→      case 'hcaptcha':
+   349→        taskPayload.type = 'HCaptchaTaskProxyless';
+   350→        taskPayload.websiteURL = request.url;
+   351→        taskPayload.websiteKey = request.siteKey;
+   352→        break;
+   353→      case 'turnstile':
+   354→        taskPayload.type = 'AntiTurnstileTaskProxyless';
+   355→        taskPayload.websiteURL = request.url;
+   356→        taskPayload.websiteKey = request.siteKey;
+   357→        break;
+   358→      case 'funcaptcha':
+   359→        taskPayload.type = 'FunCaptchaTaskProxyless';
+   360→        taskPayload.websiteURL = request.url;
+   361→        taskPayload.websiteKey = request.siteKey;
+   362→        break;
+   363→      case 'image':
+   364→        taskPayload.type = 'ImageToTextTask';
+   365→        taskPayload.body = request.imageData;
+   366→        break;
+   367→      default:
+   368→        throw new Error(`Anti-Captcha: unsupported type ${request.type}`);
+   369→    }
+   370→
+   371→    if (request.proxyUrl) {
+   372→      try {
+   373→        const proxyUrl = new URL(request.proxyUrl);
+   374→        taskPayload.proxyType = proxyUrl.protocol === 'https:' ? 'https' : 'http';
+   375→        taskPayload.proxyAddress = proxyUrl.hostname;
+   376→        taskPayload.proxyPort = parseInt(proxyUrl.port, 10);
+   377→        if (proxyUrl.username) {
+   378→          taskPayload.proxyLogin = proxyUrl.username;
+   379→          taskPayload.proxyPassword = proxyUrl.password;
+   380→        }
+   381→      } catch {}
+   382→    }
+   383→
+   384→    const createResponse = await fetch(`${this.baseUrl}/createTask`, {
+   385→      method: 'POST',
+   386→      headers: { 'Content-Type': 'application/json' },
+   387→      body: JSON.stringify({ clientKey: this.apiKey, task: taskPayload }),
+   388→    });
+   389→
+   390→    const createData = await createResponse.json() as any;
+   391→    if (createData.errorId && createData.errorId !== 0) {
+   392→      throw new Error(`Anti-Captcha create task failed: ${createData.errorDescription || createData.errorCode}`);
+   393→    }
+   394→
+   395→    const taskId = createData.taskId;
+   396→
+   397→    for (let i = 0; i < 60; i++) {
+   398→      await this.sleep(2000);
+   399→
+   400→      const resultResponse = await fetch(`${this.baseUrl}/getTaskResult`, {
+   401→        method: 'POST',
+   402→        headers: { 'Content-Type': 'application/json' },
+   403→        body: JSON.stringify({ clientKey: this.apiKey, taskId }),
+   404→      });
+   405→
+   406→      const resultData = await resultResponse.json() as any;
+   407→
+   408→      if (resultData.status === 'ready') {
+   409→        const solveTimeMs = Date.now() - startTime;
+   410→        const cost = this.calculateCost(request.type);
+   411→
+   412→        const token = resultData.solution?.gRecaptchaResponse
+   413→          || resultData.solution?.token
+   414→          || resultData.solution?.text
+   415→          || resultData.solution?.captchaKey
+   416→          || '';
+   417→
+   418→        return { success: true, token, solveTimeMs, cost, provider: this.name };
+   419→      }
+   420→
+   421→      if (resultData.errorId && resultData.errorId !== 0) {
+   422→        throw new Error(`Anti-Captcha solve failed: ${resultData.errorDescription || resultData.errorCode}`);
+   423→      }
+   424→    }
+   425→
+   426→    throw new Error('Anti-Captcha solve timeout (120s)');
+   427→  }
+   428→
+   429→  async getBalance(): Promise<number> {
+   430→    if (!this.isConfigured) return 0;
+   431→    try {
+   432→      const response = await fetch(`${this.baseUrl}/getBalance`, {
+   433→        method: 'POST',
+   434→        headers: { 'Content-Type': 'application/json' },
+   435→        body: JSON.stringify({ clientKey: this.apiKey }),
+   436→      });
+   437→      const data = await response.json() as any;
+   438→      return data.balance || 0;
+   439→    } catch { return 0; }
+   440→  }
+   441→
+   442→  private calculateCost(type: string): number {
+   443→    const costs: Record<string, number> = {
+   444→      recaptcha_v2: 0.002, recaptcha_v3: 0.002, hcaptcha: 0.001,
+   445→      turnstile: 0.002, funcaptcha: 0.02, image: 0.0006,
+   446→    };
+   447→    return costs[type] || 0.002;
+   448→  }
+   449→
+   450→  private sleep(ms: number): Promise<void> {
+   451→    return new Promise((resolve) => setTimeout(resolve, ms));
+   452→  }
+   453→}
+   454→
+   455→// --- CAPTCHA Challenge Detector -----------------------------------------------
+   456→
+   457→export interface CaptchaDetection {
+   458→  hasCaptcha: boolean;
+   459→  types: Array<'recaptcha_v2' | 'recaptcha_v3' | 'hcaptcha' | 'turnstile' | 'funcaptcha'>;
+   460→  siteKeys: Array<{ type: string; siteKey: string; iframeUrl?: string }>;
+   461→  confidence: number;
+   462→}
+   463→
+   464→export class CaptchaChallengeDetector {
+   465→  /**
+   466→   * Detect CAPTCHAs on a Playwright page.
+   467→   * Checks for reCAPTCHA iframes, hCaptcha iframes, Turnstile widgets, etc.
+   468→   */
+   469→  async detectOnPage(page: import('playwright').Page): Promise<CaptchaDetection> {
+   470→    const detection: CaptchaDetection = {
+   471→      hasCaptcha: false,
+   472→      types: [],
+   473→      siteKeys: [],
+   474→      confidence: 0,
+   475→    };
+   476→
+   477→    try {
+   478→      // --- reCAPTCHA v2 / v3 ---
+   479→      const recaptchaIframes = await page.$$('iframe[src*="google.com/recaptcha"]');
+   480→      for (const iframe of recaptchaIframes) {
+   481→        const src = await iframe.getAttribute('src') || '';
+   482→        const siteKeyMatch = src.match(/[?&]k=([^&]+)/);
+   483→        const siteKey = siteKeyMatch ? siteKeyMatch[1] : '';
+   484→
+   485→        // v3 has render= parameter and typically uses invisible badge
+   486→        const isV3 = src.includes('render=') || src.includes('invisible');
+   487→        const type = isV3 ? 'recaptcha_v3' : 'recaptcha_v2';
+   488→
+   489→        if (!detection.types.includes(type)) {
+   490→          detection.types.push(type);
+   491→        }
+   492→        if (siteKey) {
+   493→          detection.siteKeys.push({ type, siteKey, iframeUrl: src });
+   494→        }
+   495→      }
+   496→
+   497→      // Check for g-recaptcha div with data-sitekey
+   498→      const gRecaptchaDivs = await page.$$('div.g-recaptcha[data-sitekey]');
+   499→      for (const div of gRecaptchaDivs) {
+   500→        const siteKey = await div.getAttribute('data-sitekey') || '';
+   501→        if (!detection.types.includes('recaptcha_v2')) {
+   502→          detection.types.push('recaptcha_v2');
+   503→        }
+   504→        if (siteKey && !detection.siteKeys.some(sk => sk.siteKey === siteKey && sk.type === 'recaptcha_v2')) {
+   505→          detection.siteKeys.push({ type: 'recaptcha_v2', siteKey });
+   506→        }
+   507→      }
+   508→
+   509→      // Check for reCAPTCHA script tag
+   510→      const recaptchaScript = await page.$('script[src*="google.com/recaptcha/api.js"]');
+   511→      if (recaptchaScript) {
+   512→        const src = await recaptchaScript.getAttribute('src') || '';
+   513→        const renderParam = src.match(/[?&]render=([^&]+)/);
+   514→
+   515→        if (renderParam && renderParam[1] !== 'explicit' && renderParam[1] !== 'onload') {
+   516→          // Site key in render parameter indicates v3
+   517→          if (!detection.types.includes('recaptcha_v3')) {
+   518→            detection.types.push('recaptcha_v3');
+   519→          }
+   520→          if (!detection.siteKeys.some(sk => sk.siteKey === renderParam[1])) {
+   521→            detection.siteKeys.push({ type: 'recaptcha_v3', siteKey: renderParam[1] });
+   522→          }
+   523→        } else {
+   524→          // Standard v2
+   525→          if (!detection.types.includes('recaptcha_v2')) {
+   526→            detection.types.push('recaptcha_v2');
+   527→          }
+   528→        }
+   529→      }
+   530→
+   531→      // Check for grecaptcha.execute() calls in inline scripts
+   532→      const hasV3Execute = await page.evaluate(() => {
+   533→        const scripts = Array.from(document.querySelectorAll('script:not([src])'));
+   534→        for (const s of scripts) {
+   535→          if (s.textContent && s.textContent.includes('grecaptcha.execute')) {
+   536→            return true;
+   537→          }
+   538→        }
+   539→        return false;
+   540→      });
+   541→      if (hasV3Execute && !detection.types.includes('recaptcha_v3')) {
+   542→        detection.types.push('recaptcha_v3');
+   543→      }
+   544→
+   545→      // --- hCaptcha ---
+   546→      const hcaptchaIframes = await page.$$('iframe[src*="hcaptcha.com"]');
+   547→      for (const iframe of hcaptchaIframes) {
+   548→        const src = await iframe.getAttribute('src') || '';
+   549→        const siteKeyMatch = src.match(/[?&]sitekey=([^&]+)/);
+   550→        const siteKey = siteKeyMatch ? siteKeyMatch[1] : '';
+   551→
+   552→        if (!detection.types.includes('hcaptcha')) {
+   553→          detection.types.push('hcaptcha');
+   554→        }
+   555→        if (siteKey) {
+   556→          detection.siteKeys.push({ type: 'hcaptcha', siteKey, iframeUrl: src });
+   557→        }
+   558→      }
+   559→
+   560→      // Check for h-captcha div with data-sitekey
+   561→      const hCaptchaDivs = await page.$$('div.h-captcha[data-sitekey]');
+   562→      for (const div of hCaptchaDivs) {
+   563→        const siteKey = await div.getAttribute('data-sitekey') || '';
+   564→        if (!detection.types.includes('hcaptcha')) {
+   565→          detection.types.push('hcaptcha');
+   566→        }
+   567→        if (siteKey && !detection.siteKeys.some(sk => sk.siteKey === siteKey && sk.type === 'hcaptcha')) {
+   568→          detection.siteKeys.push({ type: 'hcaptcha', siteKey });
+   569→        }
+   570→      }
+   571→
+   572→      // Check for hCaptcha script
+   573→      const hcaptchaScript = await page.$('script[src*="hcaptcha.com"]');
+   574→      if (hcaptchaScript && !detection.types.includes('hcaptcha')) {
+   575→        detection.types.push('hcaptcha');
+   576→      }
+   577→
+   578→      // --- Turnstile (Cloudflare) ---
+   579→      const turnstileDivs = await page.$$('div.cf-turnstile[data-sitekey]');
+   580→      for (const div of turnstileDivs) {
+   581→        const siteKey = await div.getAttribute('data-sitekey') || '';
+   582→        if (!detection.types.includes('turnstile')) {
+   583→          detection.types.push('turnstile');
+   584→        }
+   585→        if (siteKey && !detection.siteKeys.some(sk => sk.siteKey === siteKey && sk.type === 'turnstile')) {
+   586→          detection.siteKeys.push({ type: 'turnstile', siteKey });
+   587→        }
+   588→      }
+   589→
+   590→      // Check for Turnstile script
+   591→      const turnstileScript = await page.$('script[src*="challenges.cloudflare.com/turnstile"]');
+   592→      if (turnstileScript && !detection.types.includes('turnstile')) {
+   593→        detection.types.push('turnstile');
+   594→      }
+   595→
+   596→      // Also check for Turnstile without data-sitekey on div
+   597→      const turnstileDivsWithoutKey = await page.$$('div.cf-turnstile:not([data-sitekey])');
+   598→      if (turnstileDivsWithoutKey.length > 0 && !detection.types.includes('turnstile')) {
+   599→        detection.types.push('turnstile');
+   600→      }
+   601→
+   602→      // --- FunCaptcha (Arkoselabs) ---
+   603→      const funcaptchaIframes = await page.$$('iframe[src*="funcaptcha.com"], iframe[src*="arkoselabs.com"]');
+   604→      for (const iframe of funcaptchaIframes) {
+   605→        const src = await iframe.getAttribute('src') || '';
+   606→        const siteKeyMatch = src.match(/[?&]pk=([^&]+)/) || src.match(/[?&]public_key=([^&]+)/);
+   607→        const siteKey = siteKeyMatch ? siteKeyMatch[1] : '';
+   608→
+   609→        if (!detection.types.includes('funcaptcha')) {
+   610→          detection.types.push('funcaptcha');
+   611→        }
+   612→        if (siteKey) {
+   613→          detection.siteKeys.push({ type: 'funcaptcha', siteKey, iframeUrl: src });
+   614→        }
+   615→      }
+   616→
+   617→      detection.hasCaptcha = detection.types.length > 0;
+   618→      detection.confidence = this.calculateConfidence(detection);
+   619→    } catch (err: any) {
+   620→      logger.error({ error: err.message }, 'CAPTCHA detection on page failed');
+   621→    }
+   622→
+   623→    return detection;
+   624→  }
+   625→
+   626→  /**
+   627→   * Detect CAPTCHAs from HTML content (without a browser).
+   628→   */
+   629→  detectFromHTML(html: string): CaptchaDetection {
+   630→    const detection: CaptchaDetection = {
+   631→      hasCaptcha: false,
+   632→      types: [],
+   633→      siteKeys: [],
+   634→      confidence: 0,
+   635→    };
+   636→
+   637→    // --- reCAPTCHA v2 ---
+   638→    // iframe with google.com/recaptcha
+   639→    const recaptchaIframeMatch = html.match(/<iframe[^>]+src=["']([^"']*google\.com\/recaptcha[^"']*)["'][^>]*>/gi);
+   640→    if (recaptchaIframeMatch) {
+   641→      for (const iframeTag of recaptchaIframeMatch) {
+   642→        const srcMatch = iframeTag.match(/src=["']([^"']*)["']/);
+   643→        const src = srcMatch ? srcMatch[1] : '';
+   644→        const siteKeyMatch = src.match(/[?&]k=([^&]+)/);
+   645→        const siteKey = siteKeyMatch ? siteKeyMatch[1] : '';
+   646→
+   647→        // v3 detection from iframe src
+   648→        const isV3 = src.includes('render=') || src.includes('invisible');
+   649→        const type = isV3 ? 'recaptcha_v3' : 'recaptcha_v2';
+   650→
+   651→        if (!detection.types.includes(type)) {
+   652→          detection.types.push(type);
+   653→        }
+   654→        if (siteKey) {
+   655→          detection.siteKeys.push({ type, siteKey, iframeUrl: src });
+   656→        }
+   657→      }
+   658→    }
+   659→
+   660→    // div.g-recaptcha with data-sitekey
+   661→    const gRecaptchaDivMatch = html.match(/<div[^>]+class=["'][^"']*g-recaptcha[^"']*["'][^>]*>/gi);
+   662→    if (gRecaptchaDivMatch) {
+   663→      if (!detection.types.includes('recaptcha_v2')) {
+   664→        detection.types.push('recaptcha_v2');
+   665→      }
+   666→      for (const divTag of gRecaptchaDivMatch) {
+   667→        const siteKeyMatch = divTag.match(/data-sitekey=["']([^"']+)["']/);
+   668→        if (siteKeyMatch && !detection.siteKeys.some(sk => sk.siteKey === siteKeyMatch[1] && sk.type === 'recaptcha_v2')) {
+   669→          detection.siteKeys.push({ type: 'recaptcha_v2', siteKey: siteKeyMatch[1] });
+   670→        }
+   671→      }
+   672→    }
+   673→
+   674→    // reCAPTCHA script tag
+   675→    const recaptchaScriptMatch = html.match(/<script[^>]+src=["']([^"']*google\.com\/recaptcha\/api\.js[^"']*)["'][^>]*>/i);
+   676→    if (recaptchaScriptMatch) {
+   677→      const src = recaptchaScriptMatch[1];
+   678→      const renderMatch = src.match(/[?&]render=([^&"']+)/);
+   679→      if (renderMatch && renderMatch[1] !== 'explicit' && renderMatch[1] !== 'onload') {
+   680→        if (!detection.types.includes('recaptcha_v3')) {
+   681→          detection.types.push('recaptcha_v3');
+   682→        }
+   683→        if (!detection.siteKeys.some(sk => sk.siteKey === renderMatch[1])) {
+   684→          detection.siteKeys.push({ type: 'recaptcha_v3', siteKey: renderMatch[1] });
+   685→        }
+   686→      } else if (!detection.types.includes('recaptcha_v2')) {
+   687→        detection.types.push('recaptcha_v2');
+   688→      }
+   689→    }
+   690→
+   691→    // grecaptcha.execute() calls in inline scripts
+   692→    if (html.includes('grecaptcha.execute')) {
+   693→      if (!detection.types.includes('recaptcha_v3')) {
+   694→        detection.types.push('recaptcha_v3');
+   695→      }
+   696→    }
+   697→
+   698→    // --- hCaptcha ---
+   699→    const hcaptchaIframeMatch = html.match(/<iframe[^>]+src=["']([^"']*hcaptcha\.com[^"']*)["'][^>]*>/gi);
+   700→    if (hcaptchaIframeMatch) {
+   701→      if (!detection.types.includes('hcaptcha')) {
+   702→        detection.types.push('hcaptcha');
+   703→      }
+   704→      for (const iframeTag of hcaptchaIframeMatch) {
+   705→        const srcMatch = iframeTag.match(/src=["']([^"']*)["']/);
+   706→        const src = srcMatch ? srcMatch[1] : '';
+   707→        const siteKeyMatch = src.match(/[?&]sitekey=([^&"']+)/);
+   708→        if (siteKeyMatch) {
+   709→          detection.siteKeys.push({ type: 'hcaptcha', siteKey: siteKeyMatch[1], iframeUrl: src });
+   710→        }
+   711→      }
+   712→    }
+   713→
+   714→    // div.h-captcha with data-sitekey
+   715→    const hCaptchaDivMatch = html.match(/<div[^>]+class=["'][^"']*h-captcha[^"']*["'][^>]*>/gi);
+   716→    if (hCaptchaDivMatch) {
+   717→      if (!detection.types.includes('hcaptcha')) {
+   718→        detection.types.push('hcaptcha');
+   719→      }
+   720→      for (const divTag of hCaptchaDivMatch) {
+   721→        const siteKeyMatch = divTag.match(/data-sitekey=["']([^"']+)["']/);
+   722→        if (siteKeyMatch && !detection.siteKeys.some(sk => sk.siteKey === siteKeyMatch[1] && sk.type === 'hcaptcha')) {
+   723→          detection.siteKeys.push({ type: 'hcaptcha', siteKey: siteKeyMatch[1] });
+   724→        }
+   725→      }
+   726→    }
+   727→
+   728→    // hCaptcha script tag
+   729→    if (html.match(/<script[^>]+src=["'][^"']*hcaptcha\.com[^"']*["'][^>]*>/i)) {
+   730→      if (!detection.types.includes('hcaptcha')) {
+   731→        detection.types.push('hcaptcha');
+   732→      }
+   733→    }
+   734→
+   735→    // --- Turnstile (Cloudflare) ---
+   736→    const turnstileDivMatch = html.match(/<div[^>]+class=["'][^"']*cf-turnstile[^"']*["'][^>]*>/gi);
+   737→    if (turnstileDivMatch) {
+   738→      if (!detection.types.includes('turnstile')) {
+   739→        detection.types.push('turnstile');
+   740→      }
+   741→      for (const divTag of turnstileDivMatch) {
+   742→        const siteKeyMatch = divTag.match(/data-sitekey=["']([^"']+)["']/);
+   743→        if (siteKeyMatch && !detection.siteKeys.some(sk => sk.siteKey === siteKeyMatch[1] && sk.type === 'turnstile')) {
+   744→          detection.siteKeys.push({ type: 'turnstile', siteKey: siteKeyMatch[1] });
+   745→        }
+   746→      }
+   747→    }
+   748→
+   749→    // Turnstile script tag
+   750→    if (html.match(/<script[^>]+src=["'][^"']*challenges\.cloudflare\.com\/turnstile[^"']*["'][^>]*>/i)) {
+   751→      if (!detection.types.includes('turnstile')) {
+   752→        detection.types.push('turnstile');
+   753→      }
+   754→    }
+   755→
+   756→    // --- FunCaptcha (Arkoselabs) ---
+   757→    const funcaptchaIframeMatch = html.match(/<iframe[^>]+src=["']([^"']*(?:funcaptcha\.com|arkoselabs\.com)[^"']*)["'][^>]*>/gi);
+   758→    if (funcaptchaIframeMatch) {
+   759→      if (!detection.types.includes('funcaptcha')) {
+   760→        detection.types.push('funcaptcha');
+   761→      }
+   762→      for (const iframeTag of funcaptchaIframeMatch) {
+   763→        const srcMatch = iframeTag.match(/src=["']([^"']*)["']/);
+   764→        const src = srcMatch ? srcMatch[1] : '';
+   765→        const siteKeyMatch = src.match(/[?&]pk=([^&"']+)/) || src.match(/[?&]public_key=([^&"']+)/);
+   766→        if (siteKeyMatch) {
+   767→          detection.siteKeys.push({ type: 'funcaptcha', siteKey: siteKeyMatch[1], iframeUrl: src });
+   768→        }
+   769→      }
+   770→    }
+   771→
+   772→    detection.hasCaptcha = detection.types.length > 0;
+   773→    detection.confidence = this.calculateConfidence(detection);
+   774→
+   775→    return detection;
+   776→  }
+   777→
+   778→  /**
+   779→   * Calculate detection confidence based on number of signals found.
+   780→   * More site keys and types = higher confidence.
+   781→   */
+   782→  private calculateConfidence(detection: CaptchaDetection): number {
+   783→    if (!detection.hasCaptcha) return 0;
+   784→
+   785→    let confidence = 0;
+   786→    // Each detected type contributes base confidence
+   787→    confidence += detection.types.length * 0.3;
+   788→    // Each extracted site key adds confidence
+   789→    confidence += detection.siteKeys.length * 0.2;
+   790→    // Cap at 1.0
+   791→    return Math.min(confidence, 1.0);
+   792→  }
+   793→}
+   794→
+   795→// --- CAPTCHA Solver (Facade) -------------------------------------------------
+   796→
+   797→export class CaptchaSolver {
+   798→  private providers: CaptchaProvider[] = [];
+   799→  private twoCaptcha: TwoCaptchaProvider;
+   800→  private capSolver: CapSolverProvider;
+   801→  private antiCaptcha: AntiCaptchaProvider;
+   802→
+   803→  constructor() {
+   804→    this.twoCaptcha = new TwoCaptchaProvider();
+   805→    this.capSolver = new CapSolverProvider();
+   806→    this.antiCaptcha = new AntiCaptchaProvider();
+   807→
+   808→    // Order: CapSolver (cheapest), Anti-Captcha, 2Captcha
+   809→    if (this.capSolver.isConfigured) this.providers.push(this.capSolver);
+   810→    if (this.antiCaptcha.isConfigured) this.providers.push(this.antiCaptcha);
+   811→    if (this.twoCaptcha.isConfigured) this.providers.push(this.twoCaptcha);
+   812→  }
+   813→
+   814→  async solve(request: CaptchaSolveRequest): Promise<CaptchaSolveResult> {
+   815→    if (this.providers.length === 0) {
+   816→      throw new Error('No CAPTCHA solving providers configured. Set TWOCAPTCHA_API_KEY, CAPSOLVER_API_KEY, or ANTICAPTCHA_API_KEY.');
+   817→    }
+   818→
+   819→    const cacheKey = `captcha:${request.type}:${request.siteKey}:${request.url}`;
+   820→    const cached = await cacheGet<{ token: string; solvedAt: number }>(cacheKey);
+   821→    if (cached && Date.now() - cached.solvedAt < 110_000) {
+   822→      logger.info({ type: request.type, siteKey: request.siteKey }, 'CAPTCHA token cache hit');
+   823→      return { success: true, token: cached.token, solveTimeMs: 0, cost: 0, provider: 'cache' };
+   824→    }
+   825→
+   826→    let lastError: Error | null = null;
+   827→
+   828→    for (const provider of this.providers) {
+   829→      try {
+   830→        const result = await provider.solve(request);
+   831→        await this.logSolve(request, result);
+   832→        await cacheSet(cacheKey, { token: result.token, solvedAt: Date.now() }, 110);
+   833→        logger.info(
+   834→          { provider: result.provider, type: request.type, solveTimeMs: result.solveTimeMs },
+   835→          'CAPTCHA solved',
+   836→        );
+   837→        return result;
+   838→      } catch (err: any) {
+   839→        lastError = err;
+   840→        logger.warn(
+   841→          { provider: provider.name, error: err.message, type: request.type },
+   842→          'CAPTCHA provider failed, trying next',
+   843→        );
+   844→      }
+   845→    }
+   846→
+   847→    await this.logSolve(request, { success: false, token: '', solveTimeMs: 0, cost: 0, provider: 'none' });
+   848→    throw lastError || new Error('All CAPTCHA providers failed');
+   849→  }
+   850→
+   851→  async getBalances(): Promise<Record<string, number>> {
+   852→    const balances: Record<string, number> = {};
+   853→    for (const provider of this.providers) {
+   854→      try { balances[provider.name] = await provider.getBalance(); }
+   855→      catch { balances[provider.name] = -1; }
+   856→    }
+   857→    return balances;
+   858→  }
+   859→
+   860→  get isConfigured(): boolean {
+   861→    return this.providers.length > 0;
+   862→  }
+   863→
+   864→  private async logSolve(request: CaptchaSolveRequest, result: CaptchaSolveResult): Promise<void> {
+   865→    try {
+   866→      await db.captchaLog.create({
+   867→        data: {
+   868→          id: crypto.randomUUID(),
+   869→          domain: new URL(request.url).hostname,
+   870→          captchaType: request.type as any,
+   871→          provider: result.provider,
+   872→          siteKey: request.siteKey,
+   873→          solved: result.success,
+   874→          solveTimeMs: result.solveTimeMs,
+   875→          cost: result.cost,
+   876→          token: result.success ? result.token.substring(0, 50) + '...' : null,
+   877→        },
+   878→      });
+   879→    } catch (err: any) {
+   880→      logger.error({ error: err.message }, 'Failed to log CAPTCHA solve');
+   881→    }
+   882→  }
+   883→}
+   884→
+   885→export const captchaSolver = new CaptchaSolver();
+   886→export const captchaChallengeDetector = new CaptchaChallengeDetector();
+   887→

@@ -1,0 +1,951 @@
+     1→/**
+     2→ * Session Manager -- Redis-backed persistent sticky sessions with geo-consistency.
+     3→ *
+     4→ * Bright Data-level feature that ensures requests from the same session always
+     5→ * use the same proxy IP and geographic location.  State is persisted in Redis so
+     6→ * sessions survive worker restarts and are shared between API and worker
+     7→ * processes (unlike the in-memory sticky map in ProxyManager).
+     8→ *
+     9→ * Key features
+    10→ * ------------
+    11→ *  • Persistent sticky sessions stored in Redis with configurable TTL
+    12→ *  • Auto-extend session TTL on each access (refresh-on-use)
+    13→ *  • Geo-consistency: session stores and enforces country / city / ASN affinity
+    14→ *  • Automatic proxy reassignment in the same geo when a proxy becomes unhealthy
+    15→ *  • Browser fingerprint profile pinned to the session for identity continuity
+    16→ *  • Per-session metrics: request count, success/failure, avg response time,
+    17→ *    bandwidth, credits consumed
+    18→ *  • User-level session limits (max 1000 concurrent)
+    19→ *  • Periodic cleanup of expired sessions
+    20→ *
+    21→ * Redis layout
+    22→ * ------------
+    23→ *   cache:session:{sessionId}              -- JSON blob with full SessionState
+    24→ *   session:user:{userId}                  -- Redis Set of session IDs for a user
+    25→ *     (stored via direct redis commands, not cache helpers, because Sets need
+    26→ *      SADD / SMEMBERS which the cache helpers don't expose)
+    27→ *
+    28→ * Usage
+    29→ * -----
+    30→ *   import { sessionManager } from './session';
+    31→ *   const session = await sessionManager.createSession({
+    32→ *     userId: 'user-123',
+    33→ *     proxyCountry: 'US',
+    34→ *     proxyCity: 'New York',
+    35→ *     proxyTier: 'residential',
+    36→ *   });
+    37→ *   // … later, on each request …
+    38→ *   const state = await sessionManager.refreshSession(session.sessionId);
+    39→ *   await sessionManager.recordSessionRequest(session.sessionId, {
+    40→ *     success: true, responseMs: 340, bandwidthBytes: 50_000, creditsUsed: 1,
+    41→ *   });
+    42→ */
+    43→
+    44→import { redis, cacheGet, cacheSet } from '../utils/redis';
+    45→import { db } from '../utils/db';
+    46→import { proxyManager } from '../proxy/manager';
+    47→import { createChildLogger } from '../utils/logger';
+    48→
+    49→const logger = createChildLogger('session-manager');
+    50→
+    51→// --- Constants ------------------------------------------------------------------
+    52→
+    53→/** Default session TTL in minutes. */
+    54→const DEFAULT_TTL_MINUTES = 10;
+    55→
+    56→/** Maximum allowed session TTL in minutes. */
+    57→const MAX_TTL_MINUTES = 60;
+    58→
+    59→/** Maximum concurrent sessions per user. */
+    60→const MAX_SESSIONS_PER_USER = 1000;
+    61→
+    62→/** How often the periodic cleanup sweep runs (ms). */
+    63→const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+    64→
+    65→/** Redis key prefix for session state blobs (used with cache helpers). */
+    66→const SESSION_KEY_PREFIX = 'session:';
+    67→
+    68→/** Redis key prefix for user → session-id sets (direct redis commands). */
+    69→const USER_SESSIONS_KEY_PREFIX = 'session:user:';
+    70→
+    71→/** Maximum number of reassignment attempts before giving up. */
+    72→const MAX_REASSIGN_ATTEMPTS = 5;
+    73→
+    74→// --- Browser Fingerprint Profiles -----------------------------------------------
+    75→// Subset of the profiles from anti-bot/stealth.ts -- just the fields we need to
+    76→// pin to a session so subsequent requests look like the same browser.
+    77→
+    78→const FINGERPRINT_PROFILES: Array<SessionState['fingerprintProfile']> = [
+    79→  {
+    80→    userAgent:
+    81→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    82→    platform: 'Win32',
+    83→    viewport: { width: 1920, height: 1080 },
+    84→    locale: 'en-US',
+    85→    timezone: 'America/New_York',
+    86→  },
+    87→  {
+    88→    userAgent:
+    89→      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    90→    platform: 'MacIntel',
+    91→    viewport: { width: 1680, height: 1050 },
+    92→    locale: 'en-US',
+    93→    timezone: 'America/Los_Angeles',
+    94→  },
+    95→  {
+    96→    userAgent:
+    97→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0',
+    98→    platform: 'Win32',
+    99→    viewport: { width: 1366, height: 768 },
+   100→    locale: 'en-US',
+   101→    timezone: 'America/Chicago',
+   102→  },
+   103→  {
+   104→    userAgent:
+   105→      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+   106→    platform: 'Linux x86_64',
+   107→    viewport: { width: 1920, height: 1080 },
+   108→    locale: 'en-US',
+   109→    timezone: 'America/Denver',
+   110→  },
+   111→  {
+   112→    userAgent:
+   113→      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+   114→    platform: 'MacIntel',
+   115→    viewport: { width: 1440, height: 900 },
+   116→    locale: 'en-US',
+   117→    timezone: 'America/New_York',
+   118→  },
+   119→  {
+   120→    userAgent:
+   121→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+   122→    platform: 'Win32',
+   123→    viewport: { width: 1536, height: 864 },
+   124→    locale: 'en-GB',
+   125→    timezone: 'Europe/London',
+   126→  },
+   127→  {
+   128→    userAgent:
+   129→      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+   130→    platform: 'MacIntel',
+   131→    viewport: { width: 1440, height: 900 },
+   132→    locale: 'de-DE',
+   133→    timezone: 'Europe/Berlin',
+   134→  },
+   135→  {
+   136→    userAgent:
+   137→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+   138→    platform: 'Win32',
+   139→    viewport: { width: 1920, height: 1080 },
+   140→    locale: 'ja-JP',
+   141→    timezone: 'Asia/Tokyo',
+   142→  },
+   143→];
+   144→
+   145→// --- Locale / Timezone hints by country -----------------------------------------
+   146→// When a session specifies a country, we try to pick a matching fingerprint so
+   147→// the browser identity is geographically coherent.
+   148→
+   149→const COUNTRY_LOCALE_HINTS: Record<string, { locale: string; timezone: string }> = {
+   150→  US: { locale: 'en-US', timezone: 'America/New_York' },
+   151→  GB: { locale: 'en-GB', timezone: 'Europe/London' },
+   152→  DE: { locale: 'de-DE', timezone: 'Europe/Berlin' },
+   153→  FR: { locale: 'fr-FR', timezone: 'Europe/Paris' },
+   154→  JP: { locale: 'ja-JP', timezone: 'Asia/Tokyo' },
+   155→  AU: { locale: 'en-AU', timezone: 'Australia/Sydney' },
+   156→  CA: { locale: 'en-CA', timezone: 'America/Toronto' },
+   157→  BR: { locale: 'pt-BR', timezone: 'America/Sao_Paulo' },
+   158→  IN: { locale: 'hi-IN', timezone: 'Asia/Kolkata' },
+   159→  IT: { locale: 'it-IT', timezone: 'Europe/Rome' },
+   160→  ES: { locale: 'es-ES', timezone: 'Europe/Madrid' },
+   161→  NL: { locale: 'nl-NL', timezone: 'Europe/Amsterdam' },
+   162→  KR: { locale: 'ko-KR', timezone: 'Asia/Seoul' },
+   163→  MX: { locale: 'es-MX', timezone: 'America/Mexico_City' },
+   164→  SG: { locale: 'en-SG', timezone: 'Asia/Singapore' },
+   165→};
+   166→
+   167→// --- Types ----------------------------------------------------------------------
+   168→
+   169→export interface SessionState {
+   170→  sessionId: string;
+   171→  userId: string;
+   172→  proxyId: string;
+   173→  proxyUrl: string;
+   174→  proxyCountry: string;
+   175→  proxyCity?: string;
+   176→  proxyAsn?: string;
+   177→  proxyTier: string;
+   178→  fingerprintProfile: {
+   179→    userAgent: string;
+   180→    platform: string;
+   181→    viewport: { width: number; height: number };
+   182→    locale: string;
+   183→    timezone: string;
+   184→  };
+   185→  createdAt: number;
+   186→  lastAccessedAt: number;
+   187→  ttlMs: number;
+   188→  requestCount: number;
+   189→  successCount: number;
+   190→  failureCount: number;
+   191→  totalResponseMs: number;
+   192→  bandwidthBytes: number;
+   193→  creditsConsumed: number;
+   194→}
+   195→
+   196→export interface CreateSessionOptions {
+   197→  userId: string;
+   198→  proxyTier?: 'residential' | 'mobile' | 'datacenter' | 'isp';
+   199→  proxyCountry?: string;
+   200→  proxyCity?: string;
+   201→  proxyAsn?: string;
+   202→  domain?: string;
+   203→  ttlMinutes?: number; // default 10, max 60
+   204→}
+   205→
+   206→export interface SessionInfo {
+   207→  sessionId: string;
+   208→  proxyCountry: string;
+   209→  proxyCity?: string;
+   210→  proxyAsn?: string;
+   211→  proxyTier: string;
+   212→  requestCount: number;
+   213→  successRate: number;
+   214→  avgResponseMs: number;
+   215→  bandwidthBytes: number;
+   216→  creditsConsumed: number;
+   217→  createdAt: string;
+   218→  lastAccessedAt: string;
+   219→  expiresAt: string;
+   220→  isActive: boolean;
+   221→}
+   222→
+   223→// --- Helpers --------------------------------------------------------------------
+   224→
+   225→/**
+   226→ * Pick a fingerprint profile that best matches the target country.
+   227→ * Falls back to a random profile when no country-specific hint exists.
+   228→ */
+   229→function pickFingerprint(country?: string): SessionState['fingerprintProfile'] {
+   230→  if (country) {
+   231→    const hint = COUNTRY_LOCALE_HINTS[country.toUpperCase()];
+   232→    if (hint) {
+   233→      // Try to find a profile whose locale/timezone matches
+   234→      const match = FINGERPRINT_PROFILES.find(
+   235→        (p) => p.locale === hint.locale && p.timezone === hint.timezone,
+   236→      );
+   237→      if (match) return match;
+   238→
+   239→      // Build a locale-adjusted variant from the first profile
+   240→      const base = FINGERPRINT_PROFILES[0];
+   241→      return {
+   242→        ...base,
+   243→        locale: hint.locale,
+   244→        timezone: hint.timezone,
+   245→      };
+   246→    }
+   247→  }
+   248→  return FINGERPRINT_PROFILES[Math.floor(Math.random() * FINGERPRINT_PROFILES.length)];
+   249→}
+   250→
+   251→/**
+   252→ * Compute the Redis TTL (in seconds) for a session's state blob.
+   253→ * We add a small buffer (60 s) so the Redis key doesn't expire right
+   254→ * before we need it during a cleanup sweep.
+   255→ */
+   256→function redisTtlSeconds(ttlMs: number): number {
+   257→  return Math.ceil(ttlMs / 1000) + 60;
+   258→}
+   259→
+   260→/**
+   261→ * Check whether a proxy is still usable (not retired, healthy enough).
+   262→ */
+   263→async function isProxyHealthy(proxyId: string): Promise<boolean> {
+   264→  try {
+   265→    const proxy = await db.proxy.findUnique({ where: { id: proxyId } });
+   266→    if (!proxy) return false;
+   267→    if (proxy.retired) return false;
+   268→    if (proxy.consecutiveFailures >= 5) return false;
+   269→    if (proxy.successRate < 0.2) return false;
+   270→    return true;
+   271→  } catch {
+   272→    return false;
+   273→  }
+   274→}
+   275→
+   276→// --- SessionManager -------------------------------------------------------------
+   277→
+   278→export class SessionManager {
+   279→  /** Handle for the periodic cleanup timer. */
+   280→  private cleanupTimer: ReturnType<typeof setInterval> | null = null;
+   281→
+   282→  // --- createSession ----------------------------------------------------------
+   283→
+   284→  /**
+   285→   * Create a new persistent sticky session.
+   286→   *
+   287→   * Steps:
+   288→   *  1. Validate TTL (default 10 min, max 60 min).
+   289→   *  2. Enforce per-user session limit (max 1000).
+   290→   *  3. Select a proxy via ProxyManager that matches the requested geo/tier.
+   291→   *  4. Pick a browser fingerprint profile consistent with the target country.
+   292→   *  5. Persist the full SessionState to Redis with the appropriate TTL.
+   293→   *  6. Register the session ID in the user's session set.
+   294→   *
+   295→   * @throws Error if the user has exceeded the session limit or no proxy is available.
+   296→   */
+   297→  async createSession(options: CreateSessionOptions): Promise<SessionState> {
+   298→    const {
+   299→      userId,
+   300→      proxyTier = 'residential',
+   301→      proxyCountry,
+   302→      proxyCity,
+   303→      proxyAsn,
+   304→      domain = 'default',
+   305→      ttlMinutes = DEFAULT_TTL_MINUTES,
+   306→    } = options;
+   307→
+   308→    // -- Validate TTL -------------------------------------------------------
+   309→    const clampedTtl = Math.max(1, Math.min(ttlMinutes, MAX_TTL_MINUTES));
+   310→    const ttlMs = clampedTtl * 60 * 1000;
+   311→
+   312→    // -- Enforce per-user session limit -------------------------------------
+   313→    const userKey = `${USER_SESSIONS_KEY_PREFIX}${userId}`;
+   314→    let existingCount: number;
+   315→    try {
+   316→      existingCount = await redis.scard(userKey);
+   317→    } catch (err) {
+   318→      logger.warn({ userId, err: (err as Error).message }, 'Failed to count user sessions -- proceeding');
+   319→      existingCount = 0;
+   320→    }
+   321→
+   322→    if (existingCount >= MAX_SESSIONS_PER_USER) {
+   323→      // Try pruning expired entries first
+   324→      await this.pruneExpiredUserSessions(userId);
+   325→      const recount = await redis.scard(userKey).catch(() => existingCount);
+   326→      if (recount >= MAX_SESSIONS_PER_USER) {
+   327→        throw new Error(
+   328→          `User ${userId} has reached the maximum of ${MAX_SESSIONS_PER_USER} concurrent sessions`,
+   329→        );
+   330→      }
+   331→    }
+   332→
+   333→    // -- Select proxy -------------------------------------------------------
+   334→    const selection = await proxyManager.getProxy(
+   335→      domain,
+   336→      proxyTier,
+   337→      proxyCountry,
+   338→      'least-failures',
+   339→      { city: proxyCity, asn: proxyAsn },
+   340→    );
+   341→
+   342→    if (!selection) {
+   343→      throw new Error(
+   344→        `No available proxy for tier=${proxyTier}, country=${proxyCountry}, city=${proxyCity}, asn=${proxyAsn}`,
+   345→      );
+   346→    }
+   347→
+   348→    // -- Pick fingerprint ---------------------------------------------------
+   349→    const fingerprint = pickFingerprint(proxyCountry ?? selection.country);
+   350→
+   351→    // -- Build session state ------------------------------------------------
+   352→    const now = Date.now();
+   353→    const sessionId = `sess-${now}-${Math.random().toString(36).substring(2, 10)}`;
+   354→
+   355→    const state: SessionState = {
+   356→      sessionId,
+   357→      userId,
+   358→      proxyId: selection.proxyId,
+   359→      proxyUrl: selection.proxyUrl,
+   360→      proxyCountry: selection.country,
+   361→      proxyCity: selection.city ?? proxyCity,
+   362→      proxyAsn: selection.asn ?? proxyAsn,
+   363→      proxyTier: selection.tier,
+   364→      fingerprintProfile: fingerprint,
+   365→      createdAt: now,
+   366→      lastAccessedAt: now,
+   367→      ttlMs,
+   368→      requestCount: 0,
+   369→      successCount: 0,
+   370→      failureCount: 0,
+   371→      totalResponseMs: 0,
+   372→      bandwidthBytes: 0,
+   373→      creditsConsumed: 0,
+   374→    };
+   375→
+   376→    // -- Persist to Redis ---------------------------------------------------
+   377→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   378→    await cacheSet(sessionKey, state, redisTtlSeconds(ttlMs));
+   379→
+   380→    // -- Register in user's session set -------------------------------------
+   381→    try {
+   382→      await redis.sadd(userKey, sessionId);
+   383→      // Set an expiry on the set itself so it doesn't leak if all sessions
+   384→      // expire naturally.  We use the max TTL + buffer as a safety net.
+   385→      await redis.expire(userKey, MAX_TTL_MINUTES * 60 + 120);
+   386→    } catch (err) {
+   387→      logger.warn({ userId, sessionId, err: (err as Error).message }, 'Failed to register session in user set');
+   388→    }
+   389→
+   390→    logger.info(
+   391→      {
+   392→        sessionId,
+   393→        userId,
+   394→        proxyId: state.proxyId,
+   395→        proxyCountry: state.proxyCountry,
+   396→        proxyCity: state.proxyCity,
+   397→        proxyAsn: state.proxyAsn,
+   398→        ttlMinutes: clampedTtl,
+   399→      },
+   400→      'Session created',
+   401→    );
+   402→
+   403→    return state;
+   404→  }
+   405→
+   406→  // --- getSession -------------------------------------------------------------
+   407→
+   408→  /**
+   409→   * Retrieve the current state of a session.
+   410→   *
+   411→   * Returns `null` if the session does not exist or has expired.
+   412→   * This is a read-only operation -- it does **not** refresh the TTL.
+   413→   * Use `refreshSession` to extend the session on access.
+   414→   */
+   415→  async getSession(sessionId: string): Promise<SessionState | null> {
+   416→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   417→    try {
+   418→      const state = await cacheGet<SessionState>(sessionKey);
+   419→      if (!state) return null;
+   420→
+   421→      // Check if the session has logically expired (Redis TTL with buffer may
+   422→      // still be alive but the logical TTL has passed)
+   423→      if (Date.now() - state.lastAccessedAt > state.ttlMs) {
+   424→        return null;
+   425→      }
+   426→
+   427→      return state;
+   428→    } catch (err) {
+   429→      logger.warn({ sessionId, err: (err as Error).message }, 'Failed to get session');
+   430→      return null;
+   431→    }
+   432→  }
+   433→
+   434→  // --- refreshSession ---------------------------------------------------------
+   435→
+   436→  /**
+   437→   * Refresh a session's TTL on access.
+   438→   *
+   439→   * Called every time a request uses this session.  Extends the session's
+   440→   * remaining lifetime back to its original TTL from the current moment,
+   441→   * mimicking a "sliding window" expiration.  Also updates `lastAccessedAt`.
+   442→   *
+   443→   * Returns the updated state, or `null` if the session no longer exists.
+   444→   */
+   445→  async refreshSession(sessionId: string): Promise<SessionState | null> {
+   446→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   447→    try {
+   448→      const state = await cacheGet<SessionState>(sessionKey);
+   449→      if (!state) return null;
+   450→
+   451→      // Check logical expiry
+   452→      if (Date.now() - state.lastAccessedAt > state.ttlMs) {
+   453→        await this.removeSession(sessionId, state.userId);
+   454→        return null;
+   455→      }
+   456→
+   457→      // Refresh: slide the window forward
+   458→      const now = Date.now();
+   459→      state.lastAccessedAt = now;
+   460→
+   461→      await cacheSet(sessionKey, state, redisTtlSeconds(state.ttlMs));
+   462→
+   463→      logger.debug(
+   464→        { sessionId, userId: state.userId, ttlMs: state.ttlMs },
+   465→        'Session TTL refreshed',
+   466→      );
+   467→
+   468→      return state;
+   469→    } catch (err) {
+   470→      logger.warn({ sessionId, err: (err as Error).message }, 'Failed to refresh session');
+   471→      return null;
+   472→    }
+   473→  }
+   474→
+   475→  // --- terminateSession -------------------------------------------------------
+   476→
+   477→  /**
+   478→   * Explicitly terminate a session.
+   479→   *
+   480→   * Removes the session state from Redis and unregisters it from the user's
+   481→   * session set.  Safe to call on already-expired or non-existent sessions.
+   482→   */
+   483→  async terminateSession(sessionId: string): Promise<void> {
+   484→    try {
+   485→      const state = await cacheGet<SessionState>(`${SESSION_KEY_PREFIX}${sessionId}`);
+   486→
+   487→      if (state) {
+   488→        await this.removeSession(sessionId, state.userId);
+   489→        logger.info({ sessionId, userId: state.userId }, 'Session terminated');
+   490→      } else {
+   491→        // Session may have already expired -- try cleaning up from user set
+   492→        // We don't know the userId, so just delete the key (best-effort)
+   493→        await cacheSet(`${SESSION_KEY_PREFIX}${sessionId}`, null as any, 0).catch(() => {});
+   494→        await redis.del(`cache:${SESSION_KEY_PREFIX}${sessionId}`).catch(() => {});
+   495→        logger.debug({ sessionId }, 'Session already expired or missing on terminate');
+   496→      }
+   497→    } catch (err) {
+   498→      logger.warn({ sessionId, err: (err as Error).message }, 'Failed to terminate session');
+   499→    }
+   500→  }
+   501→
+   502→  // --- recordSessionRequest ---------------------------------------------------
+   503→
+   504→  /**
+   505→   * Record a request's outcome against the session.
+   506→   *
+   507→   * Updates the session's metrics (request count, success/failure, response
+   508→   * time, bandwidth, credits) and also refreshes the session TTL.  If the
+   509→   * session's proxy has become unhealthy (retired, consecutive failures ≥ 5),
+   510→   * automatically triggers a proxy reassignment in the same geo.
+   511→   *
+   512→   * Returns the updated state, or `null` if the session no longer exists.
+   513→   */
+   514→  async recordSessionRequest(
+   515→    sessionId: string,
+   516→    result: {
+   517→      success: boolean;
+   518→      responseMs: number;
+   519→      bandwidthBytes: number;
+   520→      creditsUsed: number;
+   521→    },
+   522→  ): Promise<SessionState | null> {
+   523→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   524→    try {
+   525→      const state = await cacheGet<SessionState>(sessionKey);
+   526→      if (!state) return null;
+   527→
+   528→      // Check logical expiry
+   529→      if (Date.now() - state.lastAccessedAt > state.ttlMs) {
+   530→        await this.removeSession(sessionId, state.userId);
+   531→        return null;
+   532→      }
+   533→
+   534→      // -- Update metrics -------------------------------------------------
+   535→      state.requestCount += 1;
+   536→      state.totalResponseMs += result.responseMs;
+   537→      state.bandwidthBytes += result.bandwidthBytes;
+   538→      state.creditsConsumed += result.creditsUsed;
+   539→
+   540→      if (result.success) {
+   541→        state.successCount += 1;
+   542→      } else {
+   543→        state.failureCount += 1;
+   544→      }
+   545→
+   546→      // -- Refresh TTL (sliding window) -----------------------------------
+   547→      state.lastAccessedAt = Date.now();
+   548→
+   549→      // -- Persist updated state ------------------------------------------
+   550→      await cacheSet(sessionKey, state, redisTtlSeconds(state.ttlMs));
+   551→
+   552→      // -- Check if proxy is still healthy --------------------------------
+   553→      const healthy = await isProxyHealthy(state.proxyId);
+   554→      if (!healthy) {
+   555→        logger.info(
+   556→          {
+   557→            sessionId,
+   558→            proxyId: state.proxyId,
+   559→            successRate: state.successCount > 0
+   560→              ? state.successCount / state.requestCount
+   561→              : 0,
+   562→          },
+   563→          'Session proxy unhealthy -- triggering reassignment',
+   564→        );
+   565→        const reassigned = await this.reassignProxy(sessionId);
+   566→        return reassigned;
+   567→      }
+   568→
+   569→      return state;
+   570→    } catch (err) {
+   571→      logger.warn({ sessionId, err: (err as Error).message }, 'Failed to record session request');
+   572→      return null;
+   573→    }
+   574→  }
+   575→
+   576→  // --- reassignProxy ----------------------------------------------------------
+   577→
+   578→  /**
+   579→   * Reassign a session to a new proxy in the **same geographic location**.
+   580→   *
+   581→   * Geo-consistency is the top priority -- we search for a replacement proxy
+   582→   * matching the original country, then city, then ASN, with progressively
+   583→   * relaxed constraints if an exact match isn't available.
+   584→   *
+   585→   * Returns the updated state, or `null` if the session no longer exists or
+   586→   * no suitable replacement proxy can be found.
+   587→   */
+   588→  async reassignProxy(sessionId: string): Promise<SessionState | null> {
+   589→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   590→    try {
+   591→      const state = await cacheGet<SessionState>(sessionKey);
+   592→      if (!state) return null;
+   593→
+   594→      // Check logical expiry
+   595→      if (Date.now() - state.lastAccessedAt > state.ttlMs) {
+   596→        await this.removeSession(sessionId, state.userId);
+   597→        return null;
+   598→      }
+   599→
+   600→      const originalCountry = state.proxyCountry;
+   601→      const originalCity = state.proxyCity;
+   602→      const originalAsn = state.proxyAsn;
+   603→      const originalTier = state.proxyTier as 'residential' | 'mobile' | 'datacenter' | 'isp';
+   604→
+   605→      logger.info(
+   606→        {
+   607→          sessionId,
+   608→          oldProxyId: state.proxyId,
+   609→          country: originalCountry,
+   610→          city: originalCity,
+   611→          asn: originalAsn,
+   612→          tier: originalTier,
+   613→        },
+   614→        'Reassigning session proxy with geo-consistency',
+   615→      );
+   616→
+   617→      // -- Try multiple levels of geo-specificity --------------------------
+   618→      const geoAttempts: Array<{
+   619→        country?: string;
+   620→        city?: string;
+   621→        asn?: string;
+   622→        label: string;
+   623→      }> = [
+   624→        // 1. Exact match: same country + city + ASN
+   625→        { country: originalCountry, city: originalCity, asn: originalAsn, label: 'country+city+asn' },
+   626→        // 2. Same country + city, any ASN
+   627→        { country: originalCountry, city: originalCity, label: 'country+city' },
+   628→        // 3. Same country, any city/ASN
+   629→        { country: originalCountry, label: 'country' },
+   630→        // 4. Any proxy in the same tier (last resort)
+   631→        { label: 'tier-only' },
+   632→      ];
+   633→
+   634→      for (const attempt of geoAttempts) {
+   635→        for (let i = 0; i < MAX_REASSIGN_ATTEMPTS; i++) {
+   636→          const selection = await proxyManager.getProxy(
+   637→            'session-reassign',
+   638→            originalTier,
+   639→            attempt.country,
+   640→            'least-failures',
+   641→            { city: attempt.city, asn: attempt.asn },
+   642→          );
+   643→
+   644→          if (selection && selection.proxyId !== state.proxyId) {
+   645→            // Found a different proxy in the target geo -- update state
+   646→            state.proxyId = selection.proxyId;
+   647→            state.proxyUrl = selection.proxyUrl;
+   648→            state.proxyCountry = selection.country;
+   649→            state.proxyCity = selection.city ?? state.proxyCity;
+   650→            state.proxyAsn = selection.asn ?? state.proxyAsn;
+   651→            state.proxyTier = selection.tier;
+   652→            state.lastAccessedAt = Date.now();
+   653→
+   654→            await cacheSet(sessionKey, state, redisTtlSeconds(state.ttlMs));
+   655→
+   656→            logger.info(
+   657→              {
+   658→                sessionId,
+   659→                newProxyId: state.proxyId,
+   660→                newCountry: state.proxyCountry,
+   661→                newCity: state.proxyCity,
+   662→                newAsn: state.proxyAsn,
+   663→                matchLevel: attempt.label,
+   664→              },
+   665→              'Session proxy reassigned with geo-consistency',
+   666→            );
+   667→
+   668→            return state;
+   669→          }
+   670→        }
+   671→      }
+   672→
+   673→      // No suitable replacement found -- session continues with the old proxy
+   674→      // (it might still work intermittently)
+   675→      logger.warn(
+   676→        {
+   677→          sessionId,
+   678→          oldProxyId: state.proxyId,
+   679→          country: originalCountry,
+   680→          city: originalCity,
+   681→        },
+   682→        'No geo-consistent replacement proxy found -- session retains old proxy',
+   683→      );
+   684→
+   685→      return state;
+   686→    } catch (err) {
+   687→      logger.warn({ sessionId, err: (err as Error).message }, 'Failed to reassign session proxy');
+   688→      return null;
+   689→    }
+   690→  }
+   691→
+   692→  // --- listUserSessions -------------------------------------------------------
+   693→
+   694→  /**
+   695→   * List all active sessions for a user.
+   696→   *
+   697→   * Returns an array of `SessionInfo` objects with status and metrics.
+   698→   * Expired sessions are automatically pruned from the user's set.
+   699→   */
+   700→  async listUserSessions(userId: string): Promise<SessionInfo[]> {
+   701→    const userKey = `${USER_SESSIONS_KEY_PREFIX}${userId}`;
+   702→    const results: SessionInfo[] = [];
+   703→
+   704→    try {
+   705→      const sessionIds = await redis.smembers(userKey);
+   706→      const now = Date.now();
+   707→      const expiredIds: string[] = [];
+   708→
+   709→      for (const sessionId of sessionIds) {
+   710→        const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   711→        const state = await cacheGet<SessionState>(sessionKey);
+   712→
+   713→        if (!state) {
+   714→          // Key has expired from Redis -- mark for removal from user set
+   715→          expiredIds.push(sessionId);
+   716→          continue;
+   717→        }
+   718→
+   719→        // Check logical expiry
+   720→        const isActive = now - state.lastAccessedAt <= state.ttlMs;
+   721→
+   722→        if (!isActive) {
+   723→          expiredIds.push(sessionId);
+   724→          continue;
+   725→        }
+   726→
+   727→        const totalRequests = state.requestCount;
+   728→        const successRate = totalRequests > 0 ? state.successCount / totalRequests : 0;
+   729→        const avgResponseMs = totalRequests > 0 ? Math.round(state.totalResponseMs / totalRequests) : 0;
+   730→        const expiresAt = new Date(state.lastAccessedAt + state.ttlMs);
+   731→
+   732→        results.push({
+   733→          sessionId: state.sessionId,
+   734→          proxyCountry: state.proxyCountry,
+   735→          proxyCity: state.proxyCity,
+   736→          proxyAsn: state.proxyAsn,
+   737→          proxyTier: state.proxyTier,
+   738→          requestCount: state.requestCount,
+   739→          successRate: Math.round(successRate * 1000) / 1000,
+   740→          avgResponseMs,
+   741→          bandwidthBytes: state.bandwidthBytes,
+   742→          creditsConsumed: state.creditsConsumed,
+   743→          createdAt: new Date(state.createdAt).toISOString(),
+   744→          lastAccessedAt: new Date(state.lastAccessedAt).toISOString(),
+   745→          expiresAt: expiresAt.toISOString(),
+   746→          isActive: true,
+   747→        });
+   748→      }
+   749→
+   750→      // -- Prune expired entries from the user's session set ----------------
+   751→      if (expiredIds.length > 0) {
+   752→        await redis.srem(userKey, ...expiredIds).catch(() => {});
+   753→        logger.debug(
+   754→          { userId, pruned: expiredIds.length },
+   755→          'Pruned expired session IDs from user set',
+   756→        );
+   757→      }
+   758→    } catch (err) {
+   759→      logger.warn({ userId, err: (err as Error).message }, 'Failed to list user sessions');
+   760→    }
+   761→
+   762→    return results;
+   763→  }
+   764→
+   765→  // --- cleanup ----------------------------------------------------------------
+   766→
+   767→  /**
+   768→   * Scan all session keys and remove expired entries.
+   769→   *
+   770→   * Also prunes stale session IDs from user sets.  This is called
+   771→   * periodically by the cleanup timer, but can also be invoked manually.
+   772→   */
+   773→  async cleanup(): Promise<void> {
+   774→    const now = Date.now();
+   775→    let removed = 0;
+   776→    let scanned = 0;
+   777→
+   778→    try {
+   779→      // Scan all session keys
+   780→      const pattern = `cache:${SESSION_KEY_PREFIX}*`;
+   781→      const keys = await redis.keys(pattern);
+   782→
+   783→      for (const key of keys) {
+   784→        scanned++;
+   785→        try {
+   786→          const raw = await redis.get(key);
+   787→          if (!raw) {
+   788→            // Key vanished between KEYS and GET -- skip
+   789→            continue;
+   790→          }
+   791→
+   792→          const state: SessionState = JSON.parse(raw);
+   793→          const expired = now - state.lastAccessedAt > state.ttlMs;
+   794→
+   795→          if (expired) {
+   796→            await this.removeSession(state.sessionId, state.userId);
+   797→            removed++;
+   798→          } else {
+   799→            // Still alive -- refresh the Redis TTL to keep it in sync
+   800→            const remainingMs = state.ttlMs - (now - state.lastAccessedAt);
+   801→            const ttlSeconds = Math.max(1, Math.ceil(remainingMs / 1000) + 60);
+   802→            await redis.expire(key, ttlSeconds).catch(() => {});
+   803→          }
+   804→        } catch {
+   805→          // Malformed entry -- skip
+   806→        }
+   807→      }
+   808→
+   809→      // -- Also clean up user sets that may reference expired sessions ------
+   810→      await this.cleanupUserSets();
+   811→
+   812→      if (removed > 0 || scanned > 0) {
+   813→        logger.info({ scanned, removed }, 'Session cleanup sweep completed');
+   814→      }
+   815→    } catch (err) {
+   816→      logger.warn({ err: (err as Error).message }, 'Session cleanup failed');
+   817→    }
+   818→  }
+   819→
+   820→  // --- startCleanup -----------------------------------------------------------
+   821→
+   822→  /**
+   823→   * Start a periodic sweep that removes expired sessions from Redis.
+   824→   *
+   825→   * Safe to call multiple times -- a duplicate start is a no-op.
+   826→   */
+   827→  startCleanup(): void {
+   828→    if (this.cleanupTimer) {
+   829→      logger.warn('Session cleanup timer already running -- skipping duplicate start');
+   830→      return;
+   831→    }
+   832→
+   833→    this.cleanupTimer = setInterval(() => {
+   834→      this.cleanup().catch((err) => {
+   835→        logger.warn({ err: (err as Error).message }, 'Session cleanup sweep failed');
+   836→      });
+   837→    }, CLEANUP_INTERVAL_MS);
+   838→
+   839→    logger.info({ intervalMs: CLEANUP_INTERVAL_MS }, 'Session cleanup timer started');
+   840→  }
+   841→
+   842→  // --- stopCleanup ------------------------------------------------------------
+   843→
+   844→  /**
+   845→   * Stop the periodic cleanup sweep.
+   846→   */
+   847→  stopCleanup(): void {
+   848→    if (this.cleanupTimer) {
+   849→      clearInterval(this.cleanupTimer);
+   850→      this.cleanupTimer = null;
+   851→      logger.info('Session cleanup timer stopped');
+   852→    }
+   853→  }
+   854→
+   855→  // --- Private Helpers --------------------------------------------------------
+   856→
+   857→  /**
+   858→   * Remove a session from Redis and the user's session set.
+   859→   */
+   860→  private async removeSession(sessionId: string, userId: string): Promise<void> {
+   861→    const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   862→    const userKey = `${USER_SESSIONS_KEY_PREFIX}${userId}`;
+   863→
+   864→    await Promise.allSettled([
+   865→      redis.del(`cache:${sessionKey}`),
+   866→      redis.srem(userKey, sessionId),
+   867→    ]);
+   868→  }
+   869→
+   870→  /**
+   871→   * Prune expired session IDs from a specific user's session set.
+   872→   *
+   873→   * Called when a user hits the session limit -- gives them a second chance
+   874→   * after stale entries are cleaned up.
+   875→   */
+   876→  private async pruneExpiredUserSessions(userId: string): Promise<number> {
+   877→    const userKey = `${USER_SESSIONS_KEY_PREFIX}${userId}`;
+   878→    const now = Date.now();
+   879→    let pruned = 0;
+   880→
+   881→    try {
+   882→      const sessionIds = await redis.smembers(userKey);
+   883→      const expiredIds: string[] = [];
+   884→
+   885→      for (const sessionId of sessionIds) {
+   886→        const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   887→        const state = await cacheGet<SessionState>(sessionKey);
+   888→        if (!state || now - state.lastAccessedAt > state.ttlMs) {
+   889→          expiredIds.push(sessionId);
+   890→        }
+   891→      }
+   892→
+   893→      if (expiredIds.length > 0) {
+   894→        await redis.srem(userKey, ...expiredIds);
+   895→        pruned = expiredIds.length;
+   896→        logger.debug({ userId, pruned }, 'Pruned expired sessions for user');
+   897→      }
+   898→    } catch (err) {
+   899→      logger.warn({ userId, err: (err as Error).message }, 'Failed to prune expired user sessions');
+   900→    }
+   901→
+   902→    return pruned;
+   903→  }
+   904→
+   905→  /**
+   906→   * Scan all user-session sets and remove references to sessions that no
+   907→   * longer exist in Redis.  This is a safety net to prevent user sets from
+   908→   * growing unboundedly.
+   909→   */
+   910→  private async cleanupUserSets(): Promise<void> {
+   911→    try {
+   912→      const pattern = `${USER_SESSIONS_KEY_PREFIX}*`;
+   913→      const userKeys = await redis.keys(pattern);
+   914→
+   915→      for (const userKey of userKeys) {
+   916→        try {
+   917→          const sessionIds = await redis.smembers(userKey);
+   918→          const staleIds: string[] = [];
+   919→
+   920→          for (const sessionId of sessionIds) {
+   921→            const sessionKey = `${SESSION_KEY_PREFIX}${sessionId}`;
+   922→            const exists = await redis.exists(`cache:${sessionKey}`);
+   923→            if (!exists) {
+   924→              staleIds.push(sessionId);
+   925→            }
+   926→          }
+   927→
+   928→          if (staleIds.length > 0) {
+   929→            await redis.srem(userKey, ...staleIds);
+   930→          }
+   931→
+   932→          // If the set is now empty, remove it entirely
+   933→          const remaining = await redis.scard(userKey);
+   934→          if (remaining === 0) {
+   935→            await redis.del(userKey);
+   936→          }
+   937→        } catch {
+   938→          // Skip this user set on error
+   939→        }
+   940→      }
+   941→    } catch (err) {
+   942→      logger.warn({ err: (err as Error).message }, 'Failed to cleanup user session sets');
+   943→    }
+   944→  }
+   945→}
+   946→
+   947→// --- Singleton -----------------------------------------------------------------
+   948→
+   949→/** Shared singleton instance -- safe to import from any module. */
+   950→export const sessionManager = new SessionManager();
+   951→

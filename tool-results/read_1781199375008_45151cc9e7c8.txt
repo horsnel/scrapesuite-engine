@@ -1,0 +1,2002 @@
+     1→/**
+     2→ * Scraper Templates System -- Pre-built data extraction templates for popular websites.
+     3→ *
+     4→ * Inspired by Bright Data's template-driven scraping: users specify a template
+     5→ * name (or let auto-detection choose one from a URL) instead of writing custom
+     6→ * extraction logic.  Each template encapsulates domain patterns, output schemas,
+     7→ * regex-based extraction, required strategy, and proxy tier.
+     8→ *
+     9→ * Key features
+    10→ * ------------
+    11→ *  • 54+ production templates for popular sites (Amazon, Google, LinkedIn, etc.)
+    12→ *  • Auto-detection of the best template from a URL via domain matching
+    13→ *  • Regex-based extraction (more resilient than CSS selectors to layout changes)
+    14→ *  • JSON-LD structured data extraction as a primary fallback
+    15→ *  • Open Graph / meta tag extraction as secondary fallback
+    16→ *  • Confidence scoring on template matches
+    17→ *  • Full JSDoc on all public methods and interfaces
+    18→ *
+    19→ * Usage
+    20→ * -----
+    21→ *   import { templateRegistry } from './templates';
+    22→ *
+    23→ *   // Auto-detect
+    24→ *   const match = templateRegistry.detectTemplate('https://www.amazon.com/dp/B0BSHF7WHW');
+    25→ *   // match.templateId === 'amazon_product'
+    26→ *
+    27→ *   // Extract
+    28→ *   const data = templateRegistry.extractWithTemplate('amazon_product', html, url);
+    29→ */
+    30→
+    31→import { createChildLogger } from '../utils/logger';
+    32→
+    33→const logger = createChildLogger('templates');
+    34→
+    35→// --- Public Types --------------------------------------------------------------
+    36→
+    37→/**
+    38→ * A single scraper template definition.
+    39→ *
+    40→ * Each template knows which domains it handles, what output fields it
+    41→ * produces, how to extract them from raw HTML, and which strategy / proxy
+    42→ * tier is recommended for reliable scraping.
+    43→ */
+    44→export interface ScraperTemplate {
+    45→  /** Unique template identifier, e.g. 'amazon_product'. */
+    46→  id: string;
+    47→  /** Human-readable name, e.g. 'Amazon Product'. */
+    48→  name: string;
+    49→  /** Short description of what the template extracts. */
+    50→  description: string;
+    51→  /**
+    52→   * Domain substrings used for auto-detection.
+    53→   * A URL whose hostname contains any of these strings will match.
+    54→   * e.g. ['amazon.com', 'amazon.co.uk', 'amazon.de']
+    55→   */
+    56→  domainPatterns: string[];
+    57→  /**
+    58→   * Output schema -- maps field names to human-readable descriptions.
+    59→   * This describes the shape of the object returned by `extract()`.
+    60→   */
+    61→  outputSchema: Record<string, string>;
+    62→  /** Minimum scraping strategy required for reliable extraction. */
+    63→  requiredStrategy: 'http' | 'browser' | 'stealth-browser';
+    64→  /** Minimum proxy tier required for reliable extraction. */
+    65→  requiredProxyTier: 'residential' | 'mobile' | 'datacenter' | 'isp';
+    66→  /**
+    67→   * Extract structured data from raw HTML.
+    68→   *
+    69→   * @param html - The full HTML source of the page.
+    70→   * @param url  - The canonical URL of the page (used for ASIN extraction etc.)
+    71→   * @returns A plain object whose keys match `outputSchema`.
+    72→   */
+    73→  extract: (html: string, url: string) => Record<string, any>;
+    74→}
+    75→
+    76→/**
+    77→ * Result of auto-detecting a template from a URL.
+    78→ */
+    79→export interface TemplateMatch {
+    80→  /** The matched template ID. */
+    81→  templateId: string;
+    82→  /** Confidence score 0–1 (1 = exact domain match, lower for partial). */
+    83→  confidence: number;
+    84→  /** The full template definition. */
+    85→  template: ScraperTemplate;
+    86→}
+    87→
+    88→// --- Internal Helpers ----------------------------------------------------------
+    89→
+    90→/**
+    91→ * Safely extract the first capture group from a regex, returning a default
+    92→ * on failure.  Never throws.
+    93→ */
+    94→function regexMatch(html: string, pattern: RegExp, group: number = 1, fallback: string = ''): string {
+    95→  try {
+    96→    const m = html.match(pattern);
+    97→    return m && m[group] !== undefined ? m[group].trim() : fallback;
+    98→  } catch {
+    99→    return fallback;
+   100→  }
+   101→}
+   102→
+   103→/**
+   104→ * Extract all capture groups from all matches of a global regex.
+   105→ */
+   106→function regexMatchAll(html: string, pattern: RegExp, group: number = 1): string[] {
+   107→  try {
+   108→    const results: string[] = [];
+   109→    let m: RegExpExecArray | null;
+   110→    const re = new RegExp(pattern.source, pattern.flags);
+   111→    while ((m = re.exec(html)) !== null) {
+   112→      if (m[group] !== undefined) results.push(m[group].trim());
+   113→    }
+   114→    return results;
+   115→  } catch {
+   116→    return [];
+   117→  }
+   118→}
+   119→
+   120→/**
+   121→ * Extract a numeric value from a string, stripping commas.
+   122→ */
+   123→function parseNumber(text: string): number | null {
+   124→  if (!text) return null;
+   125→  const m = text.match(/([\d,]+\.?\d*)/);
+   126→  if (!m) return null;
+   127→  return parseFloat(m[1].replace(/,/g, ''));
+   128→}
+   129→
+   130→/**
+   131→ * Extract and parse the first JSON-LD block of a given @type from HTML.
+   132→ * Returns null if none found or parsing fails.
+   133→ */
+   134→function extractLdJson(html: string, typeSubstring: string): Record<string, any> | null {
+   135→  try {
+   136→    const blocks = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+   137→    if (!blocks) return null;
+   138→
+   139→    for (const block of blocks) {
+   140→      const jsonStr = block.replace(/<\/?script[^>]*>/gi, '').trim();
+   141→      try {
+   142→        const parsed = JSON.parse(jsonStr);
+   143→        const items = Array.isArray(parsed) ? parsed : [parsed];
+   144→        for (const item of items) {
+   145→          if (item['@graph'] && Array.isArray(item['@graph'])) {
+   146→            for (const g of item['@graph']) {
+   147→              const t = (g['@type'] || '').toString().toLowerCase();
+   148→              if (t.includes(typeSubstring.toLowerCase())) return g;
+   149→            }
+   150→          }
+   151→          const t = (item['@type'] || '').toString().toLowerCase();
+   152→          if (t.includes(typeSubstring.toLowerCase())) return item;
+   153→        }
+   154→      } catch {
+   155→        // Skip malformed JSON-LD
+   156→      }
+   157→    }
+   158→  } catch (err) {
+   159→    logger.debug({ err: (err as Error).message, typeSubstring }, 'Failed to extract JSON-LD');
+   160→  }
+   161→  return null;
+   162→}
+   163→
+   164→/**
+   165→ * Extract all JSON-LD blocks from HTML.
+   166→ */
+   167→function extractAllLdJson(html: string): Record<string, any>[] {
+   168→  const results: Record<string, any>[] = [];
+   169→  try {
+   170→    const blocks = html.match(/<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi);
+   171→    if (!blocks) return results;
+   172→
+   173→    for (const block of blocks) {
+   174→      const jsonStr = block.replace(/<\/?script[^>]*>/gi, '').trim();
+   175→      try {
+   176→        const parsed = JSON.parse(jsonStr);
+   177→        if (Array.isArray(parsed)) {
+   178→          results.push(...parsed);
+   179→        } else if (parsed['@graph'] && Array.isArray(parsed['@graph'])) {
+   180→          results.push(...parsed['@graph']);
+   181→        } else {
+   182→          results.push(parsed);
+   183→        }
+   184→      } catch {
+   185→        // Skip malformed JSON-LD
+   186→      }
+   187→    }
+   188→  } catch {
+   189→    // Ignore
+   190→  }
+   191→  return results;
+   192→}
+   193→
+   194→/**
+   195→ * Extract an Open Graph meta content value.
+   196→ */
+   197→function extractOg(html: string, property: string): string {
+   198→  const pattern = new RegExp(`<meta[^>]*property=["']og:${property}["'][^>]*content=["']([^"']*)["']`, 'i');
+   199→  const alt = new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:${property}["']`, 'i');
+   200→  return regexMatch(html, pattern, 1) || regexMatch(html, alt, 1);
+   201→}
+   202→
+   203→/**
+   204→ * Extract a standard meta tag content value by name.
+   205→ */
+   206→function extractMetaName(html: string, name: string): string {
+   207→  const pattern = new RegExp(`<meta[^>]*name=["']${name}["'][^>]*content=["']([^"']*)["']`, 'i');
+   208→  const alt = new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*name=["']${name}["']`, 'i');
+   209→  return regexMatch(html, pattern, 1) || regexMatch(html, alt, 1);
+   210→}
+   211→
+   212→/**
+   213→ * Extract a meta tag content value by property.
+   214→ */
+   215→function extractMetaProperty(html: string, property: string): string {
+   216→  const pattern = new RegExp(`<meta[^>]*property=["']${property}["'][^>]*content=["']([^"']*)["']`, 'i');
+   217→  const alt = new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']${property}["']`, 'i');
+   218→  return regexMatch(html, pattern, 1) || regexMatch(html, alt, 1);
+   219→}
+   220→
+   221→/**
+   222→ * Strip HTML tags from a string.
+   223→ */
+   224→function stripHtml(html: string): string {
+   225→  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+   226→}
+   227→
+   228→/**
+   229→ * Decode common HTML entities.
+   230→ */
+   231→function decodeEntities(text: string): string {
+   232→  return text
+   233→    .replace(/&amp;/g, '&')
+   234→    .replace(/&lt;/g, '<')
+   235→    .replace(/&gt;/g, '>')
+   236→    .replace(/&quot;/g, '"')
+   237→    .replace(/&#39;/g, "'")
+   238→    .replace(/&#x27;/g, "'")
+   239→    .replace(/&apos;/g, "'")
+   240→    .replace(/&nbsp;/g, ' ');
+   241→}
+   242→
+   243→// --- Template Definitions ------------------------------------------------------
+   244→
+   245→// --------------------------------------------------------------------------------
+   246→// 1. Amazon Product
+   247→// --------------------------------------------------------------------------------
+   248→
+   249→const amazonProductTemplate: ScraperTemplate = {
+   250→  id: 'amazon_product',
+   251→  name: 'Amazon Product',
+   252→  description: 'Extract product details from Amazon product pages including title, price, rating, availability, ASIN, images, features, description, seller, and breadcrumbs.',
+   253→  domainPatterns: ['amazon.com', 'amazon.co.uk', 'amazon.de', 'amazon.fr', 'amazon.co.jp', 'amazon.ca', 'amazon.com.au', 'amazon.in', 'amazon.it', 'amazon.es', 'amazon.com.mx', 'amazon.com.br', 'amzn.com'],
+   254→  outputSchema: {
+   255→    title: 'Product title',
+   256→    price: 'Current price (number)',
+   257→    currency: 'Currency code (USD, EUR, GBP, etc.)',
+   258→    originalPrice: 'List price before discount (number)',
+   259→    rating: 'Average rating out of 5 (number)',
+   260→    reviewCount: 'Number of customer reviews (integer)',
+   261→    availability: 'Availability status string',
+   262→    asin: 'Amazon Standard Identification Number (10-char alphanumeric)',
+   263→    images: 'Array of image URLs',
+   264→    features: 'Array of bullet-point features',
+   265→    description: 'Product description text',
+   266→    seller: 'Seller / brand name',
+   267→    breadcrumbs: 'Array of breadcrumb category names',
+   268→  },
+   269→  requiredStrategy: 'stealth-browser',
+   270→  requiredProxyTier: 'residential',
+   271→
+   272→  extract(html: string, url: string): Record<string, any> {
+   273→    try {
+   274→      // -- ASIN from URL -------------------------------------------------
+   275→      let asin = '';
+   276→      const asinUrlMatch = url.match(/\/dp\/([A-Z0-9]{10})/i) || url.match(/\/gp\/product\/([A-Z0-9]{10})/i) || url.match(/\/ASIN\/([A-Z0-9]{10})/i);
+   277→      if (asinUrlMatch) asin = asinUrlMatch[1].toUpperCase();
+   278→
+   279→      // ASIN from HTML hidden inputs
+   280→      if (!asin) {
+   281→        const asinHtml = regexMatch(html, /<input[^>]*name=["']ASIN["'][^>]*value=["']([A-Z0-9]{10})["']/i, 1)
+   282→          || regexMatch(html, /<input[^>]*value=["']([A-Z0-9]{10})["'][^>]*name=["']ASIN["']/i, 1);
+   283→        if (asinHtml) asin = asinHtml.toUpperCase();
+   284→      }
+   285→
+   286→      // ASIN from detail table
+   287→      if (!asin) {
+   288→        const asinDetail = regexMatch(html, /ASIN[\s:]*<\/[^>]+>\s*([A-Z0-9]{10})/i, 1);
+   289→        if (asinDetail) asin = asinDetail.toUpperCase();
+   290→      }
+   291→
+   292→      // -- Title ---------------------------------------------------------
+   293→      let title = regexMatch(html, /id=["']productTitle["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   294→      if (!title) title = regexMatch(html, /data-automation-id=["']product-title["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   295→      if (!title) title = regexMatch(html, /<h1[^>]*class=["'][^"']*a-size-large[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i, 1);
+   296→      title = decodeEntities(stripHtml(title));
+   297→
+   298→      // -- Price ---------------------------------------------------------
+   299→      let priceText = regexMatch(html, /class=["'][^"']*a-price[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*a-offscreen[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   300→      if (!priceText) priceText = regexMatch(html, /id=["']priceblock_ourprice["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   301→      if (!priceText) priceText = regexMatch(html, /id=["']priceblock_dealprice["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   302→      if (!priceText) priceText = regexMatch(html, /id=["']priceblock_saleprice["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   303→      if (!priceText) priceText = regexMatch(html, /data-a-color=["']price["'][^>]*>[\s\S]*?class=["'][^"']*a-offscreen[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   304→      priceText = stripHtml(priceText);
+   305→
+   306→      const originalPriceText = stripHtml(
+   307→        regexMatch(html, /class=["'][^"']*a-text-price[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*a-offscreen[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+   308→      );
+   309→
+   310→      let price = parseNumber(priceText);
+   311→      const originalPrice = parseNumber(originalPriceText);
+   312→
+   313→      let currency = 'USD';
+   314→      if (priceText.includes('\u20AC') || priceText.includes('EUR')) currency = 'EUR';
+   315→      else if (priceText.includes('\u00A3') || priceText.includes('GBP')) currency = 'GBP';
+   316→      else if (priceText.includes('\u00A5') || priceText.includes('CNY') || priceText.includes('JPY')) currency = 'JPY';
+   317→      else if (priceText.includes('\u20B9') || priceText.includes('INR')) currency = 'INR';
+   318→      else if (priceText.includes('A$') || priceText.includes('AUD')) currency = 'AUD';
+   319→      else if (priceText.includes('C$') || priceText.includes('CAD')) currency = 'CAD';
+   320→      else if (priceText.includes('R$') || priceText.includes('BRL')) currency = 'BRL';
+   321→      else if (priceText.includes('MX$') || priceText.includes('MXN')) currency = 'MXN';
+   322→
+   323→      // -- Rating --------------------------------------------------------
+   324→      const ratingText = regexMatch(html, /id=["']acrPopover["'][^>]*>[\s\S]*?class=["'][^"']*a-icon-alt[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+   325→        || regexMatch(html, /class=["'][^"']*a-icon-star[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*a-icon-alt[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   326→      const ratingMatch = ratingText.match(/([\d.]+)/);
+   327→      let rating = ratingMatch ? parseFloat(ratingMatch[1]) : null;
+   328→
+   329→      // -- Review count --------------------------------------------------
+   330→      const reviewText = regexMatch(html, /id=["']acrCustomerReviewText["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   331→      const reviewMatch = reviewText.match(/([\d,]+)/);
+   332→      let reviewCount = reviewMatch ? parseInt(reviewMatch[1].replace(/,/g, ''), 10) : null;
+   333→
+   334→      // -- Availability --------------------------------------------------
+   335→      let availability = regexMatch(html, /id=["']availability["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   336→      availability = stripHtml(availability);
+   337→      if (availability.toLowerCase().includes('in stock')) availability = 'In Stock';
+   338→      else if (availability.toLowerCase().includes('out of stock')) availability = 'Out of Stock';
+   339→      else if (availability.toLowerCase().includes('currently unavailable')) availability = 'Unavailable';
+   340→      if (!availability) availability = 'Unknown';
+   341→
+   342→      // -- Images --------------------------------------------------------
+   343→      const images: string[] = [];
+   344→      // Main landing image
+   345→      const mainImg = regexMatch(html, /id=["']landingImage["'][^>]*src=["']([^"']*)["']/i, 1)
+   346→        || regexMatch(html, /id=["']imgBlkFront["'][^>]*src=["']([^"']*)["']/i, 1);
+   347→      if (mainImg) images.push(mainImg);
+   348→
+   349→      // Image gallery thumbnails
+   350→      const imgPattern = /data-old-hires=["']([^"']*)["']/gi;
+   351→      let imgM: RegExpExecArray | null;
+   352→      while ((imgM = imgPattern.exec(html)) !== null) {
+   353→        if (imgM[1] && !images.includes(imgM[1])) images.push(imgM[1]);
+   354→      }
+   355→
+   356→      // Color/thumbnail images
+   357→      const thumbPattern = /class=["'][^"']*imageThumbnail[^"']*["'][^>]*src=["']([^"']*)["']/gi;
+   358→      while ((imgM = thumbPattern.exec(html)) !== null) {
+   359→        if (imgM[1] && !images.includes(imgM[1])) images.push(imgM[1]);
+   360→      }
+   361→
+   362→      // -- Features / bullets --------------------------------------------
+   363→      const features: string[] = [];
+   364→      const bulletSection = html.match(/id=["']feature-bullets["'][^>]*>([\s\S]*?)<\/div>/i);
+   365→      if (bulletSection) {
+   366→        const bulletMatches = bulletSection[1].matchAll(/<span[^>]*class=["'][^"']*a-list-item[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi);
+   367→        for (const bm of bulletMatches) {
+   368→          const text = decodeEntities(stripHtml(bm[1]));
+   369→          if (text && !text.includes('Make sure this fits')) features.push(text);
+   370→        }
+   371→      }
+   372→
+   373→      // -- Description ---------------------------------------------------
+   374→      let description = '';
+   375→      const descMatch = html.match(/id=["']productDescription["'][^>]*>([\s\S]*?)<\/div>/i);
+   376→      if (descMatch) description = stripHtml(descMatch[1]).substring(0, 5000);
+   377→      if (!description) {
+   378→        const aplusMatch = html.match(/id=["']aplus_feature_div["'][^>]*>([\s\S]*?)<\/div>/i)
+   379→          || html.match(/id=["']aplus["'][^>]*>([\s\S]*?)<\/div>/i);
+   380→        if (aplusMatch) description = stripHtml(aplusMatch[1]).substring(0, 5000);
+   381→      }
+   382→
+   383→      // -- Seller --------------------------------------------------------
+   384→      let seller: string | null = regexMatch(html, /id=["']sellerProfileTriggerId["'][^>]*>([\s\S]*?)<\/a>/i, 1);
+   385→      if (!seller) seller = regexMatch(html, /id=["']merchant-info["'][^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i, 1) || null;
+   386→      if (!seller) seller = regexMatch(html, /id=["']bylineInfo["'][^>]*>([\s\S]*?)<\/a>/i, 1)
+   387→        || regexMatch(html, /id=["']bylineInfo["'][^>]*>([\s\S]*?)<\/span>/i, 1) || null;
+   388→      if (seller) seller = stripHtml(seller);
+   389→
+   390→      // -- Breadcrumbs ---------------------------------------------------
+   391→      const breadcrumbs: string[] = [];
+   392→      const crumbSection = html.match(/id=["']wayfinding-breadcrumbs_container["'][^>]*>([\s\S]*?)<\/div>/i);
+   393→      if (crumbSection) {
+   394→        const crumbAnchors = crumbSection[1].matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi);
+   395→        for (const ca of crumbAnchors) {
+   396→          const text = stripHtml(ca[1]);
+   397→          if (text) breadcrumbs.push(text);
+   398→        }
+   399→      }
+   400→
+   401→      // -- JSON-LD fallback for missing fields ---------------------------
+   402→      const ldProduct = extractLdJson(html, 'product');
+   403→      if (ldProduct) {
+   404→        if (!title && ldProduct.name) title = ldProduct.name;
+   405→        if (price === null && ldProduct.offers) {
+   406→          const offer = Array.isArray(ldProduct.offers) ? ldProduct.offers[0] : ldProduct.offers;
+   407→          if (offer?.price) price = parseFloat(offer.price);
+   408→          if (offer?.priceCurrency) currency = offer.priceCurrency;
+   409→        }
+   410→        if (rating === null && ldProduct.aggregateRating?.ratingValue) {
+   411→          rating = parseFloat(ldProduct.aggregateRating.ratingValue);
+   412→        }
+   413→        if (reviewCount === null && ldProduct.aggregateRating?.reviewCount) {
+   414→          reviewCount = parseInt(ldProduct.aggregateRating.reviewCount, 10);
+   415→        }
+   416→        if (images.length === 0 && ldProduct.image) {
+   417→          const imgs = Array.isArray(ldProduct.image) ? ldProduct.image : [ldProduct.image];
+   418→          for (const img of imgs) {
+   419→            const src = typeof img === 'string' ? img : img?.url || '';
+   420→            if (src && !images.includes(src)) images.push(src);
+   421→          }
+   422→        }
+   423→        if (!description && ldProduct.description) {
+   424→          description = String(ldProduct.description).substring(0, 5000);
+   425→        }
+   426→        if (!seller && ldProduct.brand?.name) {
+   427→          seller = ldProduct.brand.name;
+   428→        }
+   429→      }
+   430→
+   431→      return {
+   432→        title,
+   433→        price,
+   434→        currency,
+   435→        originalPrice,
+   436→        rating,
+   437→        reviewCount,
+   438→        availability,
+   439→        asin: asin || null,
+   440→        images,
+   441→        features,
+   442→        description,
+   443→        seller,
+   444→        breadcrumbs,
+   445→      };
+   446→    } catch (err) {
+   447→      logger.error({ err: (err as Error).message }, 'Amazon product extraction failed');
+   448→      return {};
+   449→    }
+   450→  },
+   451→};
+   452→
+   453→// --------------------------------------------------------------------------------
+   454→// 2. Google SERP
+   455→// --------------------------------------------------------------------------------
+   456→
+   457→const googleSerpTemplate: ScraperTemplate = {
+   458→  id: 'google_serp',
+   459→  name: 'Google SERP',
+   460→  description: 'Extract search results from Google search engine results pages including organic results, ads, knowledge panel data, People Also Ask, and related searches.',
+   461→  domainPatterns: ['google.com/search', 'google.co.uk/search', 'google.de/search', 'google.fr/search', 'google.co.jp/search', 'google.com.au/search', 'google.ca/search', 'google.com.br/search', 'google.com.mx/search', 'google.nl/search'],
+   462→  outputSchema: {
+   463→    query: 'Search query',
+   464→    organicResults: 'Array of { position, title, url, snippet }',
+   465→    ads: 'Array of { title, url, snippet }',
+   466→    knowledgePanel: 'Knowledge graph data object or null',
+   467→    peopleAlsoAsk: 'Array of question strings',
+   468→    relatedSearches: 'Array of related search strings',
+   469→    totalResults: 'Estimated total result count (integer or null)',
+   470→  },
+   471→  requiredStrategy: 'http',
+   472→  requiredProxyTier: 'datacenter',
+   473→
+   474→  extract(html: string, url: string): Record<string, any> {
+   475→    try {
+   476→      // -- Query from URL ------------------------------------------------
+   477→      let query = '';
+   478→      try {
+   479→        const urlObj = new URL(url);
+   480→        query = urlObj.searchParams.get('q') || '';
+   481→      } catch { /* ignore */ }
+   482→      if (!query) query = regexMatch(html, /<input[^>]*name=["']q["'][^>]*value=["']([^"']*)["']/i, 1);
+   483→      query = decodeEntities(query);
+   484→
+   485→      // -- Total results -------------------------------------------------
+   486→      const totalResultsText = regexMatch(html, /id=["']result-stats["'][^>]*>([\s\S]*?)<\/div>/i, 1);
+   487→      const totalResultsMatch = totalResultsText.match(/([\d,]+)\s*results?/i)
+   488→        || totalResultsText.match(/About ([\d,]+)/i);
+   489→      const totalResults = totalResultsMatch ? parseInt(totalResultsMatch[1].replace(/,/g, ''), 10) : null;
+   490→
+   491→      // -- Organic results -----------------------------------------------
+   492→      const organicResults: Array<{ position: number; title: string; url: string; snippet: string }> = [];
+   493→      const resultBlocks = html.matchAll(/class=["'][^"']*\bg\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/gi);
+   494→
+   495→      // Fallback: use a simpler regex approach
+   496→      let position = 0;
+   497→      const simpleResults = html.matchAll(/<a[^>]*href=["'](\/url\?q=|\/search\?url=)?(https?:\/\/[^"']*?)["'][^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>/gi);
+   498→      for (const m of simpleResults) {
+   499→        position++;
+   500→        const rawUrl = m[2] || '';
+   501→        const title = decodeEntities(stripHtml(m[3]));
+   502→        // Skip internal Google URLs
+   503→        if (!title || rawUrl.includes('google.com') || rawUrl.includes('googleusercontent')) continue;
+   504→        organicResults.push({ position, title, url: rawUrl, snippet: '' });
+   505→      }
+   506→
+   507→      // Extract snippets -- look for description divs following result headers
+   508→      const snippetPattern = /class=["'][^"']*\bVwiC3b\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi;
+   509→      const snippets: string[] = [];
+   510→      let sm: RegExpExecArray | null;
+   511→      while ((sm = snippetPattern.exec(html)) !== null) {
+   512→        snippets.push(decodeEntities(stripHtml(sm[1])));
+   513→      }
+   514→      // Assign snippets to results by order
+   515→      for (let i = 0; i < organicResults.length && i < snippets.length; i++) {
+   516→        organicResults[i].snippet = snippets[i];
+   517→      }
+   518→
+   519→      // -- Ads -----------------------------------------------------------
+   520→      const ads: Array<{ title: string; url: string; snippet: string }> = [];
+   521→      const adBlocks = html.matchAll(/class=["'][^"']*\buEierd\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi);
+   522→      for (const ab of adBlocks) {
+   523→        const adTitle = regexMatch(ab[1], /<h3[^>]*>([\s\S]*?)<\/h3>/i, 1);
+   524→        const adUrl = regexMatch(ab[1], /<a[^>]*href=["']([^"']*)["']/i, 1);
+   525→        const adSnippet = regexMatch(ab[1], /class=["'][^"']*\bVwiC3b\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   526→        if (adTitle) {
+   527→          ads.push({
+   528→            title: decodeEntities(stripHtml(adTitle)),
+   529→            url: adUrl,
+   530→            snippet: decodeEntities(stripHtml(adSnippet)),
+   531→          });
+   532→        }
+   533→      }
+   534→
+   535→      // -- People Also Ask -----------------------------------------------
+   536→      const peopleAlsoAsk: string[] = [];
+   537→      const paaPattern = /class=["'][^"']*\brelated-question-pair\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/gi;
+   538→      let paaM: RegExpExecArray | null;
+   539→      while ((paaM = paaPattern.exec(html)) !== null) {
+   540→        const q = decodeEntities(stripHtml(paaM[1]));
+   541→        if (q && q.endsWith('?') && !peopleAlsoAsk.includes(q)) peopleAlsoAsk.push(q);
+   542→      }
+   543→
+   544→      // Fallback PAA regex
+   545→      if (peopleAlsoAsk.length === 0) {
+   546→        const paaAlt = html.matchAll(/class=["'][^"']*\bJlqpRe\b[^"']*["'][^>]*><span[^>]*>([\s\S]*?)<\/span>/gi);
+   547→        for (const pm of paaAlt) {
+   548→          const q = decodeEntities(stripHtml(pm[1]));
+   549→          if (q && q.endsWith('?') && !peopleAlsoAsk.includes(q)) peopleAlsoAsk.push(q);
+   550→        }
+   551→      }
+   552→
+   553→      // -- Related searches ----------------------------------------------
+   554→      const relatedSearches: string[] = [];
+   555→      const relPattern = /class=["'][^"']*\bA7Y9pd\b[^"']*["'][^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/gi;
+   556→      let relM: RegExpExecArray | null;
+   557→      while ((relM = relPattern.exec(html)) !== null) {
+   558→        const s = decodeEntities(stripHtml(relM[1]));
+   559→        if (s && !relatedSearches.includes(s)) relatedSearches.push(s);
+   560→      }
+   561→
+   562→      // -- Knowledge panel -----------------------------------------------
+   563→      let knowledgePanel: Record<string, any> | null = null;
+   564→      const kpMatch = html.match(/class=["'][^"']*\bkp-blk\b[^"']*["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>\s*<\/div>/i);
+   565→      if (kpMatch) {
+   566→        const kpTitle = regexMatch(kpMatch[1], /<span[^>]*>[\s\S]*?<\/span>/i, 1);
+   567→        const kpDesc = regexMatch(kpMatch[1], /class=["'][^"']*\bkno-fv\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   568→        knowledgePanel = {
+   569→          title: decodeEntities(stripHtml(kpTitle)),
+   570→          description: decodeEntities(stripHtml(kpDesc)),
+   571→        };
+   572→      }
+   573→
+   574→      // JSON-LD for SERP
+   575→      const ldSerp = extractLdJson(html, 'searchresultspage');
+   576→      if (ldSerp && !query) {
+   577→        query = ldSerp.query || '';
+   578→      }
+   579→
+   580→      return {
+   581→        query,
+   582→        organicResults,
+   583→        ads,
+   584→        knowledgePanel,
+   585→        peopleAlsoAsk,
+   586→        relatedSearches,
+   587→        totalResults,
+   588→      };
+   589→    } catch (err) {
+   590→      logger.error({ err: (err as Error).message }, 'Google SERP extraction failed');
+   591→      return {};
+   592→    }
+   593→  },
+   594→};
+   595→
+   596→// --------------------------------------------------------------------------------
+   597→// 3. LinkedIn Profile
+   598→// --------------------------------------------------------------------------------
+   599→
+   600→const linkedinProfileTemplate: ScraperTemplate = {
+   601→  id: 'linkedin_profile',
+   602→  name: 'LinkedIn Profile',
+   603→  description: 'Extract professional profile data from LinkedIn including name, headline, location, about section, experience, education, and skills.',
+   604→  domainPatterns: ['linkedin.com/in/', 'linkedin.com/pub/'],
+   605→  outputSchema: {
+   606→    name: 'Full name',
+   607→    headline: 'Professional headline / title',
+   608→    location: 'Geographic location',
+   609→    about: 'About / summary section text',
+   610→    experience: 'Array of { company, title, startDate, endDate, duration }',
+   611→    education: 'Array of { school, degree, field, startYear, endYear }',
+   612→    skills: 'Array of skill names',
+   613→  },
+   614→  requiredStrategy: 'stealth-browser',
+   615→  requiredProxyTier: 'residential',
+   616→
+   617→  extract(html: string, _url: string): Record<string, any> {
+   618→    try {
+   619→      // -- Name ----------------------------------------------------------
+   620→      let name = regexMatch(html, /class=["'][^"']*\btext-heading-xlarge\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i, 1);
+   621→      if (!name) name = regexMatch(html, /class=["'][^"']*\bpv-top-card--list\b[^"']*["'][^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i, 1);
+   622→      if (!name) name = extractOg(html, 'title');
+   623→      name = decodeEntities(stripHtml(name));
+   624→
+   625→      // -- Headline ------------------------------------------------------
+   626→      let headline = regexMatch(html, /class=["'][^"']*\btext-body-medium\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1);
+   627→      if (!headline) headline = regexMatch(html, /class=["'][^"']*\bmt1\b[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*\btext-body-medium\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1);
+   628→      headline = decodeEntities(stripHtml(headline));
+   629→
+   630→      // -- Location ------------------------------------------------------
+   631→      let location = regexMatch(html, /class=["'][^"']*\btext-body-small\b[^"']*["'][^>]*style[^>]*>([\s\S]*?)<\/span>/i, 1);
+   632→      if (!location) location = regexMatch(html, /class=["'][^"']*\btext-body-small-inline\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   633→      location = decodeEntities(stripHtml(location));
+   634→
+   635→      // -- About ---------------------------------------------------------
+   636→      let about = '';
+   637→      const aboutSection = html.match(/class=["'][^"']*\bpv-about-section\b[^"']*["'][^>]*>([\s\S]*?)<\/section>/i);
+   638→      if (aboutSection) about = stripHtml(aboutSection[1]).substring(0, 5000);
+   639→      if (!about) {
+   640→        const aboutDiv = html.match(/class=["'][^"']*\binline-show-more-text\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i);
+   641→        if (aboutDiv) about = stripHtml(aboutDiv[1]).substring(0, 5000);
+   642→      }
+   643→
+   644→      // -- Experience ----------------------------------------------------
+   645→      const experience: Array<{ company: string; title: string; startDate: string; endDate: string; duration: string }> = [];
+   646→      const expBlocks = html.matchAll(/class=["'][^"']*\bpv-entity__position-group-pager\b[^"']*["'][^>]*>([\s\S]*?)<\/li>/gi);
+   647→      for (const eb of expBlocks) {
+   648→        const expTitle = regexMatch(eb[1], /class=["'][^"']*\bt-16\b[^"']*["'][^>]*>([\s\S]*?)<\/h3>/i, 1)
+   649→          || regexMatch(eb[1], /class=["'][^"']*\bmr1\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   650→        const expCompany = regexMatch(eb[1], /class=["'][^"']*\bpv-entity__secondary-title\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+   651→          || regexMatch(eb[1], /class=["'][^"']*\bt-14\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   652→        const expDate = regexMatch(eb[1], /class=["'][^"']*\bpv-entity__date-range\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   653→        const expDuration = regexMatch(eb[1], /class=["'][^"']*\bpv-entity__bullet-item-v2\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+   654→
+   655→        experience.push({
+   656→          company: decodeEntities(stripHtml(expCompany)),
+   657→          title: decodeEntities(stripHtml(expTitle)),
+   658→          startDate: '',
+   659→          endDate: '',
+   660→          duration: decodeEntities(stripHtml(expDuration || expDate)),
+   661→        });
+   662→      }
+   663→
+   664→      // -- Education -----------------------------------------------------
+   665→      const education: Array<{ school: string; degree: string; field: string; startYear: string; endYear: string }> = [];
+   666→      const eduBlocks = html.matchAll(/class=["'][^"']*\bpv-entity__degree-info\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi);
+   667→      for (const db of eduBlocks) {
+   668→        const school = regexMatch(db[1], /class=["'][^"']*\bpv-entity__school-name\b[^"']*["'][^>]*>([\s\S]*?)<\/h3>/i, 1);
+   669→        const degree = regexMatch(db[1], /class=["'][^"']*\bpv-entity__degree-name\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   670→        const field = regexMatch(db[1], /class=["'][^"']*\bpv-entity__fos\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   671→        const dates = regexMatch(db[1], /class=["'][^"']*\bpv-entity__dates\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i, 1);
+   672→
+   673→        const yearMatch = dates.match(/(\d{4})\s*[-–]\s*(\d{4}|Present)/i);
+   674→        education.push({
+   675→          school: decodeEntities(stripHtml(school)),
+   676→          degree: decodeEntities(stripHtml(degree)),
+   677→          field: decodeEntities(stripHtml(field)),
+   678→          startYear: yearMatch ? yearMatch[1] : '',
+   679→          endYear: yearMatch ? yearMatch[2] : '',
+   680→        });
+   681→      }
+   682→
+   683→      // -- Skills --------------------------------------------------------
+   684→      const skills: string[] = [];
+   685→      const skillPattern = /class=["'][^"']*\bpv-skill-category-entity\b[^"']*["'][^>]*>[\s\S]*?class=["'][^"']*\bpv-skill-category-entity__name-text\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi;
+   686→      let skM: RegExpExecArray | null;
+   687→      while ((skM = skillPattern.exec(html)) !== null) {
+   688→        const skill = decodeEntities(stripHtml(skM[1]));
+   689→        if (skill) skills.push(skill);
+   690→      }
+   691→
+   692→      // Fallback: skill tokens from the page
+   693→      if (skills.length === 0) {
+   694→        const skillAlt = html.matchAll(/class=["'][^"']*\bpv-skill-entity__skill-name\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/gi);
+   695→        for (const sa of skillAlt) {
+   696→          const skill = decodeEntities(stripHtml(sa[1]));
+   697→          if (skill) skills.push(skill);
+   698→        }
+   699→      }
+   700→
+   701→      // -- JSON-LD fallback ----------------------------------------------
+   702→      const ldPerson = extractLdJson(html, 'person');
+   703→      if (ldPerson) {
+   704→        if (!name && ldPerson.name) name = ldPerson.name;
+   705→        if (!headline && ldPerson.jobTitle) headline = Array.isArray(ldPerson.jobTitle) ? ldPerson.jobTitle.join(', ') : ldPerson.jobTitle;
+   706→        if (!location && ldPerson.address) {
+   707→          const addr = ldPerson.address;
+   708→          location = typeof addr === 'string' ? addr : `${addr.addressLocality || ''}, ${addr.addressCountry || ''}`.replace(/^,\s*|,\s*$/g, '');
+   709→        }
+   710→      }
+   711→
+   712→      return { name, headline, location, about, experience, education, skills };
+   713→    } catch (err) {
+   714→      logger.error({ err: (err as Error).message }, 'LinkedIn profile extraction failed');
+   715→      return {};
+   716→    }
+   717→  },
+   718→};
+   719→
+   720→// --------------------------------------------------------------------------------
+   721→// 4. Twitter / X Tweet
+   722→// --------------------------------------------------------------------------------
+   723→
+   724→const twitterTweetTemplate: ScraperTemplate = {
+   725→  id: 'twitter_tweet',
+   726→  name: 'Twitter / X Tweet',
+   727→  description: 'Extract tweet data from Twitter/X including username, display name, text, timestamp, engagement metrics, hashtags, mentions, and images.',
+   728→  domainPatterns: ['twitter.com/', 'x.com/'],
+   729→  outputSchema: {
+   730→    username: 'Handle (e.g. @elonmusk)',
+   731→    displayName: 'Display name',
+   732→    tweetText: 'Full tweet text',
+   733→    timestamp: 'ISO timestamp of the tweet',
+   734→    likes: 'Number of likes (integer)',
+   735→    retweets: 'Number of retweets (integer)',
+   736→    replies: 'Number of replies (integer)',
+   737→    views: 'Number of views / impressions (integer)',
+   738→    hashtags: 'Array of hashtag strings (without #)',
+   739→    mentions: 'Array of mentioned usernames (without @)',
+   740→    images: 'Array of image URLs',
+   741→    isRetweet: 'Whether this is a retweet',
+   742→    quoteTweetUrl: 'URL of quoted tweet if this is a quote tweet',
+   743→  },
+   744→  requiredStrategy: 'stealth-browser',
+   745→  requiredProxyTier: 'residential',
+   746→
+   747→  extract(html: string, url: string): Record<string, any> {
+   748→    try {
+   749→      // -- Open Graph / meta fallbacks (most reliable for Twitter) -------
+   750→      let displayName = extractOg(html, 'title');
+   751→      if (displayName) {
+   752→        // OG title format is usually "Username on X: ..." or "Username on Twitter: ..."
+   753→        displayName = displayName.replace(/\s+on\s+(X|Twitter)\s*:.*/i, '').trim();
+   754→      }
+   755→
+   756→      let tweetText = extractOg(html, 'description');
+   757→      if (tweetText) tweetText = decodeEntities(tweetText);
+   758→
+   759→      const ogImage = extractOg(html, 'image');
+   760→
+   761→      // -- Username from URL ---------------------------------------------
+   762→      let username = '';
+   763→      const urlMatch = url.match(/(?:twitter\.com|x\.com)\/([^/]+)\/status\//i);
+   764→      if (urlMatch) username = '@' + urlMatch[1];
+   765→
+   766→      // -- From embedded JSON data ---------------------------------------
+   767→      const tweetDataMatch = html.match(/<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+   768→      if (tweetDataMatch) {
+   769→        try {
+   770→          const jsonData = JSON.parse(tweetDataMatch[1]);
+   771→          const tweetResults = jsonData?.props?.pageProps?.tweetResult?.result;
+   772→          if (tweetResults) {
+   773→            const legacy = tweetResults?.legacy || tweetResults?.tweet?.legacy;
+   774→            const core = tweetResults?.core?.user_results?.result?.legacy
+   775→              || tweetResults?.tweet?.core?.user_results?.result?.legacy;
+   776→
+   777→            if (core) {
+   778→              username = '@' + (core.screen_name || '');
+   779→              displayName = core.name || displayName;
+   780→            }
+   781→            if (legacy) {
+   782→              tweetText = legacy.full_text || tweetText;
+   783→              // Parse timestamp
+   784→              const createdAt = legacy.created_at || '';
+   785→              // Engagement
+   786→              const likes = legacy.favorite_count ?? null;
+   787→              const retweets = legacy.retweet_count ?? null;
+   788→              const replies = legacy.reply_count ?? null;
+   789→              const views = tweetResults?.views?.count
+   790→                || tweetResults?.tweet?.views?.count
+   791→                || null;
+   792→
+   793→              const hashtags = (legacy.entities?.hashtags || []).map((h: any) => h.text);
+   794→              const mentions = (legacy.entities?.user_mentions || []).map((m: any) => '@' + m.screen_name);
+   795→              const images: string[] = (legacy.entities?.media || [])
+   796→                .filter((m: any) => m.type === 'photo')
+   797→                .map((m: any) => m.media_url_https || m.media_url);
+   798→
+   799→              const isRetweet = !!legacy.retweeted_status_id_str;
+   800→              const quoteTweetUrl = legacy.quoted_status_id_str
+   801→                ? `https://x.com/i/status/${legacy.quoted_status_id_str}`
+   802→                : null;
+   803→
+   804→              return {
+   805→                username,
+   806→                displayName,
+   807→                tweetText: decodeEntities(tweetText),
+   808→                timestamp: createdAt,
+   809→                likes: typeof likes === 'number' ? likes : parseNumber(String(likes)),
+   810→                retweets: typeof retweets === 'number' ? retweets : parseNumber(String(retweets)),
+   811→                replies: typeof replies === 'number' ? replies : parseNumber(String(replies)),
+   812→                views: typeof views === 'number' ? views : parseNumber(String(views)),
+   813→                hashtags,
+   814→                mentions,
+   815→                images,
+   816→                isRetweet,
+   817→                quoteTweetUrl,
+   818→              };
+   819→            }
+   820→          }
+   821→        } catch {
+   822→          // Fall through to regex extraction
+   823→        }
+   824→      }
+   825→
+   826→      // -- Regex-based fallback extraction -------------------------------
+   827→      if (!username) {
+   828→        const handleMatch = html.match(/class=["'][^"']*\busername\b[^"']*["'][^>]*>[\s\S]*?@([\w]+)/i);
+   829→        if (handleMatch) username = '@' + handleMatch[1];
+   830→      }
+   831→
+   832→      // Hashtags and mentions from tweet text
+   833→      const hashtags = (tweetText.match(/#(\w+)/g) || []).map(h => h.substring(1));
+   834→      const mentions = (tweetText.match(/@(\w{1,15})/g) || []).map(m => m);
+   835→
+   836→      // Engagement metrics from HTML
+   837→      const likesText = regexMatch(html, /class=["'][^"']*\blike\b[^"']*["'][^>]*>[\s\S]*?(\d[\d,]*)/i, 1)
+   838→        || regexMatch(html, /data-favorite-count=["'](\d+)["']/i, 1);
+   839→      const retweetsText = regexMatch(html, /class=["'][^"']*\bretweet\b[^"']*["'][^>]*>[\s\S]*?(\d[\d,]*)/i, 1)
+   840→        || regexMatch(html, /data-retweet-count=["'](\d+)["']/i, 1);
+   841→      const repliesText = regexMatch(html, /class=["'][^"']*\breply\b[^"']*["'][^>]*>[\s\S]*?(\d[\d,]*)/i, 1);
+   842→
+   843→      // Timestamp
+   844→      const timestamp = regexMatch(html, /datetime=["']([^"']*)["']/i, 1)
+   845→        || regexMatch(html, /data-time=["'](\d+)["']/i, 1)
+   846→        || extractMetaProperty(html, 'article:published_time');
+   847→
+   848→      // Images
+   849→      const images: string[] = [];
+   850→      if (ogImage) images.push(ogImage);
+   851→      const imgMatches = html.matchAll(/class=["'][^"']*\btweet-photo\b[^"']*["'][^>]*src=["']([^"']*)["']/gi);
+   852→      for (const im of imgMatches) {
+   853→        if (im[1] && !images.includes(im[1])) images.push(im[1]);
+   854→      }
+   855→
+   856→      const isRetweet = /class=["'][^"']*\bretweet\b[^"']*["']/i.test(html)
+   857→        || tweetText.startsWith('RT @');
+   858→
+   859→      return {
+   860→        username,
+   861→        displayName,
+   862→        tweetText,
+   863→        timestamp,
+   864→        likes: parseNumber(likesText),
+   865→        retweets: parseNumber(retweetsText),
+   866→        replies: parseNumber(repliesText),
+   867→        views: null,
+   868→        hashtags,
+   869→        mentions,
+   870→        images,
+   871→        isRetweet,
+   872→        quoteTweetUrl: null,
+   873→      };
+   874→    } catch (err) {
+   875→      logger.error({ err: (err as Error).message }, 'Twitter tweet extraction failed');
+   876→      return {};
+   877→    }
+   878→  },
+   879→};
+   880→
+   881→// --------------------------------------------------------------------------------
+   882→// 5. Zillow Listing
+   883→// --------------------------------------------------------------------------------
+   884→
+   885→const zillowListingTemplate: ScraperTemplate = {
+   886→  id: 'zillow_listing',
+   887→  name: 'Zillow Listing',
+   888→  description: 'Extract property listing data from Zillow including address, price, beds, baths, sqft, year built, home type, agent, images, and description.',
+   889→  domainPatterns: ['zillow.com/homedetails/', 'zillow.com/home/', 'zillow.com/b/'],
+   890→  outputSchema: {
+   891→    address: 'Full property address',
+   892→    price: 'List price (number)',
+   893→    beds: 'Number of bedrooms (integer)',
+   894→    baths: 'Number of bathrooms (number)',
+   895→    sqft: 'Square footage (integer)',
+   896→    yearBuilt: 'Year the home was built (integer)',
+   897→    homeType: 'Type of home (House, Apartment, Condo, etc.)',
+   898→    agent: 'Listing agent name',
+   899→    images: 'Array of image URLs',
+   900→    description: 'Property description text',
+   901→    priceHistory: 'Array of { date, price, event }',
+   902→    zestimate: 'Zillow estimated value (number)',
+   903→  },
+   904→  requiredStrategy: 'browser',
+   905→  requiredProxyTier: 'residential',
+   906→
+   907→  extract(html: string, url: string): Record<string, any> {
+   908→    try {
+   909→      // -- Extract from embedded JSON (Zillow puts everything in __NEXT_DATA__ or hdpApolloPreloadedData) --
+   910→      let address = '';
+   911→      let price: number | null = null;
+   912→      let beds: number | null = null;
+   913→      let baths: number | null = null;
+   914→      let sqft: number | null = null;
+   915→      let yearBuilt: number | null = null;
+   916→      let homeType = '';
+   917→      let agent = '';
+   918→      let zestimate: number | null = null;
+   919→      const images: string[] = [];
+   920→      let description = '';
+   921→      const priceHistory: Array<{ date: string; price: number; event: string }> = [];
+   922→
+   923→      // Try hdpApolloPreloadedData
+   924→      const apolloMatch = html.match(/id=["']hdpApolloPreloadedData["'][^>]*>([\s\S]*?)<\/script>/i);
+   925→      if (apolloMatch) {
+   926→        try {
+   927→          const apolloData = JSON.parse(apolloMatch[1]);
+   928→          // Navigate the Apollo cache for property data
+   929→          const cache = apolloData?.apiCache || apolloData;
+   930→          const propertyKey = Object.keys(cache || {}).find(k => k.includes('VariantMarketHdp'));
+   931→          if (propertyKey) {
+   932→            const propData = cache[propertyKey]?.property;
+   933→            if (propData) {
+   934→              address = propData.address?.streetAddress || propData.address?.full || '';
+   935→              if (propData.address?.city) address += ', ' + propData.address.city;
+   936→              if (propData.address?.state) address += ', ' + propData.address.state;
+   937→              if (propData.address?.zipcode) address += ' ' + propData.address.zipcode;
+   938→              price = propData.price ?? null;
+   939→              beds = propData.bedrooms ?? null;
+   940→              baths = propData.bathrooms ?? null;
+   941→              sqft = propData.livingArea ?? propData.livingAreaValue ?? null;
+   942→              yearBuilt = propData.yearBuilt ?? null;
+   943→              homeType = propData.homeType || '';
+   944→              description = propData.description || '';
+   945→              zestimate = propData.zestimate ?? null;
+   946→              if (propData.attributionInfo?.agentName) agent = propData.attributionInfo.agentName;
+   947→            }
+   948→          }
+   949→        } catch {
+   950→          // Fall through
+   951→        }
+   952→      }
+   953→
+   954→      // Try __NEXT_DATA__
+   955→      const nextDataMatch = html.match(/id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i);
+   956→      if (nextDataMatch) {
+   957→        try {
+   958→          const nextData = JSON.parse(nextDataMatch[1]);
+   959→          const props = nextData?.props?.pageProps?.componentProps;
+   960→          const zdpData = props?.zdpData || props;
+   961→          if (zdpData) {
+   962→            const homeInfo = zdpData.homeInfo || zdpData.property;
+   963→            if (homeInfo) {
+   964→              if (!address) address = homeInfo.address || homeInfo.streetAddress || '';
+   965→              if (price === null) price = homeInfo.price ?? homeInfo.listPrice ?? null;
+   966→              if (beds === null) beds = homeInfo.bedrooms ?? null;
+   967→              if (baths === null) baths = homeInfo.bathrooms ?? null;
+   968→              if (sqft === null) sqft = homeInfo.livingArea ?? homeInfo.livingAreaValue ?? null;
+   969→              if (yearBuilt === null) yearBuilt = homeInfo.yearBuilt ?? null;
+   970→              if (!homeType) homeType = homeInfo.homeType || '';
+   971→              if (!description) description = homeInfo.description || '';
+   972→              if (zestimate === null) zestimate = homeInfo.zestimate ?? null;
+   973→            }
+   974→          }
+   975→        } catch {
+   976→          // Fall through
+   977→        }
+   978→      }
+   979→
+   980→      // -- Regex fallbacks -----------------------------------------------
+   981→      if (!address) {
+   982→        address = regexMatch(html, /class=["'][^"']*\bds-address-container\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i, 1)
+   983→          || extractOg(html, 'title');
+   984→        address = decodeEntities(stripHtml(address));
+   985→      }
+   986→
+   987→      if (price === null) {
+   988→        const priceText = regexMatch(html, /class=["'][^"']*\bds-value\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+   989→          || regexMatch(html, /class=["'][^"']*\bds-home-details\b[^"']*["'][^>]*>[\s\S]*?\$([\d,]+)/i, 1);
+   990→        price = parseNumber(priceText ? '$' + priceText : '');
+   991→        if (price === null) {
+   992→          const rawPrice = regexMatch(html, /\$([\d,]+(?:\.\d+)?)/, 1);
+   993→          if (rawPrice) price = parseNumber(rawPrice);
+   994→        }
+   995→      }
+   996→
+   997→      if (beds === null) {
+   998→        const bedsText = regexMatch(html, /(\d+)\s*(?:bd|bed(?:room)?s?)\b/i, 1);
+   999→        if (bedsText) beds = parseInt(bedsText, 10);
+  1000→      }
+  1001→
+  1002→      if (baths === null) {
+  1003→        const bathsText = regexMatch(html, /(\d+(?:\.\d+)?)\s*(?:ba|bath(?:room)?s?)\b/i, 1);
+  1004→        if (bathsText) baths = parseFloat(bathsText);
+  1005→      }
+  1006→
+  1007→      if (sqft === null) {
+  1008→        const sqftText = regexMatch(html, /([\d,]+)\s*(?:sqft|sq\.?\s*ft\.?|square\s*feet)/i, 1);
+  1009→        if (sqftText) sqft = parseInt(sqftText.replace(/,/g, ''), 10);
+  1010→      }
+  1011→
+  1012→      if (yearBuilt === null) {
+  1013→        const yearText = regexMatch(html, /built\s*(?:in|:)\s*(\d{4})/i, 1)
+  1014→          || regexMatch(html, /year\s*built[:\s]*(\d{4})/i, 1);
+  1015→        if (yearText) yearBuilt = parseInt(yearText, 10);
+  1016→      }
+  1017→
+  1018→      if (!homeType) {
+  1019→        const typeMatch = html.match(/class=["'][^"']*\bds-home-fact\b[^"']*["'][^>]*>[\s\S]*?(House|Condo|Apartment|Townhouse|Manufactured|Lot)/i);
+  1020→        if (typeMatch) homeType = typeMatch[1];
+  1021→      }
+  1022→
+  1023→      if (!agent) {
+  1024→        agent = regexMatch(html, /class=["'][^"']*\bagent-name\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+  1025→          || regexMatch(html, /listing\s*agent[:\s]*([^\n<]{3,50})/i, 1);
+  1026→        agent = stripHtml(agent);
+  1027→      }
+  1028→
+  1029→      if (!description) {
+  1030→        description = regexMatch(html, /class=["'][^"']*\bds-home-description\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1);
+  1031→        if (description) description = stripHtml(description).substring(0, 5000);
+  1032→      }
+  1033→
+  1034→      // Images
+  1035→      if (images.length === 0) {
+  1036→        const ogImg = extractOg(html, 'image');
+  1037→        if (ogImg) images.push(ogImg);
+  1038→        const imgMatches = html.matchAll(/class=["'][^"']*\bmedia-stream-image\b[^"']*["'][^>]*src=["']([^"']*)["']/gi);
+  1039→        for (const im of imgMatches) {
+  1040→          if (im[1] && !images.includes(im[1])) images.push(im[1]);
+  1041→        }
+  1042→      }
+  1043→
+  1044→      return {
+  1045→        address,
+  1046→        price,
+  1047→        beds,
+  1048→        baths,
+  1049→        sqft,
+  1050→        yearBuilt,
+  1051→        homeType,
+  1052→        agent,
+  1053→        images,
+  1054→        description,
+  1055→        priceHistory,
+  1056→        zestimate,
+  1057→      };
+  1058→    } catch (err) {
+  1059→      logger.error({ err: (err as Error).message }, 'Zillow listing extraction failed');
+  1060→      return {};
+  1061→    }
+  1062→  },
+  1063→};
+  1064→
+  1065→// --------------------------------------------------------------------------------
+  1066→// 6. YouTube Video
+  1067→// --------------------------------------------------------------------------------
+  1068→
+  1069→const youtubeVideoTemplate: ScraperTemplate = {
+  1070→  id: 'youtube_video',
+  1071→  name: 'YouTube Video',
+  1072→  description: 'Extract video metadata from YouTube including title, channel, views, likes, upload date, description, tags, duration, and thumbnail.',
+  1073→  domainPatterns: ['youtube.com/watch', 'youtu.be/', 'youtube.com/shorts/', 'm.youtube.com/watch'],
+  1074→  outputSchema: {
+  1075→    title: 'Video title',
+  1076→    channel: 'Channel name',
+  1077→    channelId: 'Channel ID',
+  1078→    views: 'View count (integer)',
+  1079→    likes: 'Like count (integer)',
+  1080→    uploadDate: 'Upload date (ISO string)',
+  1081→    description: 'Video description text',
+  1082→    tags: 'Array of tag strings',
+  1083→    duration: 'Duration in seconds (integer)',
+  1084→    durationFormatted: 'Duration formatted as HH:MM:SS',
+  1085→    thumbnail: 'Thumbnail image URL',
+  1086→    category: 'Video category',
+  1087→  },
+  1088→  requiredStrategy: 'browser',
+  1089→  requiredProxyTier: 'datacenter',
+  1090→
+  1091→  extract(html: string, url: string): Record<string, any> {
+  1092→    try {
+  1093→      // -- Try ytInitialPlayerResponse (most reliable) -------------------
+  1094→      let title = '';
+  1095→      let channel = '';
+  1096→      let channelId = '';
+  1097→      let views: number | null = null;
+  1098→      let likes: number | null = null;
+  1099→      let uploadDate = '';
+  1100→      let description = '';
+  1101→      let tags: string[] = [];
+  1102→      let duration: number | null = null;
+  1103→      let durationFormatted = '';
+  1104→      let thumbnail = '';
+  1105→      let category = '';
+  1106→
+  1107→      const playerMatch = html.match(/ytInitialPlayerResponse\s*=\s*({[\s\S]*?});\s*(?:var|let|const|\n)/i);
+  1108→      if (playerMatch) {
+  1109→        try {
+  1110→          const playerData = JSON.parse(playerMatch[1]);
+  1111→          const vd = playerData?.videoDetails;
+  1112→          if (vd) {
+  1113→            title = vd.title || '';
+  1114→            channel = vd.author || '';
+  1115→            channelId = vd.channelId || '';
+  1116→            views = parseInt(vd.viewCount, 10) || null;
+  1117→            description = vd.shortDescription || '';
+  1118→            tags = vd.keywords || [];
+  1119→            duration = parseInt(vd.lengthSeconds, 10) || null;
+  1120→          }
+  1121→          thumbnail = playerData?.videoDetails?.thumbnail?.thumbnails?.[0]?.url || '';
+  1122→        } catch {
+  1123→          // Fall through
+  1124→        }
+  1125→      }
+  1126→
+  1127→      // -- Try ytInitialData for engagement data -------------------------
+  1128→      const initialDataMatch = html.match(/ytInitialData\s*=\s*({[\s\S]*?});\s*(?:var|let|const|\n)/i);
+  1129→      if (initialDataMatch) {
+  1130→        try {
+  1131→          const initialData = JSON.parse(initialDataMatch[1]);
+  1132→          const contents = initialData?.contents?.twoColumnWatchNextResults?.results?.results?.contents;
+  1133→          if (contents) {
+  1134→            for (const content of contents) {
+  1135→              const primaryInfo = content?.videoPrimaryInfoRenderer;
+  1136→              if (primaryInfo) {
+  1137→                // Views
+  1138→                const viewText = primaryInfo.viewCount?.videoViewCountRenderer?.viewCount?.simpleText || '';
+  1139→                if (views === null) {
+  1140→                  const viewMatch = viewText.match(/([\d,]+)/);
+  1141→                  if (viewMatch) views = parseInt(viewMatch[1].replace(/,/g, ''), 10);
+  1142→                }
+  1143→                // Date
+  1144→                uploadDate = primaryInfo.dateText?.simpleText || uploadDate;
+  1145→                // Likes
+  1146→                const likeBtn = primaryInfo.videoActions?.menuRenderer?.topLevelButtons;
+  1147→                if (likeBtn) {
+  1148→                  for (const btn of likeBtn) {
+  1149→                    const likeText = btn?.toggleButtonRenderer?.defaultText?.accessibility?.accessibilityData?.label || '';
+  1150→                    const likeMatch = likeText.match(/([\d,]+)/);
+  1151→                    if (likeMatch && likes === null) {
+  1152→                      likes = parseInt(likeMatch[1].replace(/,/g, ''), 10);
+  1153→                    }
+  1154→                  }
+  1155→                }
+  1156→              }
+  1157→              const secInfo = content?.videoSecondaryInfoRenderer;
+  1158→              if (secInfo) {
+  1159→                if (!channel) channel = secInfo.owner?.videoOwnerRenderer?.title?.runs?.[0]?.text || '';
+  1160→                if (!channelId) channelId = secInfo.owner?.videoOwnerRenderer?.navigationEndpoint?.browseEndpoint?.browseId || '';
+  1161→                if (!description) {
+  1162→                  const descRuns = secInfo.attributedDescriptionBodyText?.content || '';
+  1163→                  if (descRuns) description = descRuns;
+  1164→                }
+  1165→              }
+  1166→            }
+  1167→          }
+  1168→        } catch {
+  1169→          // Fall through
+  1170→        }
+  1171→      }
+  1172→
+  1173→      // -- Duration formatted --------------------------------------------
+  1174→      if (duration !== null) {
+  1175→        const h = Math.floor(duration / 3600);
+  1176→        const m = Math.floor((duration % 3600) / 60);
+  1177→        const s = duration % 60;
+  1178→        durationFormatted = h > 0
+  1179→          ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+  1180→          : `${m}:${String(s).padStart(2, '0')}`;
+  1181→      }
+  1182→
+  1183→      // -- Meta tag / OG fallbacks ---------------------------------------
+  1184→      if (!title) title = decodeEntities(extractOg(html, 'title')) || extractMetaName(html, 'title');
+  1185→      if (!description) description = decodeEntities(extractOg(html, 'description'));
+  1186→      if (!thumbnail) thumbnail = extractOg(html, 'image');
+  1187→      if (!uploadDate) uploadDate = extractMetaProperty(html, 'video:release_date')
+  1188→        || extractMetaProperty(html, 'article:published_time');
+  1189→
+  1190→      // Category from meta
+  1191→      if (!category) category = extractMetaName(html, 'genre');
+  1192→
+  1193→      // Duration from meta if still missing
+  1194→      if (duration === null) {
+  1195→        const durMeta = extractMetaProperty(html, 'video:duration');
+  1196→        if (durMeta) duration = parseInt(durMeta, 10) || null;
+  1197→      }
+  1198→
+  1199→      return {
+  1200→        title,
+  1201→        channel,
+  1202→        channelId,
+  1203→        views,
+  1204→        likes,
+  1205→        uploadDate,
+  1206→        description,
+  1207→        tags,
+  1208→        duration,
+  1209→        durationFormatted,
+  1210→        thumbnail,
+  1211→        category,
+  1212→      };
+  1213→    } catch (err) {
+  1214→      logger.error({ err: (err as Error).message }, 'YouTube video extraction failed');
+  1215→      return {};
+  1216→    }
+  1217→  },
+  1218→};
+  1219→
+  1220→// --------------------------------------------------------------------------------
+  1221→// 7. Wikipedia Article
+  1222→// --------------------------------------------------------------------------------
+  1223→
+  1224→const wikipediaArticleTemplate: ScraperTemplate = {
+  1225→  id: 'wikipedia_article',
+  1226→  name: 'Wikipedia Article',
+  1227→  description: 'Extract article data from Wikipedia including title, introduction, infobox data, sections, categories, and last edited date.',
+  1228→  domainPatterns: ['wikipedia.org/wiki/'],
+  1229→  outputSchema: {
+  1230→    title: 'Article title',
+  1231→    intro: 'Introduction / lead section text',
+  1232→    infobox: 'Key-value pairs from the infobox',
+  1233→    sections: 'Array of { title, level, anchor }',
+  1234→    categories: 'Array of category names',
+  1235→    lastEdited: 'Last edited date string',
+  1236→    url: 'Canonical article URL',
+  1237→  },
+  1238→  requiredStrategy: 'http',
+  1239→  requiredProxyTier: 'datacenter',
+  1240→
+  1241→  extract(html: string, url: string): Record<string, any> {
+  1242→    try {
+  1243→      // -- Title ---------------------------------------------------------
+  1244→      let title = regexMatch(html, /id=["']firstHeading["'][^>]*>([\s\S]*?)<\/h1>/i, 1);
+  1245→      if (!title) title = extractOg(html, 'title');
+  1246→      title = decodeEntities(stripHtml(title));
+  1247→
+  1248→      // -- Intro / lead section ------------------------------------------
+  1249→      let intro = '';
+  1250→      const contentMatch = html.match(/id=["']mw-content-text["'][^>]*>([\s\S]*?)<\/div>\s*<\/div>/i);
+  1251→      if (contentMatch) {
+  1252→        // Extract paragraphs before the first <h2> or section heading
+  1253→        const leadSection = contentMatch[1].match(/^([\s\S]*?)(?:<h2|<div\s+class="[^"]*\bheading[^"]*")/i);
+  1254→        if (leadSection) {
+  1255→          const paragraphs = leadSection[1].matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
+  1256→          const introParts: string[] = [];
+  1257→          for (const p of paragraphs) {
+  1258→            const text = stripHtml(p[1]);
+  1259→            if (text && !text.startsWith('Coordinates:') && text.length > 10) {
+  1260→              introParts.push(text);
+  1261→            }
+  1262→          }
+  1263→          intro = introParts.join('\n\n').substring(0, 10000);
+  1264→        }
+  1265→      }
+  1266→      if (!intro) {
+  1267→        // Simple fallback: first significant paragraph
+  1268→        const firstP = html.match(/<p>([\s\S]*?)<\/p>/i);
+  1269→        if (firstP) intro = stripHtml(firstP[1]).substring(0, 10000);
+  1270→      }
+  1271→
+  1272→      // -- Infobox -------------------------------------------------------
+  1273→      const infobox: Record<string, string> = {};
+  1274→      const infoboxMatch = html.match(/class=["'][^"']*\binfobox\b[^"']*["'][^>]*>([\s\S]*?)<\/table>/i);
+  1275→      if (infoboxMatch) {
+  1276→        const rows = infoboxMatch[1].matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi);
+  1277→        for (const row of rows) {
+  1278→          const th = regexMatch(row[1], /<th[^>]*>([\s\S]*?)<\/th>/i, 1);
+  1279→          const td = regexMatch(row[1], /<td[^>]*>([\s\S]*?)<\/td>/i, 1);
+  1280→          if (th && td) {
+  1281→            const key = stripHtml(th);
+  1282→            const value = stripHtml(td);
+  1283→            if (key && value) infobox[key] = value;
+  1284→          }
+  1285→        }
+  1286→      }
+  1287→
+  1288→      // -- Sections ------------------------------------------------------
+  1289→      const sections: Array<{ title: string; level: number; anchor: string }> = [];
+  1290→      const headingPattern = /<h[23][^>]*>\s*<span[^>]*class=["'][^"']*\bmw-headline\b[^"']*["'][^>]*id=["']([^"']*)["'][^>]*>([\s\S]*?)<\/span>/gi;
+  1291→      let hM: RegExpExecArray | null;
+  1292→      while ((hM = headingPattern.exec(html)) !== null) {
+  1293→        const anchor = hM[1];
+  1294→        const headingText = stripHtml(hM[2]);
+  1295→        const level = html.indexOf(hM[0]) > -1 && html.substring(html.indexOf(hM[0]) - 20, html.indexOf(hM[0])).includes('<h2') ? 2 : 3;
+  1296→        if (headingText) sections.push({ title: headingText, level, anchor });
+  1297→      }
+  1298→
+  1299→      // -- Categories ----------------------------------------------------
+  1300→      const categories: string[] = [];
+  1301→      const catPattern = /class=["'][^"']*\bnew\b[^"']*["'][^>]*title=["']Category:([^"']*)["']/gi;
+  1302→      let cM: RegExpExecArray | null;
+  1303→      while ((cM = catPattern.exec(html)) !== null) {
+  1304→        if (cM[1]) categories.push(decodeEntities(cM[1].replace(/_/g, ' ')));
+  1305→      }
+  1306→      // Also try normal category links
+  1307→      const catPattern2 = /title=["']Category:([^"']*)["']/gi;
+  1308→      while ((cM = catPattern2.exec(html)) !== null) {
+  1309→        const cat = decodeEntities(cM[1].replace(/_/g, ' '));
+  1310→        if (cat && !categories.includes(cat)) categories.push(cat);
+  1311→      }
+  1312→
+  1313→      // -- Last edited ---------------------------------------------------
+  1314→      const lastEdited = regexMatch(html, /id=["']footer-info-lastmod["'][^>]*>([\s\S]*?)<\/li>/i, 1);
+  1315→      const lastEditedClean = stripHtml(lastEdited).replace(/^This page was last edited on\s*/i, '').trim();
+  1316→
+  1317→      // -- Canonical URL -------------------------------------------------
+  1318→      const canonicalUrl = regexMatch(html, /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i, 1);
+  1319→
+  1320→      return {
+  1321→        title,
+  1322→        intro,
+  1323→        infobox,
+  1324→        sections,
+  1325→        categories,
+  1326→        lastEdited: lastEditedClean,
+  1327→        url: canonicalUrl || url,
+  1328→      };
+  1329→    } catch (err) {
+  1330→      logger.error({ err: (err as Error).message }, 'Wikipedia article extraction failed');
+  1331→      return {};
+  1332→    }
+  1333→  },
+  1334→};
+  1335→
+  1336→// --------------------------------------------------------------------------------
+  1337→// 8. Reddit Post
+  1338→// --------------------------------------------------------------------------------
+  1339→
+  1340→const redditPostTemplate: ScraperTemplate = {
+  1341→  id: 'reddit_post',
+  1342→  name: 'Reddit Post',
+  1343→  description: 'Extract post data from Reddit including title, author, subreddit, score, comment count, body text, flair, timestamp, and awards.',
+  1344→  domainPatterns: ['reddit.com/r/', 'old.reddit.com/r/', 'www.reddit.com/r/', 'redd.it/'],
+  1345→  outputSchema: {
+  1346→    title: 'Post title',
+  1347→    author: 'Post author username',
+  1348→    subreddit: 'Subreddit name (without r/)',
+  1349→    score: 'Post score / upvotes (integer)',
+  1350→    upvoteRatio: 'Upvote ratio (0-1 float)',
+  1351→    commentCount: 'Number of comments (integer)',
+  1352→    postText: 'Self-post body text',
+  1353→    flair: 'Post flair text',
+  1354→    timestamp: 'ISO timestamp',
+  1355→    awards: 'Array of { type, count }',
+  1356→    url: 'Post URL',
+  1357→    isNsfw: 'Whether the post is NSFW',
+  1358→    isSpoiler: 'Whether the post is a spoiler',
+  1359→    linkUrl: 'External link URL (for link posts)',
+  1360→    images: 'Array of image URLs',
+  1361→  },
+  1362→  requiredStrategy: 'http',
+  1363→  requiredProxyTier: 'datacenter',
+  1364→
+  1365→  extract(html: string, url: string): Record<string, any> {
+  1366→    try {
+  1367→      // -- Try embedded JSON (reddit puts data in <script id="data">) ----
+  1368→      let title = '';
+  1369→      let author = '';
+  1370→      let subreddit = '';
+  1371→      let score: number | null = null;
+  1372→      let upvoteRatio: number | null = null;
+  1373→      let commentCount: number | null = null;
+  1374→      let postText = '';
+  1375→      let flair = '';
+  1376→      let timestamp = '';
+  1377→      const awards: Array<{ type: string; count: number }> = [];
+  1378→      let linkUrl = '';
+  1379→      const images: string[] = [];
+  1380→      let isNsfw = false;
+  1381→      let isSpoiler = false;
+  1382→
+  1383→      const dataScriptMatch = html.match(/id=["']data["'][^>]*>([\s\S]*?)<\/script>/i);
+  1384→      if (dataScriptMatch) {
+  1385→        try {
+  1386→          const jsonData = JSON.parse(dataScriptMatch[1]);
+  1387→          const posts = jsonData?.posts;
+  1388→          if (posts) {
+  1389→            const postId = Object.keys(posts)[0];
+  1390→            const post = posts[postId];
+  1391→            if (post) {
+  1392→              title = post.title || '';
+  1393→              author = post.author || '';
+  1394→              subreddit = post.subreddit || '';
+  1395→              score = post.score ?? null;
+  1396→              upvoteRatio = post.upvoteRatio ?? null;
+  1397→              commentCount = post.numComments ?? null;
+  1398→              postText = post.selftext || post.body || '';
+  1399→              flair = post.linkFlairText || '';
+  1400→              timestamp = post.createdUtc ? new Date(post.createdUtc * 1000).toISOString() : '';
+  1401→              isNsfw = post.over18 || post.isNsfw || false;
+  1402→              isSpoiler = post.spoiler || false;
+  1403→              linkUrl = post.url || '';
+  1404→
+  1405→              if (post.allAwardings) {
+  1406→                for (const a of post.allAwardings) {
+  1407→                  awards.push({ type: a.name || '', count: a.count || 0 });
+  1408→                }
+  1409→              }
+  1410→
+  1411→              if (post.media?.images) {
+  1412→                for (const img of post.media.images) {
+  1413→                  if (img.source?.url) images.push(img.source.url);
+  1414→                }
+  1415→              }
+  1416→            }
+  1417→          }
+  1418→        } catch {
+  1419→          // Fall through
+  1420→        }
+  1421→      }
+  1422→
+  1423→      // -- Regex fallbacks -----------------------------------------------
+  1424→
+  1425→      // Subreddit from URL
+  1426→      if (!subreddit) {
+  1427→        const subMatch = url.match(/\/r\/([^/]+)/i);
+  1428→        if (subMatch) subreddit = subMatch[1];
+  1429→      }
+  1430→
+  1431→      // Title
+  1432→      if (!title) {
+  1433→        title = regexMatch(html, /class=["'][^"']*\bpost-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h\d>/i, 1)
+  1434→          || regexMatch(html, /<a[^>]*class=["'][^"']*\btitle\b[^"']*["'][^>]*>([\s\S]*?)<\/a>/i, 1)
+  1435→          || extractOg(html, 'title');
+  1436→        title = decodeEntities(stripHtml(title));
+  1437→
+  1438→        // Remove subreddit prefix from OG title
+  1439→        const prefixMatch = title.match(/^.+:\s*(.+)/);
+  1440→        if (prefixMatch) title = prefixMatch[1].trim();
+  1441→      }
+  1442→
+  1443→      // Author
+  1444→      if (!author) {
+  1445→        author = regexMatch(html, /class=["'][^"']*\bauthor\b[^"']*["'][^>]*href=["'][^"]*\/user\/([^/"']*)/i, 1)
+  1446→          || regexMatch(html, /data-author=["']([^"']*)["']/i, 1);
+  1447→      }
+  1448→
+  1449→      // Score
+  1450→      if (score === null) {
+  1451→        const scoreText = regexMatch(html, /class=["'][^"']*\bscore\b[^"']*["'][^>]*title=["'](\d+)/i, 1)
+  1452→          || regexMatch(html, /class=["'][^"']*\bunvoted\b[^"']*["'][^>]*>([\d,]+)/i, 1);
+  1453→        score = parseNumber(scoreText);
+  1454→      }
+  1455→
+  1456→      // Comment count
+  1457→      if (commentCount === null) {
+  1458→        const commentText = regexMatch(html, /(\d[\d,]*)\s*comments?/i, 1);
+  1459→        commentCount = parseNumber(commentText);
+  1460→      }
+  1461→
+  1462→      // Post text (self-post)
+  1463→      if (!postText) {
+  1464→        postText = regexMatch(html, /class=["'][^"']*\busertext-body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1)
+  1465→          || regexMatch(html, /class=["'][^"']*\bmd\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1);
+  1466→        postText = stripHtml(postText).substring(0, 50000);
+  1467→      }
+  1468→
+  1469→      // Flair
+  1470→      if (!flair) {
+  1471→        flair = regexMatch(html, /class=["'][^"']*\blinkflairlabel\b[^"']*["'][^>]*title=["']([^"']*)["']/i, 1)
+  1472→          || regexMatch(html, /class=["'][^"']*\bflair\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+  1473→        flair = stripHtml(flair);
+  1474→      }
+  1475→
+  1476→      // Timestamp
+  1477→      if (!timestamp) {
+  1478→        const epochStr = regexMatch(html, /datetime=["'](\d+)["']/i, 1)
+  1479→          || regexMatch(html, /data-timestamp=["'](\d+)["']/i, 1)
+  1480→          || regexMatch(html, /data-created=["'](\d+)["']/i, 1);
+  1481→        if (epochStr) {
+  1482→          const epoch = parseInt(epochStr, 10);
+  1483→          timestamp = new Date(epoch > 1e12 ? epoch : epoch * 1000).toISOString();
+  1484→        }
+  1485→        if (!timestamp) timestamp = regexMatch(html, /class=["'][^"']*\blive-timestamp\b[^"']*["'][^>]*>([\s\S]*?)<\/time>/i, 1);
+  1486→      }
+  1487→
+  1488→      // Images
+  1489→      if (images.length === 0) {
+  1490→        const ogImg = extractOg(html, 'image');
+  1491→        if (ogImg) images.push(ogImg);
+  1492→        // Reddit preview images
+  1493→        const imgMatches = html.matchAll(/class=["'][^"']*\bpreview-image\b[^"']*["'][^>]*src=["']([^"']*)["']/gi);
+  1494→        for (const im of imgMatches) {
+  1495→          if (im[1] && !images.includes(im[1])) images.push(im[1]);
+  1496→        }
+  1497→      }
+  1498→
+  1499→      // NSFW
+  1500→      if (!isNsfw) isNsfw = /class=["'][^"']*\bnsfw\b[^"']*["']/i.test(html) || /over18/i.test(html);
+  1501→
+  1502→      return {
+  1503→        title,
+  1504→        author,
+  1505→        subreddit,
+  1506→        score,
+  1507→        upvoteRatio,
+  1508→        commentCount,
+  1509→        postText,
+  1510→        flair,
+  1511→        timestamp,
+  1512→        awards,
+  1513→        url,
+  1514→        isNsfw,
+  1515→        isSpoiler,
+  1516→        linkUrl,
+  1517→        images,
+  1518→      };
+  1519→    } catch (err) {
+  1520→      logger.error({ err: (err as Error).message }, 'Reddit post extraction failed');
+  1521→      return {};
+  1522→    }
+  1523→  },
+  1524→};
+  1525→
+  1526→// --------------------------------------------------------------------------------
+  1527→// 9. IMDB Movie
+  1528→// --------------------------------------------------------------------------------
+  1529→
+  1530→const imdbMovieTemplate: ScraperTemplate = {
+  1531→  id: 'imdb_movie',
+  1532→  name: 'IMDB Movie',
+  1533→  description: 'Extract movie data from IMDB including title, year, rating, votes, genre, director, cast, plot, runtime, and poster.',
+  1534→  domainPatterns: ['imdb.com/title/', 'imdb.com/list/', 'm.imdb.com/title/'],
+  1535→  outputSchema: {
+  1536→    title: 'Movie / show title',
+  1537→    year: 'Release year (integer)',
+  1538→    rating: 'IMDB rating out of 10 (number)',
+  1539→    votes: 'Number of votes (integer)',
+  1540→    genre: 'Array of genre strings',
+  1541→    director: 'Director name(s)',
+  1542→    cast: 'Array of actor names',
+  1543→    plot: 'Plot summary / description',
+  1544→    runtime: 'Runtime in minutes (integer)',
+  1545→    runtimeFormatted: 'Runtime formatted string (e.g. "2h 15m")',
+  1546→    poster: 'Poster image URL',
+  1547→    type: 'Title type (Movie, TV Series, etc.)',
+  1548→    contentRating: 'MPAA / content rating (PG, R, etc.)',
+  1549→  },
+  1550→  requiredStrategy: 'browser',
+  1551→  requiredProxyTier: 'datacenter',
+  1552→
+  1553→  extract(html: string, _url: string): Record<string, any> {
+  1554→    try {
+  1555→      // -- JSON-LD extraction (IMDB provides rich structured data) --------
+  1556→      let title = '';
+  1557→      let year: number | null = null;
+  1558→      let rating: number | null = null;
+  1559→      let votes: number | null = null;
+  1560→      let genre: string[] = [];
+  1561→      let director = '';
+  1562→      let cast: string[] = [];
+  1563→      let plot = '';
+  1564→      let runtime: number | null = null;
+  1565→      let runtimeFormatted = '';
+  1566→      let poster = '';
+  1567→      let type = '';
+  1568→      let contentRating = '';
+  1569→
+  1570→      const ldMovie = extractLdJson(html, 'movie') || extractLdJson(html, 'tvepisode') || extractLdJson(html, 'tvseries');
+  1571→      if (ldMovie) {
+  1572→        title = ldMovie.name || '';
+  1573→        plot = ldMovie.description || '';
+  1574→        poster = ldMovie.image || '';
+  1575→        contentRating = ldMovie.contentRating || '';
+  1576→        type = (ldMovie['@type'] || '').replace(/([A-Z])/g, ' $1').trim();
+  1577→
+  1578→        if (ldMovie.datePublished) {
+  1579→          const dateMatch = ldMovie.datePublished.match(/(\d{4})/);
+  1580→          if (dateMatch) year = parseInt(dateMatch[1], 10);
+  1581→        }
+  1582→
+  1583→        if (ldMovie.aggregateRating) {
+  1584→          rating = parseFloat(ldMovie.aggregateRating.ratingValue) || null;
+  1585→          votes = parseInt(ldMovie.aggregateRating.ratingCount, 10) || null;
+  1586→        }
+  1587→
+  1588→        if (ldMovie.genre) {
+  1589→          genre = Array.isArray(ldMovie.genre) ? ldMovie.genre : [ldMovie.genre];
+  1590→        }
+  1591→
+  1592→        if (ldMovie.director) {
+  1593→          const dirs = Array.isArray(ldMovie.director) ? ldMovie.director : [ldMovie.director];
+  1594→          director = dirs.map((d: any) => typeof d === 'string' ? d : d.name || '').filter(Boolean).join(', ');
+  1595→        }
+  1596→
+  1597→        if (ldMovie.actor) {
+  1598→          const actors = Array.isArray(ldMovie.actor) ? ldMovie.actor : [ldMovie.actor];
+  1599→          cast = actors.map((a: any) => typeof a === 'string' ? a : a.name || '').filter(Boolean);
+  1600→        }
+  1601→
+  1602→        if (ldMovie.duration) {
+  1603→          const durMatch = ldMovie.duration.match(/PT(\d+)H?(\d+)?M?/);
+  1604→          if (durMatch) {
+  1605→            const hours = parseInt(durMatch[1] || '0', 10);
+  1606→            const mins = parseInt(durMatch[2] || '0', 10);
+  1607→            runtime = hours * 60 + mins;
+  1608→          }
+  1609→        }
+  1610→      }
+  1611→
+  1612→      // -- Regex fallbacks -----------------------------------------------
+  1613→
+  1614→      // Title
+  1615→      if (!title) {
+  1616→        title = regexMatch(html, /class=["'][^"']*\btitleType\b[^"']*["'][^>]*>[\s\S]*?<h1[^>]*>([\s\S]*?)<\/h1>/i, 1);
+  1617→        if (!title) title = regexMatch(html, /<h1[^>]*data-testid=["']hero-title-block__title["'][^>]*>([\s\S]*?)<\/h1>/i, 1);
+  1618→        title = decodeEntities(stripHtml(title));
+  1619→      }
+  1620→
+  1621→      // Year
+  1622→      if (year === null) {
+  1623→        const yearText = regexMatch(html, /class=["'][^"']*\btitleYear\b[^"']*["'][^>]*>[\s\S]*?\((\d{4})\)/i, 1)
+  1624→          || regexMatch(html, /<span[^>]*data-testid=["']hero-title-block__year["'][^>]*>[\s\S]*?(\d{4})/i, 1);
+  1625→        if (yearText) year = parseInt(yearText, 10);
+  1626→      }
+  1627→
+  1628→      // Rating
+  1629→      if (rating === null) {
+  1630→        const ratingText = regexMatch(html, /class=["'][^"']*\bimdbRating\b[^"']*["'][^>]*>[\s\S]*?([\d.]+)/i, 1)
+  1631→          || regexMatch(html, /data-testid=["']hero-rating-bar__aggregate-rating__score["'][^>]*>[\s\S]*?([\d.]+)/i, 1);
+  1632→        if (ratingText) rating = parseFloat(ratingText);
+  1633→      }
+  1634→
+  1635→      // Votes
+  1636→      if (votes === null) {
+  1637→        const votesText = regexMatch(html, /class=["'][^"']*\bimdbRating\b[^"']*["'][^>]*>[\s\S]*?small[^>]*>([\d,]+)/i, 1)
+  1638→          || regexMatch(html, /class=["'][^"']*\bratingCount\b[^"']*["'][^>]*>([\d,]+)/i, 1);
+  1639→        if (votesText) votes = parseInt(votesText.replace(/,/g, ''), 10);
+  1640→      }
+  1641→
+  1642→      // Genre
+  1643→      if (genre.length === 0) {
+  1644→        const genreSection = html.match(/class=["'][^"']*\bsee-more\b[^"']*["'][^>]*>[\s\S]*?Genre/i);
+  1645→        if (genreSection) {
+  1646→          const genreLinks = genreSection[0].matchAll(/<a[^>]*>([\s\S]*?)<\/a>/gi);
+  1647→          for (const gl of genreLinks) {
+  1648→            const g = stripHtml(gl[1]);
+  1649→            if (g && !genre.includes(g)) genre.push(g);
+  1650→          }
+  1651→        }
+  1652→        // Alternative: inline genre chips
+  1653→        if (genre.length === 0) {
+  1654→          const genreChips = html.matchAll(/class=["'][^"']*\bipc-chip\b[^"']*["'][^>]*>[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/gi);
+  1655→          for (const gc of genreChips) {
+  1656→            const g = stripHtml(gc[1]);
+  1657→            if (g && g.length < 30 && !genre.includes(g)) genre.push(g);
+  1658→          }
+  1659→        }
+  1660→      }
+  1661→
+  1662→      // Director
+  1663→      if (!director) {
+  1664→        director = regexMatch(html, /class=["'][^"']*\bcredit_summary_item\b[^"']*["'][^>]*>[\s\S]*?Director[s]?:[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i, 1)
+  1665→          || regexMatch(html, /class=["'][^"']*\bsummary_text\b[^"']*["'][^>]*>[\s\S]*?Directed by\s+([^<.]+)/i, 1);
+  1666→        director = stripHtml(director);
+  1667→      }
+  1668→
+  1669→      // Cast
+  1670→      if (cast.length === 0) {
+  1671→        const castPattern = /class=["'][^"']*\bprimary_photo\b[^"']*["'][^>]*>[\s\S]*?alt=["']([^"']*)["']/gi;
+  1672→        let cM: RegExpExecArray | null;
+  1673→        while ((cM = castPattern.exec(html)) !== null) {
+  1674→          if (cM[1]) cast.push(cM[1]);
+  1675→        }
+  1676→        // Alternative: title-cast-item
+  1677→        if (cast.length === 0) {
+  1678→          const castItems = html.matchAll(/data-testid=["']title-cast-item__actor["'][^>]*>([\s\S]*?)<\/a>/gi);
+  1679→          for (const ci of castItems) {
+  1680→            const name = stripHtml(ci[1]);
+  1681→            if (name) cast.push(name);
+  1682→          }
+  1683→        }
+  1684→      }
+  1685→
+  1686→      // Plot
+  1687→      if (!plot) {
+  1688→        plot = regexMatch(html, /class=["'][^"']*\bsummary_text\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i, 1)
+  1689→          || regexMatch(html, /data-testid=["']plot-xl["'][^>]*>([\s\S]*?)<\/span>/i, 1)
+  1690→          || extractOg(html, 'description');
+  1691→        plot = decodeEntities(stripHtml(plot)).substring(0, 3000);
+  1692→      }
+  1693→
+  1694→      // Runtime
+  1695→      if (runtime === null) {
+  1696→        const runtimeText = regexMatch(html, /class=["'][^"']*\btechnical-specs\b[^"']*["'][^>]*>[\s\S]*?(\d+)\s*min/i, 1)
+  1697→          || regexMatch(html, /data-testid=["']title-techspec-runtime["'][^>]*>[\s\S]*?(\d+)\s*min/i, 1)
+  1698→          || regexMatch(html, /Runtime[\s\S]*?(\d+)\s*min/i, 1);
+  1699→        if (runtimeText) runtime = parseInt(runtimeText, 10);
+  1700→      }
+  1701→
+  1702→      // Runtime formatted
+  1703→      if (runtime !== null && !runtimeFormatted) {
+  1704→        const h = Math.floor(runtime / 60);
+  1705→        const m = runtime % 60;
+  1706→        runtimeFormatted = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  1707→      }
+  1708→
+  1709→      // Poster
+  1710→      if (!poster) {
+  1711→        poster = extractOg(html, 'image');
+  1712→      }
+  1713→
+  1714→      // Content rating
+  1715→      if (!contentRating) {
+  1716→        contentRating = regexMatch(html, /contentRating["']\s*:\s*["']([^"']*)["']/i, 1)
+  1717→          || regexMatch(html, /class=["'][^"']*\bcertificate\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i, 1);
+  1718→        contentRating = stripHtml(contentRating);
+  1719→      }
+  1720→
+  1721→      return {
+  1722→        title,
+  1723→        year,
+  1724→        rating,
+  1725→        votes,
+  1726→        genre,
+  1727→        director,
+  1728→        cast,
+  1729→        plot,
+  1730→        runtime,
+  1731→        runtimeFormatted,
+  1732→        poster,
+  1733→        type,
+  1734→        contentRating,
+  1735→      };
+  1736→    } catch (err) {
+  1737→      logger.error({ err: (err as Error).message }, 'IMDB movie extraction failed');
+  1738→      return {};
+  1739→    }
+  1740→  },
+  1741→};
+  1742→
+  1743→// --------------------------------------------------------------------------------
+  1744→// 10. News Article
+  1745→// --------------------------------------------------------------------------------
+  1746→
+  1747→const newsArticleTemplate: ScraperTemplate = {
+  1748→  id: 'news_article',
+  1749→  name: 'News Article',
+  1750→  description: 'Extract article data from news websites including headline, author, dates, source, body text, images, and tags using schema.org, Open Graph, and heuristic extraction.',
+  1751→  domainPatterns: [
+  1752→    // No specific domain -- this is a fallback template used for news sites
+  1753→    // The template will be matched with low confidence for unknown domains
+  1754→    'news', 'article', 'blog',
+  1755→    // Major news domains for higher-confidence matching
+  1756→    'cnn.com', 'bbc.com', 'bbc.co.uk', 'nytimes.com', 'washingtonpost.com',
+  1757→    'theguardian.com', 'reuters.com', 'apnews.com', 'bloomberg.com',
+  1758→    'wsj.com', 'ft.com', 'economist.com', 'npr.org', 'pbs.org',
+  1759→    'foxnews.com', 'nbcnews.com', 'abcnews.go.com', 'cbsnews.com',
+  1760→    'usatoday.com', 'latimes.com', 'chicagotribune.com', 'bostonglobe.com',
+  1761→    'thetimes.co.uk', 'independent.co.uk', 'telegraph.co.uk',
+  1762→    'lemonde.fr', 'spiegel.de', 'zeit.de',
+  1763→  ],
+  1764→  outputSchema: {
+  1765→    headline: 'Article headline / title',
+  1766→    author: 'Author name(s)',
+  1767→    datePublished: 'Publication date (ISO string)',
+  1768→    dateModified: 'Last modified date (ISO string)',
+  1769→    source: 'Publication / source name',
+  1770→    articleBody: 'Full article body text',
+  1771→    image: 'Main article image URL',
+  1772→    tags: 'Array of tags / category strings',
+  1773→    url: 'Canonical article URL',
+  1774→    wordCount: 'Approximate word count of the article body',
+  1775→    readingTimeMinutes: 'Estimated reading time in minutes',
+  1776→  },
+  1777→  requiredStrategy: 'http',
+  1778→  requiredProxyTier: 'datacenter',
+  1779→
+  1780→  extract(html: string, url: string): Record<string, any> {
+  1781→    try {
+  1782→      let headline = '';
+  1783→      let author = '';
+  1784→      let datePublished = '';
+  1785→      let dateModified = '';
+  1786→      let source = '';
+  1787→      let articleBody = '';
+  1788→      let image = '';
+  1789→      let tags: string[] = [];
+  1790→      let canonicalUrl = '';
+  1791→
+  1792→      // -- JSON-LD extraction --------------------------------------------
+  1793→      const ldArticle = extractLdJson(html, 'article')
+  1794→        || extractLdJson(html, 'newsarticle')
+  1795→        || extractLdJson(html, 'reportagenewsarticle')
+  1796→        || extractLdJson(html, 'liveblogposting')
+  1797→        || extractLdJson(html, 'blogposting');
+  1798→
+  1799→      if (ldArticle) {
+  1800→        headline = ldArticle.headline || ldArticle.name || '';
+  1801→        datePublished = ldArticle.datePublished || '';
+  1802→        dateModified = ldArticle.dateModified || '';
+  1803→        articleBody = ldArticle.articleBody || '';
+  1804→        image = typeof ldArticle.image === 'string'
+  1805→          ? ldArticle.image
+  1806→          : ldArticle.image?.url || ldArticle.image?.[0]?.url || '';
+  1807→
+  1808→        // Author
+  1809→        if (ldArticle.author) {
+  1810→          const authors = Array.isArray(ldArticle.author) ? ldArticle.author : [ldArticle.author];
+  1811→          author = authors.map((a: any) => typeof a === 'string' ? a : a.name || '').filter(Boolean).join(', ');
+  1812→        }
+  1813→
+  1814→        // Source / publisher
+  1815→        if (ldArticle.publisher) {
+  1816→          source = typeof ldArticle.publisher === 'string'
+  1817→            ? ldArticle.publisher
+  1818→            : ldArticle.publisher.name || '';
+  1819→        }
+  1820→
+  1821→        // Keywords → tags
+  1822→        if (ldArticle.keywords) {
+  1823→          tags = Array.isArray(ldArticle.keywords) ? ldArticle.keywords : ldArticle.keywords.split(',').map((k: string) => k.trim());
+  1824→        }
+  1825→      }
+  1826→
+  1827→      // -- Also check all JSON-LD for Article types ----------------------
+  1828→      if (!headline) {
+  1829→        const allLd = extractAllLdJson(html);
+  1830→        for (const ld of allLd) {
+  1831→          const t = (ld['@type'] || '').toString().toLowerCase();
+  1832→          if (t.includes('article') || t.includes('news') || t.includes('blog')) {
+  1833→            if (ld.headline) headline = ld.headline;
+  1834→            if (!datePublished && ld.datePublished) datePublished = ld.datePublished;
+  1835→            if (!dateModified && ld.dateModified) dateModified = ld.dateModified;
+  1836→            if (!articleBody && ld.articleBody) articleBody = ld.articleBody;
+  1837→            if (!author && ld.author) {
+  1838→              const authors = Array.isArray(ld.author) ? ld.author : [ld.author];
+  1839→              author = authors.map((a: any) => typeof a === 'string' ? a : a.name || '').filter(Boolean).join(', ');
+  1840→            }
+  1841→            if (!source && ld.publisher) {
+  1842→              source = typeof ld.publisher === 'string' ? ld.publisher : ld.publisher.name || '';
+  1843→            }
+  1844→            break;
+  1845→          }
+  1846→        }
+  1847→      }
+  1848→
+  1849→      // -- Open Graph / meta tag fallbacks -------------------------------
+  1850→      if (!headline) headline = decodeEntities(extractOg(html, 'title'));
+  1851→      if (!articleBody) {
+  1852→        const ogDesc = decodeEntities(extractOg(html, 'description'));
+  1853→        if (ogDesc) articleBody = ogDesc; // Will be replaced if body extraction succeeds
+  1854→      }
+  1855→      if (!image) image = extractOg(html, 'image');
+  1856→      if (!source) source = extractOg(html, 'site_name');
+  1857→      if (!datePublished) datePublished = extractMetaProperty(html, 'article:published_time');
+  1858→      if (!dateModified) dateModified = extractMetaProperty(html, 'article:modified_time');
+  1859→      if (!author) author = extractMetaName(html, 'author');
+  1860→      if (!author) author = extractMetaProperty(html, 'article:author');
+  1861→
+  1862→      // -- HTML fallbacks ------------------------------------------------
+  1863→      if (!headline) {
+  1864→        headline = regexMatch(html, /<h1[^>]*class=["'][^"']*\barticle-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i, 1)
+  1865→          || regexMatch(html, /<h1[^>]*class=["'][^"']*\bentry-title\b[^"']*["'][^>]*>([\s\S]*?)<\/h1>/i, 1)
+  1866→          || regexMatch(html, /<h1[^>]*itemprop=["']headline["'][^>]*>([\s\S]*?)<\/h1>/i, 1);
+  1867→        headline = decodeEntities(stripHtml(headline));
+  1868→      }
+  1869→      if (!headline) {
+  1870→        // Last resort: first h1 tag
+  1871→        const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/i);
+  1872→        if (h1Match) headline = decodeEntities(stripHtml(h1Match[1])).substring(0, 300);
+  1873→      }
+  1874→
+  1875→      // -- Article body extraction ---------------------------------------
+  1876→      if (!articleBody || articleBody.length < 200) {
+  1877→        const bodySelectors = [
+  1878→          /class=["'][^"']*\barticle-body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1879→          /class=["'][^"']*\barticle__body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1880→          /class=["'][^"']*\bpost-content\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1881→          /class=["'][^"']*\bentry-content\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1882→          /class=["'][^"']*\bstory-body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1883→          /class=["'][^"']*\bcontent-body\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+  1884→          /itemprop=["']articleBody["'][^>]*>([\s\S]*?)<\/div>/i,
+  1885→          /<article[^>]*>([\s\S]*?)<\/article>/i,
+  1886→          /role=["']article["'][^>]*>([\s\S]*?)<\/div>/i,
+  1887→        ];
+  1888→
+  1889→        for (const pattern of bodySelectors) {
+  1890→          const bodyMatch = html.match(pattern);
+  1891→          if (bodyMatch) {
+  1892→            const text = stripHtml(bodyMatch[1]).substring(0, 100000);
+  1893→            if (text.length > 200) {
+  1894→              articleBody = text;
+  1895→              break;
+  1896→            }
+  1897→          }
+  1898→        }
+  1899→
+  1900→        // Ultimate fallback: all paragraph text
+  1901→        if (!articleBody || articleBody.length < 200) {
+  1902→          const allParagraphs = html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi);
+  1903→          const pTexts: string[] = [];
+  1904→          for (const p of allParagraphs) {
+  1905→            const text = stripHtml(p[1]);
+  1906→            if (text.length > 30) pTexts.push(text);
+  1907→          }
+  1908→          if (pTexts.length > 0) {
+  1909→            articleBody = pTexts.join('\n\n').substring(0, 100000);
+  1910→          }
+  1911→        }
+  1912→      }
+  1913→
+  1914→      // -- Tags / keywords from meta -------------------------------------
+  1915→      if (tags.length === 0) {
+  1916→        const kwMeta = extractMetaName(html, 'keywords');
+  1917→        if (kwMeta) {
+  1918→          tags = kwMeta.split(',').map(k => k.trim()).filter(Boolean);
+  1919→        }
+  1920→      }
+  1921→      if (tags.length === 0) {
+  1922→        const newsKeywords = extractMetaName(html, 'news_keywords');
+  1923→        if (newsKeywords) {
+  1924→          tags = newsKeywords.split(',').map(k => k.trim()).filter(Boolean);
+  1925→        }
+  1926→      }
+  1927→
+  1928→      // -- Canonical URL -------------------------------------------------
+  1929→      canonicalUrl = regexMatch(html, /<link[^>]*rel=["']canonical["'][^>]*href=["']([^"']*)["']/i, 1);
+  1930→
+  1931→      // -- Word count and reading time -----------------------------------
+  1932→      const wordCount = articleBody ? articleBody.split(/\s+/).length : 0;
+  1933→      const readingTimeMinutes = Math.max(1, Math.ceil(wordCount / 200));
+  1934→
+  1935→      return {
+  1936→        headline,
+  1937→        author,
+  1938→        datePublished,
+  1939→        dateModified,
+  1940→        source,
+  1941→        articleBody,
+  1942→        image,
+  1943→        tags,
+  1944→        url: canonicalUrl || url,
+  1945→        wordCount,
+  1946→        readingTimeMinutes,
+  1947→      };
+  1948→    } catch (err) {
+  1949→      logger.error({ err: (err as Error).message }, 'News article extraction failed');
+  1950→      return {};
+  1951→    }
+  1952→  },
+  1953→};
+  1954→
+  1955→// --- Template Registry ---------------------------------------------------------
+  1956→
+  1957→/**
+  1958→ * Central registry for scraper templates.
+  1959→ *
+  1960→ * Provides lookup, auto-detection, and extraction capabilities.
+  1961→ * Template auto-detection uses domain-pattern matching with confidence scoring.
+  1962→ */
+  1963→export class TemplateRegistry {
+  1964→  /** Internal map of template IDs to their definitions. */
+  1965→  private templates: Map<string, ScraperTemplate> = new Map();
+  1966→
+  1967→  /** Pre-compiled domain pattern → template ID index for fast lookups. */
+  1968→  private domainIndex: Map<string, string> = new Map();
+  1969→
+  1970→  constructor() {
+  1971→    // Register all built-in templates
+  1972→    const builtIn: ScraperTemplate[] = [
+  1973→      amazonProductTemplate,
+  1974→      googleSerpTemplate,
+  1975→      linkedinProfileTemplate,
+  1976→      twitterTweetTemplate,
+  1977→      zillowListingTemplate,
+  1978→      youtubeVideoTemplate,
+  1979→      wikipediaArticleTemplate,
+  1980→      redditPostTemplate,
+  1981→      imdbMovieTemplate,
+  1982→      newsArticleTemplate,
+  1983→    ];
+  1984→
+  1985→    for (const tmpl of builtIn) {
+  1986→      this.register(tmpl);
+  1987→    }
+  1988→
+  1989→    logger.info({ count: this.templates.size }, 'Template registry initialized with built-in templates');
+  1990→  }
+  1991→
+  1992→  // --- Private Helpers --------------------------------------------------------
+  1993→
+  1994→  /**
+  1995→   * Register a template and index its domain patterns.
+  1996→   */
+  1997→  private register(template: ScraperTemplate): void {
+  1998→    this.templates.set(template.id, template);
+  1999→    for (const pattern of template.domainPatterns) {
+  2000→      this.domainIndex.set(pattern.toLowerCase(), template.id);
+
+[showing lines 1-2000 of 2202; use offset=2001 with limit to continue reading]
