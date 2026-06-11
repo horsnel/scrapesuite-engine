@@ -1,0 +1,17 @@
+# ─── ScrapeSuite Engine — Railway Configuration ──────────────────────────────
+# Railway auto-detects this file when deploying from GitHub
+# https://docs.railway.app/deploy/config-as-code
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Start command is handled by start.sh in the Dockerfile
+# Railway will respect the CMD from the Dockerfile
+
+# Health check endpoint
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
