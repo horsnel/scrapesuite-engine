@@ -1,0 +1,883 @@
+     1→/**
+     2→ * TLS Fingerprint Spoofing Engine -- ScrapeSuite Engine
+     3→ *
+     4→ * Implements real TLS fingerprint spoofing at the connection level.
+     5→ * Uses curl-impersonate for full JA3/JA4 fingerprint matching,
+     6→ * with a Node.js native fallback for partial spoofing.
+     7→ *
+     8→ * Architecture:
+     9→ *  +--------------------------------------------------------------------------+
+    10→ *  | Layer 1: curl-impersonate -- Full JA3/JA4 spoofing via custom TLS stack |
+    11→ *  | Layer 2: Node.js Native -- Partial JA3 spoofing via cipher reordering   |
+    12→ *  | Layer 3: Profile Matching -- Automatic profile selection per domain      |
+    13→ *  +--------------------------------------------------------------------------+
+    14→ *
+    15→ * curl-impersonate provides binary-level TLS fingerprint matching by using
+    16→ * a custom-built libcurl with BoringSSL/OpenSSL that can mimic any browser's
+    17→ * exact TLS handshake, including:
+    18→ *  - Cipher suite ORDERING (critical for JA3)
+    19→ *  - Extension ORDERING (critical for JA3)
+    20→ *  - Supported groups ORDERING
+    21→ *  - Signature algorithms ORDERING
+    22→ *  - ALPN values
+    23→ *  - GREASE extensions
+    24→ *  - PSK key exchange modes
+    25→ *  - Session ticket extension presence
+    26→ *
+    27→ * This makes the TLS handshake INDISTINGUISHABLE from a real browser.
+    28→ */
+    29→
+    30→import * as net from 'net';
+    31→import * as tls from 'tls';
+    32→import { execFile } from 'child_process';
+    33→import { createChildLogger } from '../utils/logger';
+    34→import { cacheGet, cacheSet } from '../utils/redis';
+    35→import type { TLSProfile, ConnectionConfig } from './types';
+    36→
+    37→const logger = createChildLogger('quantum-tls:spoofer');
+    38→
+    39→// ---------- Public types -------------------------------------------------------
+    40→
+    41→/** A spoofed TLS connection returned by createSpoofedConnection(). */
+    42→export interface SpoofedConnection {
+    43→  socket: net.Socket;
+    44→  tlsSocket: tls.TLSSocket;
+    45→  profile: TLSProfile;
+    46→  negotiatedCipher: string;
+    47→  negotiatedVersion: string;
+    48→  ja3Hash: string;
+    49→  connectTimeMs: number;
+    50→}
+    51→
+    52→/** Result of a curl-impersonate HTTP request. */
+    53→export interface CurlImpersonateResult {
+    54→  success: boolean;
+    55→  responseBody: string;
+    56→  statusCode: number;
+    57→  headers: Record<string, string>;
+    58→  ja3Hash: string;
+    59→  connectTimeMs: number;
+    60→  tlsVersion: string;
+    61→  negotiatedCipher: string;
+    62→}
+    63→
+    64→/** Internal stats tracked by the spoofer. */
+    65→interface SpooferStats {
+    66→  totalRequests: number;
+    67→  curlImpersonateRequests: number;
+    68→  nativeFallbackRequests: number;
+    69→  curlImpersonateAvailable: boolean;
+    70→  successCount: number;
+    71→  failureCount: number;
+    72→  averageConnectTimeMs: number;
+    73→  profileUsage: Record<string, number>;
+    74→  lastCurlDetectAttempt: number | null;
+    75→}
+    76→
+    77→// ---------- Well-known curl-impersonate browser targets ------------------------
+    78→
+    79→const CURL_TARGETS: Record<string, string> = {
+    80→  'chrome-120': 'chrome120',
+    81→  'chrome-116': 'chrome116',
+    82→  'chrome-110': 'chrome110',
+    83→  'chrome-124': 'chrome124',
+    84→  'chrome-131': 'chrome131',
+    85→  'firefox-120': 'firefox120',
+    86→  'firefox-133': 'firefox133',
+    87→  'safari-17': 'safari17_0',
+    88→  'safari-18': 'safari18_0',
+    89→};
+    90→
+    91→/** Binary names to probe when detecting curl-impersonate. */
+    92→const CURL_IMPERSONATE_BINARIES = [
+    93→  'curl-impersonate-chrome',
+    94→  'curl-impersonate-firefox',
+    95→  'curl_chrome116',
+    96→  'curl_chrome120',
+    97→  'curl_chrome124',
+    98→  'curl_chrome131',
+    99→  'curl_firefox120',
+   100→  'curl_firefox133',
+   101→  'curl_safari17_0',
+   102→  'curl_safari18_0',
+   103→  'curl-impersonate',
+   104→];
+   105→
+   106→/** Common install locations for curl-impersonate. */
+   107→const CURL_IMPERSONATE_PATHS = [
+   108→  '/usr/local/bin/curl-impersonate-chrome',
+   109→  '/usr/bin/curl-impersonate-chrome',
+   110→  '/usr/local/bin/curl-impersonate-firefox',
+   111→  '/opt/curl-impersonate/bin/curl-impersonate-chrome',
+   112→];
+   113→
+   114→const CACHE_KEY_PREFIX = 'tls:spoofer:';
+   115→const STATS_TTL = 3600;
+   116→
+   117→// ---------- TLSFingerprintSpoofer class ----------------------------------------
+   118→
+   119→export class TLSFingerprintSpoofer {
+   120→  private curlImpersonatePath: string | null = null;
+   121→  private profileCache = new Map<string, string[]>(); // profile id -> curl base args
+   122→  private initialized = false;
+   123→
+   124→  private stats: SpooferStats = {
+   125→    totalRequests: 0,
+   126→    curlImpersonateRequests: 0,
+   127→    nativeFallbackRequests: 0,
+   128→    curlImpersonateAvailable: false,
+   129→    successCount: 0,
+   130→    failureCount: 0,
+   131→    averageConnectTimeMs: 0,
+   132→    profileUsage: {},
+   133→    lastCurlDetectAttempt: null,
+   134→  };
+   135→
+   136→  /** Initialise the spoofer -- detect curl-impersonate, load cached state. */
+   137→  async initialize(): Promise<void> {
+   138→    if (this.initialized) return;
+   139→
+   140→    logger.info('Initializing TLS fingerprint spoofer...');
+   141→
+   142→    // Detect curl-impersonate
+   143→    this.curlImpersonatePath = await this.detectCurlImpersonate();
+   144→    this.stats.curlImpersonateAvailable = this.curlImpersonatePath !== null;
+   145→    this.stats.lastCurlDetectAttempt = Date.now();
+   146→
+   147→    if (this.curlImpersonatePath) {
+   148→      logger.info({ path: this.curlImpersonatePath }, 'curl-impersonate detected -- full JA3/JA4 spoofing enabled');
+   149→    } else {
+   150→      logger.warn('curl-impersonate not found -- falling back to Node.js native partial spoofing');
+   151→    }
+   152→
+   153→    // Load persisted stats from cache
+   154→    try {
+   155→      const cached = await cacheGet<Partial<SpooferStats>>(CACHE_KEY_PREFIX + 'stats');
+   156→      if (cached) {
+   157→        Object.assign(this.stats, cached);
+   158→        // Refresh availability flag after fresh detection
+   159→        this.stats.curlImpersonateAvailable = this.curlImpersonatePath !== null;
+   160→      }
+   161→    } catch {
+   162→      // Cache unavailable -- continue with in-memory stats
+   163→    }
+   164→
+   165→    this.initialized = true;
+   166→    logger.info({ curlAvailable: this.stats.curlImpersonateAvailable }, 'TLS spoofer initialized');
+   167→  }
+   168→
+   169→  /**
+   170→   * Make an HTTP request with a spoofed TLS fingerprint using curl-impersonate.
+   171→   * This provides FULL JA3/JA4 fingerprint matching.
+   172→   * Falls back to Node.js native TLS if curl-impersonate is unavailable.
+   173→   */
+   174→  async requestWithSpoofedTLS(
+   175→    url: string,
+   176→    options: {
+   177→      method?: string;
+   178→      headers?: Record<string, string>;
+   179→      body?: string;
+   180→      profile?: TLSProfile;
+   181→      proxyUrl?: string;
+   182→      timeout?: number;
+   183→    } = {},
+   184→  ): Promise<CurlImpersonateResult> {
+   185→    await this.initialize();
+   186→
+   187→    const timeout = options.timeout ?? 30_000;
+   188→    const profile = options.profile;
+   189→    this.stats.totalRequests++;
+   190→
+   191→    // --- Primary: curl-impersonate path ---
+   192→    if (this.curlImpersonatePath && profile) {
+   193→      this.stats.curlImpersonateRequests++;
+   194→      this.incrementProfileUsage(profile.id);
+   195→
+   196→      try {
+   197→        const args = this.buildCurlArgs(url, profile, options);
+   198→        const result = await this.executeCurl(args, timeout);
+   199→        this.stats.successCount++;
+   200→        this.updateAverageConnectTime(result.connectTimeMs);
+   201→        return result;
+   202→      } catch (err: any) {
+   203→        logger.warn({ err: err.message, url }, 'curl-impersonate request failed');
+   204→        this.stats.failureCount++;
+   205→        // Don't fall through -- return the error as a failed result
+   206→        return {
+   207→          success: false,
+   208→          responseBody: '',
+   209→          statusCode: 0,
+   210→          headers: {},
+   211→          ja3Hash: profile.ja3_hash,
+   212→          connectTimeMs: 0,
+   213→          tlsVersion: '',
+   214→          negotiatedCipher: '',
+   215→        };
+   216→      }
+   217→    }
+   218→
+   219→    // --- Fallback: Node.js native partial spoofing ---
+   220→    this.stats.nativeFallbackRequests++;
+   221→    if (profile) this.incrementProfileUsage(profile.id);
+   222→
+   223→    return this.nativeFallbackRequest(url, options, profile, timeout);
+   224→  }
+   225→
+   226→  /**
+   227→   * Create a spoofed TLS connection to a host.
+   228→   * Returns a connected TLSSocket with the spoofed fingerprint.
+   229→   * Uses Node.js native TLS for raw socket connections (no curl).
+   230→   */
+   231→  async createSpoofedConnection(
+   232→    hostname: string,
+   233→    port: number,
+   234→    profile: TLSProfile,
+   235→    proxyUrl?: string,
+   236→  ): Promise<SpoofedConnection> {
+   237→    await this.initialize();
+   238→
+   239→    const startTime = Date.now();
+   240→    this.stats.totalRequests++;
+   241→    this.incrementProfileUsage(profile.id);
+   242→
+   243→    return new Promise<SpoofedConnection>((resolve, reject) => {
+   244→      let rawSocket: net.Socket | null = null;
+   245→
+   246→      const cleanup = () => {
+   247→        if (rawSocket) {
+   248→          rawSocket.destroy();
+   249→          rawSocket = null;
+   250→        }
+   251→      };
+   252→
+   253→      // If a proxy is specified, connect through it first via CONNECT
+   254→      const connectThroughProxy = (): Promise<net.Socket> => {
+   255→        return new Promise((res, rej) => {
+   256→          const proxyUrlObj = new URL(proxyUrl!);
+   257→          const proxyPort = parseInt(proxyUrlObj.port) || 8080;
+   258→          const proxySocket = net.createConnection({ host: proxyUrlObj.hostname, port: proxyPort }, () => {
+   259→            const connectReq = `CONNECT ${hostname}:${port} HTTP/1.1\r\nHost: ${hostname}:${port}\r\n\r\n`;
+   260→            proxySocket.write(connectReq);
+   261→          });
+   262→
+   263→          proxySocket.once('data', (data: Buffer) => {
+   264→            const response = data.toString();
+   265→            if (response.includes('200')) {
+   266→              res(proxySocket);
+   267→            } else {
+   268→              proxySocket.destroy();
+   269→              rej(new Error(`Proxy CONNECT failed: ${response.split('\r\n')[0]}`));
+   270→            }
+   271→          });
+   272→
+   273→          proxySocket.once('error', (err) => {
+   274→            proxySocket.destroy();
+   275→            rej(err);
+   276→          });
+   277→
+   278→          setTimeout(() => {
+   279→            proxySocket.destroy();
+   280→            rej(new Error('Proxy connection timeout'));
+   281→          }, 15_000);
+   282→        });
+   283→      };
+   284→
+   285→      const establishTLS = (socket: net.Socket) => {
+   286→        rawSocket = socket;
+   287→        const tlsOptions = this.buildSpoofedTLSOptions(profile, hostname);
+   288→        const tlsSocket = tls.connect({ ...tlsOptions, socket });
+   289→
+   290→        const connectTimeout = setTimeout(() => {
+   291→          cleanup();
+   292→          reject(new Error(`TLS connection timeout to ${hostname}:${port}`));
+   293→        }, 15_000);
+   294→
+   295→        tlsSocket.once('secureConnect', () => {
+   296→          clearTimeout(connectTimeout);
+   297→          const connectTimeMs = Date.now() - startTime;
+   298→
+   299→          const protocol = tlsSocket.getProtocol() ?? 'unknown';
+   300→          const cipher = tlsSocket.getCipher();
+   301→
+   302→          this.stats.successCount++;
+   303→          this.updateAverageConnectTime(connectTimeMs);
+   304→
+   305→          resolve({
+   306→            socket: rawSocket!,
+   307→            tlsSocket,
+   308→            profile,
+   309→            negotiatedCipher: cipher?.name ?? 'unknown',
+   310→            negotiatedVersion: protocol,
+   311→            ja3Hash: profile.ja3_hash,
+   312→            connectTimeMs,
+   313→          });
+   314→        });
+   315→
+   316→        tlsSocket.once('error', (err) => {
+   317→          clearTimeout(connectTimeout);
+   318→          cleanup();
+   319→          this.stats.failureCount++;
+   320→          reject(err);
+   321→        });
+   322→      };
+   323→
+   324→      if (proxyUrl) {
+   325→        connectThroughProxy()
+   326→          .then(establishTLS)
+   327→          .catch((err) => {
+   328→            this.stats.failureCount++;
+   329→            reject(err);
+   330→          });
+   331→      } else {
+   332→        const socket = net.createConnection({ host: hostname, port }, () => {
+   333→          establishTLS(socket);
+   334→        });
+   335→        socket.once('error', (err) => {
+   336→          this.stats.failureCount++;
+   337→          reject(err);
+   338→        });
+   339→      }
+   340→    });
+   341→  }
+   342→
+   343→  /** Build curl-impersonate arguments from a TLS profile and request options. */
+   344→  private buildCurlArgs(
+   345→    url: string,
+   346→    profile: TLSProfile,
+   347→    options: {
+   348→      method?: string;
+   349→      headers?: Record<string, string>;
+   350→      body?: string;
+   351→      proxyUrl?: string;
+   352→      timeout?: number;
+   353→    },
+   354→  ): string[] {
+   355→    // Check profile cache for pre-built base arguments
+   356→    const cacheKey = profile.id;
+   357→    let baseArgs = this.profileCache.get(cacheKey);
+   358→
+   359→    if (!baseArgs) {
+   360→      const target = this.profileToCurlTarget(profile);
+   361→      const cipherStr = profile.cipher_suites.join(':');
+   362→      const alpnStr = profile.alpn_protocols.join(',');
+   363→
+   364→      // Build the base arguments that depend only on the profile
+   365→      baseArgs = [
+   366→        '--impersonate', target,
+   367→        '--ciphers', cipherStr,
+   368→        '--alpn', alpnStr,
+   369→      ];
+   370→
+   371→      // TLS version constraints
+   372→      if (profile.tls_version === 'TLS_1_3') {
+   373→        baseArgs.push('--tlsv1.3', '--tls-max', '1.3');
+   374→      } else {
+   375→        baseArgs.push('--tlsv1.2', '--tls-max', '1.2');
+   376→      }
+   377→
+   378→      this.profileCache.set(cacheKey, baseArgs);
+   379→    }
+   380→
+   381→    const args = [...baseArgs];
+   382→
+   383→    // Request-level options
+   384→    const timeoutSeconds = Math.ceil((options.timeout ?? 30_000) / 1000);
+   385→    args.push(
+   386→      '--connect-timeout', String(timeoutSeconds),
+   387→      '--max-time', String(timeoutSeconds + 10),
+   388→      '--compressed',
+   389→    );
+   390→
+   391→    // HTTP method
+   392→    if (options.method && options.method !== 'GET') {
+   393→      args.push('-X', options.method);
+   394→    }
+   395→
+   396→    // Headers
+   397→    if (options.headers) {
+   398→      for (const [key, value] of Object.entries(options.headers)) {
+   399→        args.push('-H', `${key}: ${value}`);
+   400→      }
+   401→    }
+   402→
+   403→    // Request body
+   404→    if (options.body) {
+   405→      args.push('-d', options.body);
+   406→    }
+   407→
+   408→    // Proxy
+   409→    if (options.proxyUrl) {
+   410→      args.push('--proxy', options.proxyUrl);
+   411→    }
+   412→
+   413→    // Output formatting -- JSON write-out for structured parsing
+   414→    args.push(
+   415→      '-s',
+   416→      '-w', '\n---CURL_JSON---%{json}',
+   417→    );
+   418→
+   419→    args.push(url);
+   420→
+   421→    return args;
+   422→  }
+   423→
+   424→  /** Detect if curl-impersonate is available on the system. */
+   425→  private async detectCurlImpersonate(): Promise<string | null> {
+   426→    // 1. Check well-known file paths first (fastest, no subprocess)
+   427→    for (const path of CURL_IMPERSONATE_PATHS) {
+   428→      try {
+   429→        const { existsSync } = await import('fs');
+   430→        if (existsSync(path)) {
+   431→          logger.debug({ path }, 'Found curl-impersonate at known path');
+   432→          return path;
+   433→        }
+   434→      } catch {
+   435→        // Ignore -- try next
+   436→      }
+   437→    }
+   438→
+   439→    // 2. Use `which` to find binaries in PATH
+   440→    for (const binary of CURL_IMPERSONATE_BINARIES) {
+   441→      try {
+   442→        const found = await this.execWhich(binary);
+   443→        if (found) {
+   444→          logger.debug({ binary, path: found }, 'Found curl-impersonate via which');
+   445→          return found;
+   446→        }
+   447→      } catch {
+   448→        // Not found -- try next binary
+   449→      }
+   450→    }
+   451→
+   452→    // 3. Try executing a binary directly with --version
+   453→    for (const binary of CURL_IMPERSONATE_BINARIES) {
+   454→      try {
+   455→        const version = await this.execWithTimeout(binary, ['--version'], 5000);
+   456→        if (version.includes('curl') && (version.includes('impersonate') || version.includes('BoringSSL'))) {
+   457→          logger.debug({ binary }, 'Confirmed curl-impersonate via --version');
+   458→          return binary;
+   459→        }
+   460→      } catch {
+   461→        // Not executable -- try next
+   462→      }
+   463→    }
+   464→
+   465→    logger.info('curl-impersonate not detected on this system');
+   466→    return null;
+   467→  }
+   468→
+   469→  /** Execute curl-impersonate command and parse the result. */
+   470→  private async executeCurl(args: string[], timeout: number): Promise<CurlImpersonateResult> {
+   471→    if (!this.curlImpersonatePath) {
+   472→      throw new Error('curl-impersonate is not available');
+   473→    }
+   474→
+   475→    const startTime = Date.now();
+   476→
+   477→    return new Promise<CurlImpersonateResult>((resolve, reject) => {
+   478→      const child = execFile(
+   479→        this.curlImpersonatePath!,
+   480→        args,
+   481→        {
+   482→          timeout: timeout + 5_000,
+   483→          maxBuffer: 10 * 1024 * 1024, // 10 MB
+   484→          env: { ...process.env, CURL_IMPERSONATE_ESNI: '0' },
+   485→        },
+   486→        (err, stdout, stderr) => {
+   487→          const connectTimeMs = Date.now() - startTime;
+   488→
+   489→          if (err && !stdout) {
+   490→            reject(new Error(`curl-impersonate failed: ${err.message}`));
+   491→            return;
+   492→          }
+   493→
+   494→          // Separate body from JSON write-out
+   495→          let responseBody = stdout;
+   496→          let curlJson: Record<string, unknown> = {};
+   497→
+   498→          const jsonMarker = '\n---CURL_JSON---';
+   499→          const markerIdx = stdout.lastIndexOf(jsonMarker);
+   500→          if (markerIdx !== -1) {
+   501→            responseBody = stdout.slice(0, markerIdx);
+   502→            const jsonStr = stdout.slice(markerIdx + jsonMarker.length);
+   503→            try {
+   504→              curlJson = JSON.parse(jsonStr);
+   505→            } catch {
+   506→              logger.debug({ jsonStr: jsonStr.slice(0, 200) }, 'Failed to parse curl JSON write-out');
+   507→            }
+   508→          }
+   509→
+   510→          // Extract structured result from curl JSON
+   511→          const statusCode = (curlJson.http_code as number) ?? (err ? 0 : 200);
+   512→          const tlsVersion = (curlJson.ssl_version as string) ?? '';
+   513→          const negotiatedCipher = (curlJson.ssl_cipher as string) ?? '';
+   514→
+   515→          // Parse response headers from curl's stderr or output
+   516→          const headers = this.parseCurlHeaders(stderr);
+   517→
+   518→          // Use profile's JA3 hash as estimate (curl-impersonate matches it exactly)
+   519→          const ja3Hash = (curlJson.ja3_hash as string) ?? '';
+   520→
+   521→          resolve({
+   522→            success: statusCode >= 200 && statusCode < 400,
+   523→            responseBody,
+   524→            statusCode,
+   525→            headers,
+   526→            ja3Hash,
+   527→            connectTimeMs: (curlJson.time_connect as number)
+   528→              ? Math.round((curlJson.time_connect as number) * 1000)
+   529→              : connectTimeMs,
+   530→            tlsVersion,
+   531→            negotiatedCipher,
+   532→          });
+   533→        },
+   534→      );
+   535→
+   536→      // Kill the child process on timeout
+   537→      child.on('close', () => {
+   538→        child.kill();
+   539→      });
+   540→    });
+   541→  }
+   542→
+   543→  /**
+   544→   * Build Node.js TLS options that partially spoof JA3 by reordering ciphers.
+   545→   *
+   546→   * NOTE: Node.js does NOT allow controlling extension ordering, supported groups
+   547→   * ordering, or signature algorithm ordering. This provides PARTIAL JA3 spoofing
+   548→   * -- the cipher component of JA3 will be correct, but the extension component
+   549→   * cannot be controlled. For full spoofing, use curl-impersonate.
+   550→   */
+   551→  private buildSpoofedTLSOptions(profile: TLSProfile, hostname: string): tls.ConnectionOptions {
+   552→    // Map profile cipher names to OpenSSL cipher string format
+   553→    const cipherString = this.cipherSuitesToOpenSSL(profile.cipher_suites);
+   554→
+   555→    const minVersion = profile.tls_version === 'TLS_1_3' ? 'TLSv1.3' : 'TLSv1.2';
+   556→    const maxVersion = 'TLSv1.3';
+   557→
+   558→    return {
+   559→      host: hostname,
+   560→      port: 443,
+   561→      servername: hostname,
+   562→      minVersion,
+   563→      maxVersion,
+   564→      ciphers: cipherString,
+   565→      honorCipherOrder: true,
+   566→      ALPNProtocols: profile.alpn_protocols,
+   567→      rejectUnauthorized: true,
+   568→      // Enable session tickets for more realistic handshake
+   569→      sessionTimeout: 300,
+   570→    };
+   571→  }
+   572→
+   573→  /** Map our TLS profiles to curl-impersonate browser targets. */
+   574→  private profileToCurlTarget(profile: TLSProfile): string {
+   575→    // Try exact match from profile id prefix
+   576→    const profilePrefix = profile.id.split('-').slice(0, 2).join('-');
+   577→    if (CURL_TARGETS[profilePrefix]) {
+   578→      return CURL_TARGETS[profilePrefix];
+   579→    }
+   580→
+   581→    // Fuzzy match by profile name
+   582→    const nameLower = profile.name.toLowerCase();
+   583→
+   584→    if (nameLower.includes('chrome')) {
+   585→      if (nameLower.includes('120') || nameLower.includes('121') || nameLower.includes('122')) return 'chrome120';
+   586→      if (nameLower.includes('116') || nameLower.includes('117') || nameLower.includes('118')) return 'chrome116';
+   587→      if (nameLower.includes('124') || nameLower.includes('125') || nameLower.includes('126')) return 'chrome124';
+   588→      if (nameLower.includes('131') || nameLower.includes('132')) return 'chrome131';
+   589→      return 'chrome120'; // Default to most common Chrome
+   590→    }
+   591→
+   592→    if (nameLower.includes('firefox')) {
+   593→      if (nameLower.includes('133') || nameLower.includes('134')) return 'firefox133';
+   594→      return 'firefox120';
+   595→    }
+   596→
+   597→    if (nameLower.includes('safari')) {
+   598→      if (nameLower.includes('18')) return 'safari18_0';
+   599→      return 'safari17_0';
+   600→    }
+   601→
+   602→    if (nameLower.includes('edge')) {
+   603→      return 'chrome120'; // Edge uses Chromium TLS stack
+   604→    }
+   605→
+   606→    if (nameLower.includes('quantum')) {
+   607→      return 'chrome120'; // Quantum-hybrid profiles based on Chrome
+   608→    }
+   609→
+   610→    // Default to Chrome 120 as the most common browser
+   611→    logger.debug({ profileId: profile.id, profileName: profile.name }, 'No curl target match -- defaulting to chrome120');
+   612→    return 'chrome120';
+   613→  }
+   614→
+   615→  // ---------- Native fallback HTTP request ------------------------------------
+   616→
+   617→  private async nativeFallbackRequest(
+   618→    url: string,
+   619→    options: {
+   620→      method?: string;
+   621→      headers?: Record<string, string>;
+   622→      body?: string;
+   623→      profile?: TLSProfile;
+   624→      proxyUrl?: string;
+   625→      timeout?: number;
+   626→    },
+   627→    profile: TLSProfile | undefined,
+   628→    timeout: number,
+   629→  ): Promise<CurlImpersonateResult> {
+   630→    const startTime = Date.now();
+   631→
+   632→    try {
+   633→      const urlObj = new URL(url);
+   634→      const hostname = urlObj.hostname;
+   635→      const port = parseInt(urlObj.port) || (urlObj.protocol === 'https:' ? 443 : 80);
+   636→
+   637→      if (urlObj.protocol !== 'https:') {
+   638→        // Plain HTTP -- just use native fetch
+   639→        const resp = await fetch(url, {
+   640→          method: options.method ?? 'GET',
+   641→          headers: options.headers,
+   642→          body: options.body,
+   643→          signal: AbortSignal.timeout(timeout),
+   644→        });
+   645→
+   646→        const responseBody = await resp.text();
+   647→        const connectTimeMs = Date.now() - startTime;
+   648→
+   649→        this.stats.successCount++;
+   650→        this.updateAverageConnectTime(connectTimeMs);
+   651→
+   652→        return {
+   653→          success: resp.ok,
+   654→          responseBody,
+   655→          statusCode: resp.status,
+   656→          headers: Object.fromEntries(resp.headers.entries()),
+   657→          ja3Hash: profile?.ja3_hash ?? '',
+   658→          connectTimeMs,
+   659→          tlsVersion: '',
+   660→          negotiatedCipher: '',
+   661→        };
+   662→      }
+   663→
+   664→      // HTTPS with partial TLS spoofing
+   665→      const spoofedConn = await this.createSpoofedConnection(hostname, port, profile!, options.proxyUrl);
+   666→
+   667→      // Send HTTP request over the spoofed TLS socket
+   668→      const method = options.method ?? 'GET';
+   669→      const path = urlObj.pathname + urlObj.search;
+   670→      const requestHeaders: Record<string, string> = {
+   671→        'Host': hostname,
+   672→        'Connection': 'close',
+   673→        ...options.headers,
+   674→      };
+   675→
+   676→      let requestLine = `${method} ${path} HTTP/1.1\r\n`;
+   677→      for (const [key, value] of Object.entries(requestHeaders)) {
+   678→        requestLine += `${key}: ${value}\r\n`;
+   679→      }
+   680→      requestLine += '\r\n';
+   681→
+   682→      if (options.body) {
+   683→        requestLine += options.body;
+   684→      }
+   685→
+   686→      spoofedConn.tlsSocket.write(requestLine);
+   687→
+   688→      // Read response
+   689→      const responseData = await this.readHttpResponse(spoofedConn.tlsSocket, timeout);
+   690→      spoofedConn.tlsSocket.destroy();
+   691→
+   692→      this.stats.successCount++;
+   693→      this.updateAverageConnectTime(responseData.connectTimeMs);
+   694→
+   695→      return {
+   696→        success: responseData.statusCode >= 200 && responseData.statusCode < 400,
+   697→        responseBody: responseData.body,
+   698→        statusCode: responseData.statusCode,
+   699→        headers: responseData.headers,
+   700→        ja3Hash: profile?.ja3_hash ?? '',
+   701→        connectTimeMs: responseData.connectTimeMs,
+   702→        tlsVersion: spoofedConn.negotiatedVersion,
+   703→        negotiatedCipher: spoofedConn.negotiatedCipher,
+   704→      };
+   705→    } catch (err: any) {
+   706→      this.stats.failureCount++;
+   707→      logger.warn({ err: err.message, url }, 'Native fallback request failed');
+   708→
+   709→      return {
+   710→        success: false,
+   711→        responseBody: '',
+   712→        statusCode: 0,
+   713→        headers: {},
+   714→        ja3Hash: profile?.ja3_hash ?? '',
+   715→        connectTimeMs: Date.now() - startTime,
+   716→        tlsVersion: '',
+   717→        negotiatedCipher: '',
+   718→      };
+   719→    }
+   720→  }
+   721→
+   722→  /** Read an HTTP response from a TLSSocket. */
+   723→  private readHttpResponse(
+   724→    socket: tls.TLSSocket,
+   725→    timeout: number,
+   726→  ): Promise<{ statusCode: number; headers: Record<string, string>; body: string; connectTimeMs: number }> {
+   727→    return new Promise((resolve, reject) => {
+   728→      const chunks: Buffer[] = [];
+   729→      let headersParsed = false;
+   730→      let statusCode = 0;
+   731→      const headers: Record<string, string> = {};
+   732→      let bodyStartIdx = 0;
+   733→      let headerBuffer = Buffer.alloc(0);
+   734→
+   735→      const timer = setTimeout(() => {
+   736→        socket.destroy();
+   737→        reject(new Error('HTTP response read timeout'));
+   738→      }, timeout);
+   739→
+   740→      socket.on('data', (chunk: Buffer) => {
+   741→        if (!headersParsed) {
+   742→          headerBuffer = Buffer.concat([headerBuffer, chunk]);
+   743→          const headerEnd = headerBuffer.indexOf('\r\n\r\n');
+   744→          if (headerEnd !== -1) {
+   745→            headersParsed = true;
+   746→            const headerStr = headerBuffer.slice(0, headerEnd).toString();
+   747→            bodyStartIdx = headerEnd + 4;
+   748→
+   749→            // Parse status line
+   750→            const statusLine = headerStr.split('\r\n')[0];
+   751→            const statusMatch = statusLine.match(/HTTP\/\d\.\d\s+(\d+)/);
+   752→            statusCode = statusMatch ? parseInt(statusMatch[1]) : 0;
+   753→
+   754→            // Parse headers
+   755→            const headerLines = headerStr.split('\r\n').slice(1);
+   756→            for (const line of headerLines) {
+   757→              const colonIdx = line.indexOf(':');
+   758→              if (colonIdx > 0) {
+   759→                const key = line.slice(0, colonIdx).trim();
+   760→                const value = line.slice(colonIdx + 1).trim();
+   761→                headers[key.toLowerCase()] = value;
+   762→              }
+   763→            }
+   764→
+   765→            // Capture any body data in this first chunk
+   766→            const bodyPart = headerBuffer.slice(bodyStartIdx);
+   767→            if (bodyPart.length > 0) chunks.push(bodyPart);
+   768→          }
+   769→        } else {
+   770→          chunks.push(chunk);
+   771→        }
+   772→      });
+   773→
+   774→      socket.on('end', () => {
+   775→        clearTimeout(timer);
+   776→        resolve({
+   777→          statusCode,
+   778→          headers,
+   779→          body: Buffer.concat(chunks).toString(),
+   780→          connectTimeMs: 0, // Measured by caller
+   781→        });
+   782→      });
+   783→
+   784→      socket.on('error', (err) => {
+   785→        clearTimeout(timer);
+   786→        reject(err);
+   787→      });
+   788→    });
+   789→  }
+   790→
+   791→  // ---------- Cipher suite helpers --------------------------------------------
+   792→
+   793→  /** Convert TLS cipher suite names to OpenSSL cipher string format. */
+   794→  private cipherSuitesToOpenSSL(cipherSuites: string[]): string {
+   795→    // OpenSSL uses colons to separate cipher suite names
+   796→    // The names we store are already in OpenSSL format
+   797→    return cipherSuites.join(':');
+   798→  }
+   799→
+   800→  // ---------- Utility helpers --------------------------------------------------
+   801→
+   802→  /** Run `which` to find a binary. */
+   803→  private execWhich(binary: string): Promise<string | null> {
+   804→    return new Promise((resolve) => {
+   805→      execFile('which', [binary], { timeout: 3000 }, (err, stdout) => {
+   806→        if (err || !stdout.trim()) {
+   807→          resolve(null);
+   808→        } else {
+   809→          resolve(stdout.trim());
+   810→        }
+   811→      });
+   812→    });
+   813→  }
+   814→
+   815→  /** Execute a command with a timeout. */
+   816→  private execWithTimeout(command: string, args: string[], timeoutMs: number): Promise<string> {
+   817→    return new Promise((resolve, reject) => {
+   818→      execFile(command, args, { timeout: timeoutMs }, (err, stdout) => {
+   819→        if (err) {
+   820→          reject(err);
+   821→        } else {
+   822→          resolve(stdout);
+   823→        }
+   824→      });
+   825→    });
+   826→  }
+   827→
+   828→  /** Parse headers from curl's stderr output. */
+   829→  private parseCurlHeaders(stderr: string): Record<string, string> {
+   830→    const headers: Record<string, string> = {};
+   831→    if (!stderr) return headers;
+   832→
+   833→    const lines = stderr.split('\n');
+   834→    for (const line of lines) {
+   835→      const match = line.match(/^<\s*([^:]+):\s*(.+)$/);
+   836→      if (match) {
+   837→        headers[match[1].trim().toLowerCase()] = match[2].trim();
+   838→      }
+   839→    }
+   840→
+   841→    return headers;
+   842→  }
+   843→
+   844→  /** Increment the profile usage counter. */
+   845→  private incrementProfileUsage(profileId: string): void {
+   846→    this.stats.profileUsage[profileId] = (this.stats.profileUsage[profileId] ?? 0) + 1;
+   847→  }
+   848→
+   849→  /** Update the running average connect time. */
+   850→  private updateAverageConnectTime(connectTimeMs: number): void {
+   851→    const total = this.stats.successCount + this.stats.failureCount;
+   852→    if (total <= 1) {
+   853→      this.stats.averageConnectTimeMs = connectTimeMs;
+   854→    } else {
+   855→      this.stats.averageConnectTimeMs =
+   856→        Math.round((this.stats.averageConnectTimeMs * (total - 1) + connectTimeMs) / total);
+   857→    }
+   858→  }
+   859→
+   860→  /** Persist stats to cache. */
+   861→  private async persistStats(): Promise<void> {
+   862→    try {
+   863→      await cacheSet(CACHE_KEY_PREFIX + 'stats', this.stats, STATS_TTL);
+   864→    } catch {
+   865→      // Cache unavailable -- ignore
+   866→    }
+   867→  }
+   868→
+   869→  /** Get current spoofer statistics. */
+   870→  getStats(): Record<string, unknown> {
+   871→    return {
+   872→      ...this.stats,
+   873→      curlImpersonatePath: this.curlImpersonatePath,
+   874→      profileCacheSize: this.profileCache.size,
+   875→      initialized: this.initialized,
+   876→    };
+   877→  }
+   878→}
+   879→
+   880→// ---------- Singleton export ---------------------------------------------------
+   881→
+   882→export const tlsSpoofer = new TLSFingerprintSpoofer();
+   883→

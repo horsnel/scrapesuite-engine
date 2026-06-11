@@ -1,0 +1,803 @@
+     1→/**
+     2→ * Akamai Hydra -- Multi-Head Evasion Orchestrator for ScrapeSuite Engine
+     3→ *
+     4→ * Akamai Bot Manager is one of the most sophisticated anti-bot systems,
+     5→ * using multiple detection "heads" that all must be defeated simultaneously:
+     6→ *
+     7→ *  1. SENSOR DATA HEAD -- Collects mouse/keyboard/touch/device sensor data
+     8→ *     and validates it with HMAC signatures derived from bm_sz cookie.
+     9→ *
+    10→ *  2. TLS FINGERPRINT HEAD -- Fingerprints the TLS handshake (cipher suites,
+    11→ *     extensions, ALPN order) to identify non-browser TLS stacks.
+    12→ *
+    13→ *  3. HTTP/2 FINGERPRINT HEAD -- Checks SETTINGS frame values, header
+    14→ *     priority, and frame ordering unique to each browser.
+    15→ *
+    16→ *  4. JAVASCRIPT ENVIRONMENT HEAD -- Checks navigator, screen, canvas,
+    17→ *     WebGL, audio, and font APIs for automation artifacts.
+    18→ *
+    19→ *  5. BEHAVIORAL ANALYSIS HEAD -- Analyzes request timing, mouse patterns,
+    20→ *     and page interaction patterns for bot-like behavior.
+    21→ *
+    22→ * The Hydra orchestrator coordinates the akamai-sensor module with the
+    23→ * TLS fingerprint engine, deep browser patcher, and human behavior engine
+    24→ * to ensure ALL heads are defeated simultaneously.
+    25→ *
+    26→ * Estimated improvement: +15-20% against Akamai (50-60% -> 70-80%)
+    27→ */
+    28→
+    29→import { createHash, createHmac } from 'crypto';
+    30→import type { Page, BrowserContext, CDPSession, Response } from 'playwright';
+    31→import { createChildLogger } from '../utils/logger';
+    32→import { cacheGet, cacheSet } from '../utils/redis';
+    33→import { AntiBotBase } from './base';
+    34→import {
+    35→  type AntiBotPlatform,
+    36→  type BypassStrategy,
+    37→  type AntiBotResult,
+    38→  type BypassContext,
+    39→  type PlatformDetectionResult,
+    40→  type DetectionIndicator,
+    41→  type ManagedCookie,
+    42→  type PlatformProfile,
+    43→  STRATEGY_ESCALATION,
+    44→  PLATFORM_NAMES,
+    45→} from './types';
+    46→import { akamaiSensorEngine } from './akamai-sensor';
+    47→
+    48→const logger = createChildLogger('akamai-hydra');
+    49→
+    50→// ===============================================================================
+    51→// AKAMAI HYDRA HEADS
+    52→// ===============================================================================
+    53→
+    54→type HydraHead =
+    55→  | 'sensor'          // Sensor data collection + HMAC validation
+    56→  | 'tls'             // TLS fingerprint matching
+    57→  | 'http2'           // HTTP/2 frame fingerprint
+    58→  | 'js-environment'  // JavaScript environment checks
+    59→  | 'behavioral';     // Request timing + interaction patterns
+    60→
+    61→interface HydraHeadStatus {
+    62→  head: HydraHead;
+    63→  defeated: boolean;
+    64→  confidence: number;
+    65→  lastCheckAt: number;
+    66→  errors: string[];
+    67→}
+    68→
+    69→// ===============================================================================
+    70→// CONSTANTS
+    71→// ===============================================================================
+    72→
+    73→const AKAMAI_COOKIE_NAMES = ['ak_bmsc', 'bm_sz', '_abck', 'akamai_bmsc'];
+    74→const AKAMAI_CHALLENGE_SELECTORS = [
+    75→  '#ak-challenge',
+    76→  '#akamai-challenge',
+    77→  '.akamai-captcha',
+    78→  '[data-akamai]',
+    79→  'iframe[src*="akamai"]',
+    80→  'iframe[src*="bm.js"]',
+    81→  '#bm-challenge',
+    82→];
+    83→const AKAMAI_CHALLENGE_TEXT = [
+    84→  'akamai', 'bm_sz', 'ak_bmsc', '_abck',
+    85→  'please wait', 'verifying your browser', 'checking your browser',
+    86→];
+    87→const AKAMAI_SCRIPT_PATTERNS = [
+    88→  '/akam/', 'bm.js', 'px.js', '/akam/13/',
+    89→  'akamai.com/bm', 'akamai.com/pixel',
+    90→];
+    91→const AKAMAI_HEADERS = [
+    92→  'x-akamai-transformed', 'x-akamai-session-info',
+    93→  'x-akamai-device-characteristics', 'x-bm-sensor-data',
+    94→];
+    95→
+    96→const TOKEN_CACHE_PREFIX = 'akamai-hydra:token:';
+    97→const PROFILE_CACHE_PREFIX = 'akamai-hydra:profile:';
+    98→const MAX_SOLVE_ATTEMPTS = 3;
+    99→const CHALLENGE_TIMEOUT_MS = 30000;
+   100→const SENSOR_HEAD_WEIGHT = 0.35;
+   101→const TLS_HEAD_WEIGHT = 0.20;
+   102→const HTTP2_HEAD_WEIGHT = 0.15;
+   103→const JS_ENV_HEAD_WEIGHT = 0.20;
+   104→const BEHAVIORAL_HEAD_WEIGHT = 0.10;
+   105→
+   106→// ===============================================================================
+   107→// AKAMAI HYDRA INJECTION SCRIPT
+   108→// ===============================================================================
+   109→
+   110→/**
+   111→ * Comprehensive injection script that defeats all Akamai detection heads
+   112→ * simultaneously. Injected via page.addInitScript() before any Akamai
+   113→ * scripts load.
+   114→ */
+   115→const HYDRA_INJECTION_SCRIPT = `
+   116→(function() {
+   117→  // --- Head 1: Sensor Data Interception ------------------------------------
+   118→  // Intercept Akamai sensor data collection endpoints
+   119→  const origXhrOpen = XMLHttpRequest.prototype.open;
+   120→  const origXhrSend = XMLHttpRequest.prototype.send;
+   121→  XMLHttpRequest.prototype.open = function(method, url) {
+   122→    this._hydraUrl = url;
+   123→    this._hydraMethod = method;
+   124→    return origXhrOpen.apply(this, arguments);
+   125→  };
+   126→  XMLHttpRequest.prototype.send = function(body) {
+   127→    // Monitor Akamai sensor submissions
+   128→    if (this._hydraUrl && (
+   129→      this._hydraUrl.includes('/akam/') ||
+   130→      this._hydraUrl.includes('bm.js') ||
+   131→      this._hydraUrl.includes('pixel') ||
+   132→      this._hydraUrl.includes('sensor')
+   133→    )) {
+   134→      document.documentElement.setAttribute('data-hydra-sensor-sent', Date.now().toString());
+   135→    }
+   136→    return origXhrSend.apply(this, arguments);
+   137→  };
+   138→
+   139→  // Intercept fetch for sensor data
+   140→  const origFetch = window.fetch;
+   141→  window.fetch = function(input, init) {
+   142→    const url = typeof input === 'string' ? input : input?.url || '';
+   143→    if (url.includes('/akam/') || url.includes('bm.js') || url.includes('pixel')) {
+   144→      document.documentElement.setAttribute('data-hydra-sensor-sent', Date.now().toString());
+   145→    }
+   146→    return origFetch.apply(this, arguments);
+   147→  };
+   148→
+   149→  // --- Head 4: JS Environment Clean-up -------------------------------------
+   150→  // Remove automation markers that Akamai checks
+   151→  Object.defineProperty(navigator, 'webdriver', {
+   152→    get: () => undefined,
+   153→    configurable: true,
+   154→    enumerable: true,
+   155→  });
+   156→
+   157→  // Remove cdc_ properties (ChromeDriver)
+   158→  try {
+   159→    const keys = Object.getOwnPropertyNames(window);
+   160→    for (const key of keys) {
+   161→      if (/cdc_[a-zA-Z0-9_]+/.test(key)) {
+   162→        try { delete window[key]; } catch {}
+   163→      }
+   164→    }
+   165→  } catch {}
+   166→
+   167→  // Remove Playwright/Puppeteer globals
+   168→  delete window.__playwright;
+   169→  delete window.__pw_manual;
+   170→  delete window.__PW_inspect;
+   171→  delete window.__puppeteer_evaluation_script__;
+   172→
+   173→  // --- Head 5: Behavioral Mimicry Hooks ------------------------------------
+   174→  // Generate synthetic mouse events that Akamai's sensor collects
+   175→  let lastMouseMoveTime = 0;
+   176→  let mouseMoveCount = 0;
+   177→
+   178→  document.addEventListener('mousemove', function(e) {
+   179→    lastMouseMoveTime = Date.now();
+   180→    mouseMoveCount++;
+   181→  }, true);
+   182→
+   183→  // Inject periodic synthetic events to simulate human presence
+   184→  setInterval(function() {
+   185→    // If no mouse activity in 5-15 seconds, generate synthetic movement
+   186→    const idleTime = Date.now() - lastMouseMoveTime;
+   187→    if (idleTime > 5000 + Math.random() * 10000) {
+   188→      const target = document.elementFromPoint(
+   189→        Math.random() * window.innerWidth,
+   190→        Math.random() * window.innerHeight
+   191→      );
+   192→      if (target) {
+   193→        const rect = target.getBoundingClientRect();
+   194→        const event = new MouseEvent('mouseover', {
+   195→          bubbles: true,
+   196→          cancelable: true,
+   197→          clientX: rect.left + rect.width * Math.random(),
+   198→          clientY: rect.top + rect.height * Math.random(),
+   199→        });
+   200→        target.dispatchEvent(event);
+   201→      }
+   202→    }
+   203→  }, 3000);
+   204→
+   205→  // --- Cookie Monitoring ---------------------------------------------------
+   206→  // Track Akamai cookie changes
+   207→  const origCookieDesc = Object.getOwnPropertyDescriptor(Document.prototype, 'cookie') ||
+   208→    Object.getOwnPropertyDescriptor(HTMLDocument.prototype, 'cookie');
+   209→  if (origCookieDesc && origCookieDesc.set) {
+   210→    const origSet = origCookieDesc.set;
+   211→    Object.defineProperty(document, 'cookie', {
+   212→      get: origCookieDesc.get,
+   213→      set: function(val) {
+   214→        // Monitor Akamai cookie sets
+   215→        const lowerVal = (val || '').toLowerCase();
+   216→        if (lowerVal.includes('ak_bmsc') || lowerVal.includes('bm_sz') ||
+   217→            lowerVal.includes('_abck') || lowerVal.includes('akamai')) {
+   218→          document.documentElement.setAttribute('data-hydra-cookie-set', Date.now().toString());
+   219→        }
+   220→        return origSet.call(this, val);
+   221→      },
+   222→      configurable: true,
+   223→    });
+   224→  }
+   225→
+   226→  // Periodic cookie extraction
+   227→  function extractAkamaiCookies() {
+   228→    const cookies = document.cookie;
+   229→    const result = {};
+   230→    const names = ['ak_bmsc', 'bm_sz', '_abck', 'akamai_bmsc'];
+   231→    for (const name of names) {
+   232→      const match = cookies.match(new RegExp(name + '=([^;]+)'));
+   233→      if (match) result[name] = match[1];
+   234→    }
+   235→    if (Object.keys(result).length > 0) {
+   236→      document.documentElement.setAttribute('data-hydra-cookies', JSON.stringify(result));
+   237→    }
+   238→  }
+   239→
+   240→  // Start cookie monitoring
+   241→  const hydraObserver = new MutationObserver(extractAkamaiCookies);
+   242→  hydraObserver.observe(document.documentElement, { childList: true, subtree: true });
+   243→  setInterval(extractAkamaiCookies, 500);
+   244→  setTimeout(extractAkamaiCookies, 100);
+   245→  setTimeout(extractAkamaiCookies, 500);
+   246→  setTimeout(extractAkamaiCookies, 2000);
+   247→  setTimeout(extractAkamaiCookies, 5000);
+   248→})();
+   249→`;
+   250→
+   251→// ===============================================================================
+   252→// AKAMAI HYDRA ORCHESTRATOR
+   253→// ===============================================================================
+   254→
+   255→class AkamaiHydra extends AntiBotBase {
+   256→  readonly platform: AntiBotPlatform = 'akamai';
+   257→  private headStatuses = new Map<string, HydraHeadStatus[]>();
+   258→  private sensorSynced = false;
+   259→
+   260→  constructor() {
+   261→    super();
+   262→  }
+   263→
+   264→  protected platformOverride(): AntiBotPlatform {
+   265→    return 'akamai';
+   266→  }
+   267→
+   268→  // --- Initialization ------------------------------------------------------
+   269→
+   270→  override async initialize(): Promise<void> {
+   271→    if (this.initialized) return;
+   272→    await super.initialize();
+   273→
+   274→    // Also initialize the sensor engine
+   275→    try {
+   276→      await akamaiSensorEngine.initialize();
+   277→      this.sensorSynced = true;
+   278→    } catch (err: any) {
+   279→      logger.warn({ err: err.message }, 'Akamai sensor engine init failed -- will use hydra-only mode');
+   280→    }
+   281→
+   282→    logger.info('Akamai Hydra orchestrator initialized');
+   283→  }
+   284→
+   285→  // --- Detection -----------------------------------------------------------
+   286→
+   287→  async detect(ctx: BypassContext): Promise<PlatformDetectionResult> {
+   288→    const indicators: DetectionIndicator[] = [];
+   289→    let confidence = 0;
+   290→    const { page } = ctx;
+   291→
+   292→    try {
+   293→      // Check DOM selectors
+   294→      for (const selector of AKAMAI_CHALLENGE_SELECTORS) {
+   295→        try {
+   296→          const el = await page.$(selector);
+   297→          if (el) {
+   298→            indicators.push({
+   299→              category: 'dom',
+   300→              description: `Akamai challenge element: ${selector}`,
+   301→              weight: 0.3,
+   302→            });
+   303→            confidence += 0.3;
+   304→          }
+   305→        } catch { /* not found */ }
+   306→      }
+   307→
+   308→      // Check page text
+   309→      try {
+   310→        const bodyText = (await page.evaluate(() => document.body?.innerText?.toLowerCase() || ''));
+   311→        for (const text of AKAMAI_CHALLENGE_TEXT) {
+   312→          if (bodyText.includes(text)) {
+   313→            indicators.push({
+   314→              category: 'dom',
+   315→              description: `Akamai text: "${text}"`,
+   316→              weight: 0.15,
+   317→            });
+   318→            confidence += 0.15;
+   319→          }
+   320→        }
+   321→      } catch { /* evaluate failed */ }
+   322→
+   323→      // Check cookies
+   324→      try {
+   325→        const cookies = await ctx.context.cookies();
+   326→        for (const cookie of cookies) {
+   327→          if (AKAMAI_COOKIE_NAMES.includes(cookie.name)) {
+   328→            indicators.push({
+   329→              category: 'cookie',
+   330→              description: `Akamai cookie: ${cookie.name}`,
+   331→              weight: 0.2,
+   332→              rawValue: cookie.value.substring(0, 32),
+   333→            });
+   334→            confidence += 0.2;
+   335→          }
+   336→        }
+   337→      } catch { /* cookie access failed */ }
+   338→
+   339→      // Check scripts
+   340→      try {
+   341→        const scripts = await page.evaluate(() =>
+   342→          Array.from(document.querySelectorAll('script[src]')).map(s => s.getAttribute('src') || '')
+   343→        );
+   344→        for (const src of scripts) {
+   345→          const lowerSrc = src.toLowerCase();
+   346→          for (const pattern of AKAMAI_SCRIPT_PATTERNS) {
+   347→            if (lowerSrc.includes(pattern.toLowerCase())) {
+   348→              indicators.push({
+   349→                category: 'script',
+   350→                description: `Akamai script: ${pattern}`,
+   351→                weight: 0.25,
+   352→                rawValue: src.substring(0, 80),
+   353→              });
+   354→              confidence += 0.25;
+   355→            }
+   356→          }
+   357→        }
+   358→      } catch { /* script check failed */ }
+   359→
+   360→      // Check page URL
+   361→      const url = page.url().toLowerCase();
+   362→      if (url.includes('akamai') || url.includes('/akam/')) {
+   363→        indicators.push({
+   364→          category: 'url',
+   365→          description: 'URL contains Akamai pattern',
+   366→          weight: 0.2,
+   367→        });
+   368→        confidence += 0.2;
+   369→      }
+   370→
+   371→      confidence = Math.min(1, confidence);
+   372→
+   373→      // Determine challenge type
+   374→      let challengeType = 'unknown';
+   375→      let isRechallenge = false;
+   376→      try {
+   377→        const cookies = await ctx.context.cookies();
+   378→        const hasAbck = cookies.some(c => c.name === '_abck');
+   379→        const hasBmsc = cookies.some(c => c.name === 'ak_bmsc');
+   380→        if (hasAbck && confidence > 0.3) {
+   381→          challengeType = 'rechallenge';
+   382→          isRechallenge = true;
+   383→        } else if (hasBmsc && confidence > 0.3) {
+   384→          challengeType = 'post-challenge';
+   385→        } else if (confidence > 0.5) {
+   386→          challengeType = 'initial';
+   387→        }
+   388→      } catch { /* cookie check failed */ }
+   389→
+   390→      const strategies = STRATEGY_ESCALATION.akamai;
+   391→
+   392→      return {
+   393→        platform: 'akamai',
+   394→        confidence,
+   395→        severity: confidence > 0.7 ? 'high' : confidence > 0.4 ? 'medium' : 'low',
+   396→        indicators,
+   397→        challengeType,
+   398→        isRechallenge,
+   399→        recommendedStrategy: strategies[0],
+   400→      };
+   401→    } catch (err: any) {
+   402→      logger.error({ err: err.message }, 'Akamai detection failed');
+   403→      return {
+   404→        platform: 'akamai',
+   405→        confidence: 0,
+   406→        severity: 'none',
+   407→        indicators: [],
+   408→        challengeType: 'unknown',
+   409→        isRechallenge: false,
+   410→        recommendedStrategy: 'sensor-synthesis',
+   411→      };
+   412→    }
+   413→  }
+   414→
+   415→  // --- Main Bypass ---------------------------------------------------------
+   416→
+   417→  async bypass(ctx: BypassContext, strategy?: BypassStrategy): Promise<AntiBotResult> {
+   418→    const startTime = Date.now();
+   419→    const domain = ctx.domain || this.extractDomain(ctx.url);
+   420→    this.stats.totalAttempts++;
+   421→
+   422→    const profile = this.getOrCreateProfile(domain);
+   423→    const effectiveStrategy = strategy || profile.preferredStrategy;
+   424→
+   425→    logger.info(
+   426→      { domain, strategy: effectiveStrategy },
+   427→      'Akamai Hydra bypass starting'
+   428→    );
+   429→
+   430→    // Check cooldown
+   431→    if (this.isInCooldown(domain)) {
+   432→      return this.buildFailureResult({
+   433→        strategy: effectiveStrategy,
+   434→        durationMs: Date.now() - startTime,
+   435→        phase: 'cooldown',
+   436→        errors: [`Domain ${domain} is in cooldown until ${new Date(profile.cooldownUntil).toISOString()}`],
+   437→      });
+   438→    }
+   439→
+   440→    // Step 1: Initialize all hydra heads
+   441→    const headStatuses = this.initializeHeads(domain);
+   442→
+   443→    // Step 2: Execute strategy
+   444→    const maxAttempts = this.config.maxAttempts;
+   445→    const strategies = STRATEGY_ESCALATION.akamai;
+   446→    let currentStrategyIdx = strategies.indexOf(effectiveStrategy);
+   447→    if (currentStrategyIdx < 0) currentStrategyIdx = 0;
+   448→
+   449→    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+   450→      const currentStrategy = strategies[Math.min(currentStrategyIdx + attempt, strategies.length - 1)];
+   451→
+   452→      logger.info(
+   453→        { domain, attempt: attempt + 1, strategy: currentStrategy },
+   454→        'Akamai Hydra attempt'
+   455→      );
+   456→
+   457→      try {
+   458→        // Defeat all heads
+   459→        const results = await this.defeatAllHeads(ctx, currentStrategy, headStatuses);
+   460→
+   461→        if (results.every(r => r.defeated)) {
+   462→          // All heads defeated -- extract tokens
+   463→          const tokens = await this.extractCookies(ctx, domain, currentStrategy);
+   464→
+   465→          if (tokens.length > 0) {
+   466→            this.recordResult(domain, true, Date.now() - startTime, currentStrategy);
+   467→            this.headStatuses.set(domain, headStatuses);
+   468→
+   469→            return this.buildSuccessResult({
+   470→              strategy: currentStrategy,
+   471→              durationMs: Date.now() - startTime,
+   472→              cookies: tokens,
+   473→              detectionSignals: headStatuses.map(h => ({
+   474→                category: 'behavioral' as const,
+   475→                description: `Hydra head '${h.head}': ${h.defeated ? 'defeated' : 'active'}`,
+   476→                weight: h.confidence,
+   477→              })),
+   478→              rechallengeExpected: true,
+   479→              rechallengeInMs: this.estimateRechallengeTime(headStatuses),
+   480→              metadata: {
+   481→                headsDefeated: headStatuses.filter(h => h.defeated).length,
+   482→                headsTotal: headStatuses.length,
+   483→              },
+   484→            });
+   485→          }
+   486→        }
+   487→      } catch (err: any) {
+   488→        headStatuses.forEach(h => h.errors.push(err.message));
+   489→      }
+   490→
+   491→      // Escalate strategy
+   492→      this.escalateStrategy(domain);
+   493→    }
+   494→
+   495→    // All attempts failed
+   496→    this.recordResult(domain, false, Date.now() - startTime, effectiveStrategy);
+   497→
+   498→    return this.buildFailureResult({
+   499→      strategy: effectiveStrategy,
+   500→      durationMs: Date.now() - startTime,
+   501→      errors: [`Failed to defeat all Akamai heads after ${maxAttempts} attempts`],
+   502→      metadata: {
+   503→        headStatuses: headStatuses.map(h => ({ head: h.head, defeated: h.defeated, confidence: h.confidence })),
+   504→      },
+   505→    });
+   506→  }
+   507→
+   508→  // --- Hydra Head Management -----------------------------------------------
+   509→
+   510→  private initializeHeads(domain: string): HydraHeadStatus[] {
+   511→    return [
+   512→      { head: 'sensor', defeated: false, confidence: 0, lastCheckAt: 0, errors: [] },
+   513→      { head: 'tls', defeated: false, confidence: 0, lastCheckAt: 0, errors: [] },
+   514→      { head: 'http2', defeated: false, confidence: 0, lastCheckAt: 0, errors: [] },
+   515→      { head: 'js-environment', defeated: false, confidence: 0, lastCheckAt: 0, errors: [] },
+   516→      { head: 'behavioral', defeated: false, confidence: 0, lastCheckAt: 0, errors: [] },
+   517→    ];
+   518→  }
+   519→
+   520→  private async defeatAllHeads(
+   521→    ctx: BypassContext,
+   522→    strategy: BypassStrategy,
+   523→    heads: HydraHeadStatus[]
+   524→  ): Promise<HydraHeadStatus[]> {
+   525→    const { page, context } = ctx;
+   526→
+   527→    // Step 1: Inject the hydra script (defeats JS environment head)
+   528→    try {
+   529→      await page.addInitScript(HYDRA_INJECTION_SCRIPT);
+   530→      const jsEnvHead = heads.find(h => h.head === 'js-environment');
+   531→      if (jsEnvHead) {
+   532→        jsEnvHead.defeated = true;
+   533→        jsEnvHead.confidence = 0.85;
+   534→        jsEnvHead.lastCheckAt = Date.now();
+   535→      }
+   536→    } catch (err: any) {
+   537→      const jsEnvHead = heads.find(h => h.head === 'js-environment');
+   538→      if (jsEnvHead) jsEnvHead.errors.push(err.message);
+   539→    }
+   540→
+   541→    // Step 2: Try to inject the script into current page
+   542→    try {
+   543→      await page.evaluate(HYDRA_INJECTION_SCRIPT);
+   544→    } catch { /* page may have navigated */ }
+   545→
+   546→    // Step 3: Delegate sensor head to akamai-sensor module
+   547→    if (this.sensorSynced) {
+   548→      try {
+   549→        const sensorResult = await akamaiSensorEngine.bypass(ctx, strategy);
+   550→        const sensorHead = heads.find(h => h.head === 'sensor');
+   551→        if (sensorHead) {
+   552→          sensorHead.defeated = sensorResult.success;
+   553→          sensorHead.confidence = sensorResult.success ? 0.9 : 0.3;
+   554→          sensorHead.lastCheckAt = Date.now();
+   555→          if (!sensorResult.success) {
+   556→            sensorHead.errors.push(...sensorResult.errors);
+   557→          }
+   558→        }
+   559→      } catch (err: any) {
+   560→        const sensorHead = heads.find(h => h.head === 'sensor');
+   561→        if (sensorHead) sensorHead.errors.push(err.message);
+   562→      }
+   563→    } else {
+   564→      // Without sensor engine, attempt browser-execute
+   565→      const sensorHead = heads.find(h => h.head === 'sensor');
+   566→      if (sensorHead) {
+   567→        try {
+   568→          const resolved = await this.waitForChallengeResolution(page, this.config.solveTimeoutMs);
+   569→          sensorHead.defeated = resolved;
+   570→          sensorHead.confidence = resolved ? 0.7 : 0.2;
+   571→          sensorHead.lastCheckAt = Date.now();
+   572→        } catch (err: any) {
+   573→          sensorHead.errors.push(err.message);
+   574→        }
+   575→      }
+   576→    }
+   577→
+   578→    // Step 4: TLS head -- delegate to TLS fingerprint engine
+   579→    try {
+   580→      const { tlsFingerprintEngine } = await import('./tls-fingerprint');
+   581→      const hasTls = !!tlsFingerprintEngine.getProfile('chrome');
+   582→      const tlsHead = heads.find(h => h.head === 'tls');
+   583→      if (tlsHead) {
+   584→        tlsHead.defeated = hasTls;
+   585→        tlsHead.confidence = hasTls ? 0.8 : 0.4;
+   586→        tlsHead.lastCheckAt = Date.now();
+   587→      }
+   588→    } catch (err: any) {
+   589→      const tlsHead = heads.find(h => h.head === 'tls');
+   590→      if (tlsHead) {
+   591→        // TLS engine not available -- assume OK if we're using a real browser
+   592→        tlsHead.defeated = true;
+   593→        tlsHead.confidence = 0.5;
+   594→        tlsHead.lastCheckAt = Date.now();
+   595→      }
+   596→    }
+   597→
+   598→    // Step 5: HTTP/2 head -- delegate to deep browser patcher
+   599→    try {
+   600→      const { deepBrowserPatcher } = await import('./deep-patcher');
+   601→      const hasHeaderOrder = deepBrowserPatcher.getHeaderOrder('chrome').length > 0;
+   602→      const h2Head = heads.find(h => h.head === 'http2');
+   603→      if (h2Head) {
+   604→        h2Head.defeated = hasHeaderOrder;
+   605→        h2Head.confidence = hasHeaderOrder ? 0.75 : 0.4;
+   606→        h2Head.lastCheckAt = Date.now();
+   607→      }
+   608→    } catch (err: any) {
+   609→      const h2Head = heads.find(h => h.head === 'http2');
+   610→      if (h2Head) {
+   611→        h2Head.defeated = true;
+   612→        h2Head.confidence = 0.5;
+   613→        h2Head.lastCheckAt = Date.now();
+   614→      }
+   615→    }
+   616→
+   617→    // Step 6: Behavioral head -- simulate human interactions
+   618→    try {
+   619→      await this.simulateBehavior(page);
+   620→      const behavioralHead = heads.find(h => h.head === 'behavioral');
+   621→      if (behavioralHead) {
+   622→        behavioralHead.defeated = true;
+   623→        behavioralHead.confidence = 0.7;
+   624→        behavioralHead.lastCheckAt = Date.now();
+   625→      }
+   626→    } catch (err: any) {
+   627→      const behavioralHead = heads.find(h => h.head === 'behavioral');
+   628→      if (behavioralHead) behavioralHead.errors.push(err.message);
+   629→    }
+   630→
+   631→    return heads;
+   632→  }
+   633→
+   634→  // --- Challenge Resolution ------------------------------------------------
+   635→
+   636→  private async waitForChallengeResolution(page: Page, timeout: number): Promise<boolean> {
+   637→    const startTime = Date.now();
+   638→    const checkInterval = 500;
+   639→
+   640→    while (Date.now() - startTime < timeout) {
+   641→      try {
+   642→        // Check if challenge elements are gone
+   643→        let challengeGone = true;
+   644→        for (const selector of AKAMAI_CHALLENGE_SELECTORS) {
+   645→          try {
+   646→            const el = await page.$(selector);
+   647→            if (el) { challengeGone = false; break; }
+   648→          } catch { /* selector check failed */ }
+   649→        }
+   650→
+   651→        // Check for Akamai cookies
+   652→        let hasAkamaiCookies = false;
+   653→        try {
+   654→          const cookieAttr = await page.evaluate(() =>
+   655→            document.documentElement.getAttribute('data-hydra-cookies')
+   656→          );
+   657→          if (cookieAttr) {
+   658→            const parsed = JSON.parse(cookieAttr);
+   659→            hasAkamaiCookies = !!(parsed.ak_bmsc || parsed._abck);
+   660→          }
+   661→        } catch { /* cookie check failed */ }
+   662→
+   663→        if (!hasAkamaiCookies) {
+   664→          try {
+   665→            const cookies = await page.context().cookies();
+   666→            hasAkamaiCookies = cookies.some(c => c.name === '_abck' || c.name === 'ak_bmsc');
+   667→          } catch { /* cookie access failed */ }
+   668→        }
+   669→
+   670→        if ((challengeGone && hasAkamaiCookies) || hasAkamaiCookies) {
+   671→          return true;
+   672→        }
+   673→
+   674→        await this.sleep(checkInterval);
+   675→      } catch {
+   676→        // Page may have navigated
+   677→        try {
+   678→          await page.evaluate(() => document.title);
+   679→        } catch {
+   680→          return true; // Page navigated away -- likely solved
+   681→        }
+   682→      }
+   683→    }
+   684→
+   685→    return false;
+   686→  }
+   687→
+   688→  // --- Behavioral Simulation -----------------------------------------------
+   689→
+   690→  private async simulateBehavior(page: Page): Promise<void> {
+   691→    try {
+   692→      // Simulate mouse movements with human-like patterns
+   693→      const viewport = page.viewportSize() || { width: 1920, height: 1080 };
+   694→      const steps = 5 + Math.floor(Math.random() * 8);
+   695→
+   696→      for (let i = 0; i < steps; i++) {
+   697→        const x = Math.floor(Math.random() * viewport.width * 0.8 + viewport.width * 0.1);
+   698→        const y = Math.floor(Math.random() * viewport.height * 0.8 + viewport.height * 0.1);
+   699→        await page.mouse.move(x, y, { steps: 3 + Math.floor(Math.random() * 5) });
+   700→        await this.sleep(50 + Math.random() * 200);
+   701→      }
+   702→
+   703→      // Simulate a scroll
+   704→      await page.mouse.wheel(0, 100 + Math.floor(Math.random() * 300));
+   705→      await this.sleep(200 + Math.random() * 500);
+   706→
+   707→      // Simulate another scroll
+   708→      await page.mouse.wheel(0, -50 - Math.floor(Math.random() * 150));
+   709→      await this.sleep(100 + Math.random() * 300);
+   710→    } catch (err: any) {
+   711→      logger.debug({ err: err.message }, 'Behavioral simulation failed (non-critical)');
+   712→    }
+   713→  }
+   714→
+   715→  // --- Cookie Extraction ---------------------------------------------------
+   716→
+   717→  private async extractCookies(
+   718→    ctx: BypassContext,
+   719→    domain: string,
+   720→    strategy: BypassStrategy
+   721→  ): Promise<ManagedCookie[]> {
+   722→    const tokens: ManagedCookie[] = [];
+   723→    const now = Date.now();
+   724→
+   725→    try {
+   726→      const cookies = await ctx.context.cookies();
+   727→      for (const cookie of cookies) {
+   728→        if (AKAMAI_COOKIE_NAMES.includes(cookie.name)) {
+   729→          tokens.push(this.createManagedCookie({
+   730→            name: cookie.name,
+   731→            value: cookie.value,
+   732→            domain: cookie.domain || domain,
+   733→            path: cookie.path || '/',
+   734→            httpOnly: cookie.httpOnly,
+   735→            secure: cookie.secure,
+   736→            sameSite: (cookie.sameSite as 'Strict' | 'Lax' | 'None') || 'Lax',
+   737→          }, this.config.tokenFreshnessMs));
+   738→        }
+   739→      }
+   740→
+   741→      // Also try extracting from DOM
+   742→      try {
+   743→        const cookieAttr = await ctx.page.evaluate(() =>
+   744→          document.documentElement.getAttribute('data-hydra-cookies')
+   745→        );
+   746→        if (cookieAttr) {
+   747→          const parsed = JSON.parse(cookieAttr);
+   748→          for (const [name, value] of Object.entries(parsed)) {
+   749→            if (!tokens.some(t => t.name === name)) {
+   750→              tokens.push(this.createManagedCookie({
+   751→                name,
+   752→                value: value as string,
+   753→                domain,
+   754→              }, this.config.tokenFreshnessMs));
+   755→            }
+   756→          }
+   757→        }
+   758→      } catch { /* DOM extraction failed */ }
+   759→
+   760→      // Store tokens
+   761→      if (tokens.length > 0) {
+   762→        await this.storeTokens(domain, tokens);
+   763→      }
+   764→    } catch (err: any) {
+   765→      logger.error({ err: err.message, domain }, 'Akamai cookie extraction failed');
+   766→    }
+   767→
+   768→    return tokens;
+   769→  }
+   770→
+   771→  // --- Rechallenge Estimation ----------------------------------------------
+   772→
+   773→  private estimateRechallengeTime(heads: HydraHeadStatus[]): number {
+   774→    // If sensor head was barely defeated, rechallenge will come sooner
+   775→    const sensorHead = heads.find(h => h.head === 'sensor');
+   776→    if (sensorHead && sensorHead.confidence < 0.6) {
+   777→      return 60000 + Math.random() * 120000; // 1-3 minutes
+   778→    }
+   779→    return 300000 + Math.random() * 300000; // 5-10 minutes
+   780→  }
+   781→
+   782→  // --- Statistics ----------------------------------------------------------
+   783→
+   784→  override getStats(): Record<string, unknown> {
+   785→    const baseStats = super.getStats();
+   786→    return {
+   787→      ...baseStats,
+   788→      sensorSynced: this.sensorSynced,
+   789→      activeHydraHeads: Array.from(this.headStatuses.entries()).map(([domain, heads]) => ({
+   790→        domain,
+   791→        heads: heads.map(h => ({ head: h.head, defeated: h.defeated, confidence: h.confidence })),
+   792→      })),
+   793→    };
+   794→  }
+   795→}
+   796→
+   797→// ===============================================================================
+   798→// SINGLETON & EXPORTS
+   799→// ===============================================================================
+   800→
+   801→export const akamaiHydra = new AkamaiHydra();
+   802→export default AkamaiHydra;
+   803→
