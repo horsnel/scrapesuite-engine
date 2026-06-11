@@ -1778,10 +1778,15 @@ class ImpervaBypass extends AntiBotBase {
       // Disable automation flags
       await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `
-          // Prevent CDP detection
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+          // Remove ChromeDriver cdc_ markers using regex scan (catches all variants)
+          try {
+            const cdcKeys = Object.getOwnPropertyNames(window);
+            for (const key of cdcKeys) {
+              if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+                try { delete window[key]; } catch(e) {}
+              }
+            }
+          } catch(e) {}
         `,
       });
 

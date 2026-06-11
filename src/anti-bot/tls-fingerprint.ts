@@ -200,6 +200,22 @@ export class TlsFingerprintEngine {
         },
       };
 
+      // ---- HTTP/2 FINGERPRINT ENFORCEMENT ----
+      // Wire h2Settings from the TLS profile to the HTTP client so that
+      // Akamai / Cloudflare HTTP/2 frame fingerprinting sees browser-accurate
+      // SETTINGS values (HEADER_TABLE_SIZE, MAX_CONCURRENT_STREAMS, etc.)
+      if (profile.httpVersion === 2 && profile.h2Settings) {
+        // got-scraping supports http2Settings via the underlying http2 module
+        gotOptions.http2Settings = {
+          headerTableSize: profile.h2Settings.HEADER_TABLE_SIZE,
+          maxConcurrentStreams: profile.h2Settings.MAX_CONCURRENT_STREAMS,
+          initialWindowSize: profile.h2Settings.INITIAL_WINDOW_SIZE,
+          maxHeaderListSize: profile.h2Settings.MAX_HEADER_LIST_SIZE,
+          enablePush: profile.h2Settings.ENABLE_PUSH ?? 0,
+        };
+        logger.debug({ profile: profile.name, h2Settings: gotOptions.http2Settings }, 'Applying HTTP/2 SETTINGS frame spoofing');
+      }
+
       if (proxyUrl) gotOptions.proxyUrl = proxyUrl;
       if (options?.body) gotOptions.body = options.body;
 

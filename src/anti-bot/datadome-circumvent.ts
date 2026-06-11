@@ -817,9 +817,15 @@ function generateFingerprintInjectionScript(profile: DataDomeFingerprintProfile)
 
   // Remove Puppeteer markers
   delete window.__puppeteer_evaluation_script__;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Array;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+  // Remove ChromeDriver cdc_ markers using regex scan (catches all variants)
+  try {
+    const cdcKeys = Object.getOwnPropertyNames(window);
+    for (const key of cdcKeys) {
+      if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+        try { delete window[key]; } catch(e) {}
+      }
+    }
+  } catch(e) {}
 
   // chrome.runtime mock
   if (!window.chrome) window.chrome = {};

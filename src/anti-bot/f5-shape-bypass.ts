@@ -583,9 +583,15 @@ function generateSensorSynthesisScript(profile: ShapeDeviceTelemetryProfile): st
 
   // Remove Puppeteer automation markers
   delete window.__puppeteer_evaluation_script__;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Array;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-  delete window._cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+  // Remove ChromeDriver cdc_ markers using regex scan (catches all variants)
+  try {
+    const cdcKeys = Object.getOwnPropertyNames(window);
+    for (const key of cdcKeys) {
+      if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+        try { delete window[key]; } catch(e) {}
+      }
+    }
+  } catch(e) {}
 
   // Remove Selenium markers
   delete window._selenium;
@@ -918,10 +924,15 @@ Object.defineProperty(navigator, 'mimeTypes', {
   configurable: true,
 });
 
-// Remove automation-related window properties
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+// Remove automation-related window properties (regex scan for all cdc_ variants)
+try {
+  const cdcKeys = Object.getOwnPropertyNames(window);
+  for (const key of cdcKeys) {
+    if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+      try { delete window[key]; } catch(e) {}
+    }
+  }
+} catch(e) {}
 
 // Patch Function.prototype.toString to hide overridden functions
 const __origFnStr = Function.prototype.toString;
@@ -1961,9 +1972,15 @@ class F5ShapeBypass extends AntiBotBase {
       await cdp.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `
           Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true, enumerable: true });
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Array;
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-          delete window.cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+          // Remove ChromeDriver cdc_ markers using regex scan (catches all variants)
+          try {
+            const cdcKeys = Object.getOwnPropertyNames(window);
+            for (const key of cdcKeys) {
+              if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+                try { delete window[key]; } catch(e) {}
+              }
+            }
+          } catch(e) {}
           window.chrome = { runtime: { connect: function(){}, sendMessage: function(){}, onMessage: { addListener: function(){}, removeListener: function(){} } } };
         `,
       });

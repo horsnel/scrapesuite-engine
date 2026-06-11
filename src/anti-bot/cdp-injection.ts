@@ -276,9 +276,17 @@ function generateV8InjectionScript(profile: CoherentProfile, config: CdpOverride
       delete window.__pw_originals;
       // Remove Puppeteer markers
       delete window.__puppeteer_evaluation_script__;
-      delete window._cdc_adoQpoasnfa76pfcZLmcfl_Array;
-      delete window._cdc_adoQpoasnfa76pfcZLmcfl_Promise;
-      delete window._cdc_adoQpoasnfa76pfcZLmcfl_Symbol;
+
+      // Remove ChromeDriver cdc_ markers using regex scan
+      // This catches ALL cdc_ variants including new/unknown ones
+      try {
+        const cdcKeys = Object.getOwnPropertyNames(window);
+        for (const key of cdcKeys) {
+          if (/cdc_[a-zA-Z0-9_]+/.test(key) || /_cdc_[a-zA-Z0-9_]+/.test(key)) {
+            try { delete window[key]; } catch(e) {}
+          }
+        }
+      } catch(e) {}
     `);
   }
 
@@ -287,21 +295,89 @@ function generateV8InjectionScript(profile: CoherentProfile, config: CdpOverride
     parts.push(`
       // Hide CDP detection vectors
       // Some anti-bot systems check for CDP-specific globals
-      const cdpKeys = ['__cdp_bindings__', '__cdp__', '_CDP_'];
+      const cdpKeys = ['__cdp_bindings__', '__cdp_binding__', '__cdp__', '_CDP_', '__CDP__'];
       for (const key of cdpKeys) {
         try { delete window[key]; } catch(e) {}
       }
+      // Also scan for any property containing 'cdp' or 'CDP' that we missed
+      try {
+        const allKeys = Object.getOwnPropertyNames(window);
+        for (const key of allKeys) {
+          if (/^__cdp/i.test(key) || /^_CDP_/i.test(key)) {
+            try { delete window[key]; } catch(e) {}
+          }
+        }
+      } catch(e) {}
+
       // Prevent detection via Runtime.enable side-effects
-      // Some systems detect automation by checking if console methods
-      // have been proxied (which CDP Runtime.enable does)
-      const origConsoleDebug = Object.getOwnPropertyDescriptor(console, 'debug');
-      if (origConsoleDebug && origConsoleDebug.get) {
-        // CDP has wrapped console.debug -- re-unwrap it
-        Object.defineProperty(console, 'debug', {
-          value: function() { return; },
-          writable: true,
+      // CDP Runtime.enable wraps ALL console methods (not just debug)
+      // with Proxy objects that anti-bot systems can detect via
+      // Object.getOwnPropertyDescriptor(console, 'log').get !== undefined
+      const consoleMethods = ['log', 'warn', 'error', 'info', 'debug', 'trace', 'dir', 'dirxml', 'table', 'count', 'assert', 'profile', 'profileEnd', 'time', 'timeEnd', 'timeStamp', 'group', 'groupCollapsed', 'groupEnd', 'clear'];
+      for (const method of consoleMethods) {
+        try {
+          const desc = Object.getOwnPropertyDescriptor(console, method);
+          if (desc && desc.get) {
+            // CDP has wrapped this console method -- replace with native stub
+            // We preserve the function behavior but remove the Proxy detection vector
+            const originalFn = desc.value || (desc.get && desc.get());
+            Object.defineProperty(console, method, {
+              value: typeof originalFn === 'function' ? originalFn.bind(console) : function() {},
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+          }
+        } catch(e) {}
+      }
+
+      // V8 Error.stack trace cleaning
+      // CDP evaluation leaves V8 stack frames that can be detected:
+      // - Frames containing "__puppeteer_evaluation_script__"
+      // - Frames with "cdp" or "devtools" in the path
+      // - Frames from Runtime.evaluate calls
+      const origPrepareStackTrace = Error.prepareStackTrace;
+      const cdpStackPatterns = [
+        /__puppeteer_evaluation_script__/i,
+        /__playwright/i,
+        /__pw_/i,
+        /__cdp/i,
+        /devtools/i,
+        /CDP/i,
+        /Runtime\\.evaluate/i,
+        /addScriptToEvaluateOnNewDocument/i,
+      ];
+      Error.prepareStackTrace = function(error, stack) {
+        const cleaned = stack.filter(frame => {
+          const fileName = frame.getFileName() || '';
+          const funcName = frame.getFunctionName() || '';
+          return !cdpStackPatterns.some(pattern => pattern.test(fileName) || pattern.test(funcName));
+        });
+        if (origPrepareStackTrace) {
+          return origPrepareStackTrace.call(Error, error, cleaned);
+        }
+        return cleaned.map(f => {
+          const fn = f.getFunctionName() || '<anonymous>';
+          const file = f.getFileName() || '';
+          const line = f.getLineNumber() || '';
+          const col = f.getColumnNumber() || '';
+          return '    at ' + fn + (file ? ' (' + file + ':' + line + ':' + col + ')' : '');
+        }).join('\\n');
+      };
+      // Also clean the default Error.stack getter for already-thrown errors
+      const origStackGetter = Object.getOwnPropertyDescriptor(Error.prototype, 'stack');
+      if (origStackGetter && origStackGetter.get) {
+        Object.defineProperty(Error.prototype, 'stack', {
+          get: function() {
+            const stack = origStackGetter.get.call(this);
+            if (typeof stack !== 'string') return stack;
+            return stack.split('\\n').filter(line => {
+              return !cdpStackPatterns.some(pattern => pattern.test(line));
+            }).join('\\n');
+          },
+          set: origStackGetter.set || function(val) { Object.defineProperty(this, 'stack', { value: val, configurable: true, writable: true }); },
           configurable: true,
-          enumerable: true,
+          enumerable: false,
         });
       }
     `);

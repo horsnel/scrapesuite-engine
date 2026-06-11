@@ -1978,7 +1978,7 @@ class PerimeterXEvader extends AntiBotBase {
       // Override navigator.webdriver
       await cdpSession.send('Page.addScriptToEvaluateOnNewDocument', {
         source: `
-          Object.defineProperty(navigator, 'webdriver', { get: () => false, configurable: true });
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true });
           Object.defineProperty(navigator, 'languages', { get: () => ['en-US', 'en'], configurable: true });
           Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
 
