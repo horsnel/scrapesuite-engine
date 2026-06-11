@@ -1,0 +1,805 @@
+     1→/**
+     2→ * Reddit API Adapter -- ScrapeSuite Engine
+     3→ *
+     4→ * Handles all Reddit API interaction including:
+     5→ *   - OAuth2 authentication (client credentials & authorization code flows)
+     6→ *   - Token refresh and lifecycle management
+     7→ *   - Request building with proper headers and authentication
+     8→ *   - URL parsing for old.reddit.com vs new.reddit.com
+     9→ *   - JSON API (.json suffix) vs HTML rendering selection
+    10→ *   - Request ID generation for Reddit's tracing systems
+    11→ *
+    12→ * Reddit API specifics:
+    13→ *   - OAuth base URL: https://www.reddit.com/api/v1/access_token
+    14→ *   - API base URL: https://oauth.reddit.com/
+    15→ *   - User-Agent format: <platform>:<app_id>:<version> (by /u/<username>)
+    16→ *   - Rate limits: 60/min OAuth, 10/min unauthenticated
+    17→ *   - Tokens expire after 1 hour, refresh tokens are long-lived
+    18→ *   - JSON API: append .json to any Reddit URL
+    19→ *   - old.reddit.com: separate domain with different HTML structure
+    20→ */
+    21→
+    22→import { createChildLogger } from '../../utils/logger';
+    23→import { cacheGet, cacheSet } from '../../utils/redis';
+    24→import type { RedditApiConfig, RedditAuthResult, RedditListingParseResult } from './types';
+    25→import { DEFAULT_REDDIT_CONFIG } from './types';
+    26→
+    27→const logger = createChildLogger('reddit-api-adapter');
+    28→
+    29→// ===============================================================================
+    30→// CONSTANTS
+    31→// ===============================================================================
+    32→
+    33→/** Reddit OAuth2 token endpoint */
+    34→const OAUTH_TOKEN_URL = 'https://www.reddit.com/api/v1/access_token';
+    35→
+    36→/** Reddit OAuth2 authorization endpoint */
+    37→const OAUTH_AUTHORIZE_URL = 'https://www.reddit.com/api/v1/authorize';
+    38→
+    39→/** Reddit API base URL (for OAuth requests) */
+    40→const OAUTH_API_BASE = 'https://oauth.reddit.com/';
+    41→
+    42→/** Reddit public API base URL (for unauthenticated .json requests) */
+    43→const PUBLIC_API_BASE = 'https://www.reddit.com/';
+    44→
+    45→/** Old Reddit base URL */
+    46→const OLD_REDDIT_BASE = 'https://old.reddit.com/';
+    47→
+    48→/** Token cache key prefix */
+    49→const TOKEN_CACHE_PREFIX = 'reddit:auth:token:';
+    50→
+    51→/** Token cache TTL (slightly less than actual expiry for safety) */
+    52→const TOKEN_CACHE_TTL = 3300; // 55 minutes
+    53→
+    54→/** Request ID cache prefix */
+    55→const REQUEST_ID_CACHE_PREFIX = 'reddit:request_id:';
+    56→
+    57→// ===============================================================================
+    58→// REDDIT API ADAPTER
+    59→// ===============================================================================
+    60→
+    61→export class RedditApiAdapter {
+    62→  private config: RedditApiConfig;
+    63→  private currentToken: RedditAuthResult | null = null;
+    64→  private initialized = false;
+    65→  private stats = {
+    66→    totalRequests: 0,
+    67→    totalAuthentications: 0,
+    68→    totalTokenRefreshes: 0,
+    69→    totalParseOperations: 0,
+    70→    authSuccesses: 0,
+    71→    authFailures: 0,
+    72→    avgRequestBuildTimeMs: 0,
+    73→  };
+    74→
+    75→  constructor(config?: Partial<RedditApiConfig>) {
+    76→    this.config = { ...DEFAULT_REDDIT_CONFIG.api, ...config };
+    77→  }
+    78→
+    79→  // ===========================================================================
+    80→  // INITIALIZATION
+    81→  // ===========================================================================
+    82→
+    83→  /**
+    84→   * Initialize the Reddit API adapter.
+    85→   * Attempts to load a cached OAuth token from Redis.
+    86→   */
+    87→  async initialize(): Promise<void> {
+    88→    if (this.initialized) return;
+    89→
+    90→    logger.info('Initializing Reddit API adapter...');
+    91→
+    92→    try {
+    93→      // Try to load cached token
+    94→      const cachedToken = await cacheGet<RedditAuthResult>(`${TOKEN_CACHE_PREFIX}current`);
+    95→      if (cachedToken && cachedToken.expiresAt > Date.now()) {
+    96→        this.currentToken = cachedToken;
+    97→        logger.info({
+    98→          expiresIn: Math.round((cachedToken.expiresAt - Date.now()) / 1000),
+    99→          scope: cachedToken.scope,
+   100→        }, 'Restored cached OAuth token');
+   101→      } else if (this.config.clientId && this.config.clientSecret) {
+   102→        // Authenticate if credentials are available
+   103→        await this.authenticate(this.config.clientId, this.config.clientSecret);
+   104→      }
+   105→    } catch (err: any) {
+   106→      logger.warn({ err: err.message }, 'Failed to initialize with cached token');
+   107→    }
+   108→
+   109→    this.initialized = true;
+   110→    logger.info('Reddit API adapter initialized');
+   111→  }
+   112→
+   113→  // ===========================================================================
+   114→  // REQUEST BUILDING
+   115→  // ===========================================================================
+   116→
+   117→  /**
+   118→   * Build an authenticated Reddit API request with all necessary headers,
+   119→   * cookies, and parameters for anti-detection.
+   120→   *
+   121→   * @param url - Target URL (can be a Reddit URL or API path)
+   122→   * @param method - HTTP method
+   123→   * @param options - Additional request options
+   124→   * @returns Complete request configuration with headers, URL, and options
+   125→   */
+   126→  buildRequest(
+   127→    url: string,
+   128→    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'GET',
+   129→    options?: {
+   130→      body?: Record<string, unknown>;
+   131→      queryParams?: Record<string, string>;
+   132→      useOAuth?: boolean;
+   133→      useJsonApi?: boolean;
+   134→      requestId?: string;
+   135→    }
+   136→  ): {
+   137→    url: string;
+   138→    method: string;
+   139→    headers: Record<string, string>;
+   140→    body?: string;
+   141→  } {
+   142→    const startTime = performance.now();
+   143→    this.stats.totalRequests++;
+   144→
+   145→    const useOAuth = options?.useOAuth ?? !!this.currentToken?.accessToken;
+   146→    const useJsonApi = options?.useJsonApi ?? this.config.useJsonApi;
+   147→
+   148→    // Build the final URL
+   149→    let finalUrl = url;
+   150→
+   151→    // If it's a relative path, prepend the API base
+   152→    if (url.startsWith('/')) {
+   153→      finalUrl = useOAuth
+   154→        ? `${OAUTH_API_BASE}${this.config.apiVersion}${url}`
+   155→        : `${PUBLIC_API_BASE}${url}`;
+   156→    }
+   157→
+   158→    // Apply JSON API suffix if needed
+   159→    if (useJsonApi && !finalUrl.endsWith('.json')) {
+   160→      const separator = finalUrl.includes('?') ? '&' : '?';
+   161→      // Don't add .json to oauth.reddit.com URLs (they already return JSON)
+   162→      if (!finalUrl.includes('oauth.reddit.com')) {
+   163→        finalUrl = finalUrl + '.json';
+   164→      }
+   165→    }
+   166→
+   167→    // Add query parameters
+   168→    if (options?.queryParams) {
+   169→      const params = new URLSearchParams(options.queryParams);
+   170→      const separator = finalUrl.includes('?') ? '&' : '?';
+   171→      finalUrl = `${finalUrl}${separator}${params.toString()}`;
+   172→    }
+   173→
+   174→    // Build headers
+   175→    const headers = this.buildRequestHeaders(useOAuth, options?.requestId);
+   176→
+   177→    // Build body
+   178→    const body = options?.body ? JSON.stringify(options.body) : undefined;
+   179→
+   180→    const buildTime = performance.now() - startTime;
+   181→    this.stats.avgRequestBuildTimeMs = this.stats.totalRequests > 0
+   182→      ? (this.stats.avgRequestBuildTimeMs * (this.stats.totalRequests - 1) + buildTime) / this.stats.totalRequests
+   183→      : buildTime;
+   184→
+   185→    logger.debug({
+   186→      url: finalUrl.substring(0, 100),
+   187→      method,
+   188→      useOAuth,
+   189→      useJsonApi,
+   190→      hasBody: !!body,
+   191→      buildTimeMs: buildTime.toFixed(2),
+   192→    }, 'Built Reddit API request');
+   193→
+   194→    return {
+   195→      url: finalUrl,
+   196→      method,
+   197→      headers,
+   198→      body,
+   199→    };
+   200→  }
+   201→
+   202→  // ===========================================================================
+   203→  // AUTHENTICATION
+   204→  // ===========================================================================
+   205→
+   206→  /**
+   207→   * Authenticate with Reddit's OAuth2 API using client credentials.
+   208→   *
+   209→   * Supports two flows:
+   210→   *   - Client Credentials (for script/app type): client_id + client_secret
+   211→   *   - Authorization Code (for web app): requires code + redirect_uri
+   212→   *
+   213→   * @param clientId - Reddit app client ID
+   214→   * @param clientSecret - Reddit app client secret
+   215→   * @param options - Additional auth options
+   216→   * @returns Authentication result with access token
+   217→   */
+   218→  async authenticate(
+   219→    clientId: string,
+   220→    clientSecret: string,
+   221→    options?: {
+   222→      grantType?: 'client_credentials' | 'authorization_code' | 'refresh_token';
+   223→      code?: string;
+   224→      redirectUri?: string;
+   225→      refreshToken?: string;
+   226→      scopes?: string[];
+   227→    }
+   228→  ): Promise<RedditAuthResult> {
+   229→    this.stats.totalAuthentications++;
+   230→
+   231→    const grantType = options?.grantType || 'client_credentials';
+   232→    const scopes = options?.scopes || this.config.scopes;
+   233→
+   234→    logger.info({
+   235→      grantType,
+   236→      clientId: clientId.substring(0, 8) + '...',
+   237→      scopes,
+   238→    }, 'Authenticating with Reddit OAuth2');
+   239→
+   240→    try {
+   241→      // Build the token request body
+   242→      const tokenBody: Record<string, string> = {
+   243→        grant_type: grantType,
+   244→      };
+   245→
+   246→      if (grantType === 'authorization_code') {
+   247→        if (!options?.code || !options?.redirectUri) {
+   248→          throw new Error('Authorization code flow requires code and redirect_uri');
+   249→        }
+   250→        tokenBody.code = options.code;
+   251→        tokenBody.redirect_uri = options.redirectUri;
+   252→      } else if (grantType === 'refresh_token') {
+   253→        if (!options?.refreshToken && !this.config.refreshToken) {
+   254→          throw new Error('Refresh token flow requires a refresh token');
+   255→        }
+   256→        tokenBody.refresh_token = options?.refreshToken || this.config.refreshToken!;
+   257→      }
+   258→
+   259→      // Build the authorization header (Basic auth with client_id:client_secret)
+   260→      const authString = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+   261→
+   262→      const response = await fetch(OAUTH_TOKEN_URL, {
+   263→        method: 'POST',
+   264→        headers: {
+   265→          'Authorization': `Basic ${authString}`,
+   266→          'Content-Type': 'application/x-www-form-urlencoded',
+   267→          'User-Agent': this.config.userAgentFormat,
+   268→        },
+   269→        body: new URLSearchParams(tokenBody).toString(),
+   270→      });
+   271→
+   272→      if (!response.ok) {
+   273→        const errorText = await response.text();
+   274→        let errorData: any = {};
+   275→        try { errorData = JSON.parse(errorText); } catch { /* non-JSON error */ }
+   276→
+   277→        this.stats.authFailures++;
+   278→        const result: RedditAuthResult = {
+   279→          success: false,
+   280→          accessToken: '',
+   281→          tokenType: '',
+   282→          expiresIn: 0,
+   283→          scope: '',
+   284→          obtainedAt: Date.now(),
+   285→          expiresAt: 0,
+   286→          error: errorData.error || `HTTP ${response.status}`,
+   287→          errorDescription: errorData.error_description || errorText.substring(0, 200),
+   288→        };
+   289→
+   290→        logger.error({
+   291→          status: response.status,
+   292→          error: result.error,
+   293→          errorDescription: result.errorDescription,
+   294→        }, 'Reddit OAuth2 authentication failed');
+   295→
+   296→        return result;
+   297→      }
+   298→
+   299→      const data = await response.json() as {
+   300→        access_token: string;
+   301→        token_type: string;
+   302→        expires_in: number;
+   303→        scope: string;
+   304→        refresh_token?: string;
+   305→      };
+   306→
+   307→      const now = Date.now();
+   308→      const result: RedditAuthResult = {
+   309→        success: true,
+   310→        accessToken: data.access_token,
+   311→        tokenType: data.token_type,
+   312→        expiresIn: data.expires_in,
+   313→        scope: data.scope,
+   314→        refreshToken: data.refresh_token || this.config.refreshToken,
+   315→        obtainedAt: now,
+   316→        expiresAt: now + (data.expires_in * 1000),
+   317→      };
+   318→
+   319→      this.currentToken = result;
+   320→      this.stats.authSuccesses++;
+   321→
+   322→      // Cache the token
+   323→      try {
+   324→        await cacheSet(`${TOKEN_CACHE_PREFIX}current`, result, TOKEN_CACHE_TTL);
+   325→      } catch (err: any) {
+   326→        logger.debug({ err: err.message }, 'Failed to cache OAuth token');
+   327→      }
+   328→
+   329→      // Update config
+   330→      this.config.accessToken = data.access_token;
+   331→      if (data.refresh_token) {
+   332→        this.config.refreshToken = data.refresh_token;
+   333→      }
+   334→
+   335→      logger.info({
+   336→        tokenType: data.token_type,
+   337→        expiresIn: data.expires_in,
+   338→        scope: data.scope,
+   339→        hasRefreshToken: !!data.refresh_token,
+   340→      }, 'Reddit OAuth2 authentication successful');
+   341→
+   342→      return result;
+   343→    } catch (err: any) {
+   344→      this.stats.authFailures++;
+   345→
+   346→      const result: RedditAuthResult = {
+   347→        success: false,
+   348→        accessToken: '',
+   349→        tokenType: '',
+   350→        expiresIn: 0,
+   351→        scope: '',
+   352→        obtainedAt: Date.now(),
+   353→        expiresAt: 0,
+   354→        error: err.code || 'NETWORK_ERROR',
+   355→        errorDescription: err.message,
+   356→      };
+   357→
+   358→      logger.error({
+   359→        err: err.message,
+   360→        code: err.code,
+   361→      }, 'Reddit OAuth2 authentication error');
+   362→
+   363→      return result;
+   364→    }
+   365→  }
+   366→
+   367→  // ===========================================================================
+   368→  // TOKEN REFRESH
+   369→  // ===========================================================================
+   370→
+   371→  /**
+   372→   * Refresh an OAuth2 access token using a refresh token.
+   373→   *
+   374→   * Reddit's access tokens expire after 1 hour. Refresh tokens are
+   375→   * long-lived and can be used to obtain new access tokens without
+   376→   * requiring user interaction.
+   377→   *
+   378→   * @param refreshToken - The refresh token to use (or uses stored token)
+   379→   * @returns New authentication result with fresh access token
+   380→   */
+   381→  async refreshToken(refreshToken?: string): Promise<RedditAuthResult> {
+   382→    this.stats.totalTokenRefreshes++;
+   383→
+   384→    const token = refreshToken || this.config.refreshToken;
+   385→    if (!token) {
+   386→      const result: RedditAuthResult = {
+   387→        success: false,
+   388→        accessToken: '',
+   389→        tokenType: '',
+   390→        expiresIn: 0,
+   391→        scope: '',
+   392→        obtainedAt: Date.now(),
+   393→        expiresAt: 0,
+   394→        error: 'NO_REFRESH_TOKEN',
+   395→        errorDescription: 'No refresh token available for token refresh',
+   396→      };
+   397→      logger.error('Token refresh attempted without a refresh token');
+   398→      return result;
+   399→    }
+   400→
+   401→    logger.info('Refreshing Reddit OAuth2 token...');
+   402→
+   403→    return this.authenticate(this.config.clientId, this.config.clientSecret || '', {
+   404→      grantType: 'refresh_token',
+   405→      refreshToken: token,
+   406→    });
+   407→  }
+   408→
+   409→  // ===========================================================================
+   410→  // OAUTH HEADERS
+   411→  // ===========================================================================
+   412→
+   413→  /**
+   414→   * Build OAuth authorization headers for a Reddit API request.
+   415→   *
+   416→   * Includes:
+   417→   *   - Authorization: Bearer <token>
+   418→   *   - User-Agent: Following Reddit's required format
+   419→   *   - Content-Type: application/json
+   420→   *   - Accept: application/json
+   421→   *   - X-Reddit-Request-Id: Unique request tracking ID
+   422→   *
+   423→   * @param accessToken - The OAuth2 access token
+   424→   * @returns Headers object for authenticated requests
+   425→   */
+   426→  buildOAuthHeaders(accessToken?: string): Record<string, string> {
+   427→    const token = accessToken || this.currentToken?.accessToken;
+   428→    return this.buildRequestHeaders(!!token, undefined, token);
+   429→  }
+   430→
+   431→  // ===========================================================================
+   432→  // URL PARSING
+   433→  // ===========================================================================
+   434→
+   435→  /**
+   436→   * Parse a Reddit listing URL into an API-compatible URL.
+   437→   *
+   438→   * Handles multiple URL formats:
+   439→   *   - https://www.reddit.com/r/programming/hot/
+   440→   *   - https://old.reddit.com/r/programming/comments/abc123/...
+   441→   *   - https://www.reddit.com/user/spez/overview/
+   442→   *   - https://www.reddit.com/search/?q=python&sort=relevance
+   443→   *   - https://www.reddit.com/r/wiki_pages/index/
+   444→   *
+   445→   * Returns a structured parse result with all extracted information.
+   446→   *
+   447→   * @param url - Reddit URL to parse
+   448→   * @returns Parsed result with API URL and extracted metadata
+   449→   */
+   450→  parseListingUrl(url: string): RedditListingParseResult {
+   451→    this.stats.totalParseOperations++;
+   452→
+   453→    const defaultResult: RedditListingParseResult = {
+   454→      valid: false,
+   455→      apiUrl: '',
+   456→      subreddit: null,
+   457→      sort: null,
+   458→      timeRange: null,
+   459→      postId: null,
+   460→      username: null,
+   461→      searchQuery: null,
+   462→      isOldReddit: false,
+   463→      isJsonApi: false,
+   464→      after: null,
+   465→      page: 1,
+   466→    };
+   467→
+   468→    try {
+   469→      const parsed = new URL(url);
+   470→      const isOldReddit = parsed.hostname === 'old.reddit.com';
+   471→      const isJsonApi = url.endsWith('.json');
+   472→      defaultResult.isOldReddit = isOldReddit;
+   473→      defaultResult.isJsonApi = isJsonApi;
+   474→
+   475→      const pathParts = parsed.pathname
+   476→        .replace(/\.json$/, '')
+   477→        .split('/')
+   478→        .filter(Boolean);
+   479→
+   480→      // Parse based on URL pattern
+   481→      if (pathParts.length === 0) {
+   482→        // Root URL — front page
+   483→        defaultResult.valid = true;
+   484→        defaultResult.apiUrl = isOldReddit
+   485→          ? `${OLD_REDDIT_BASE}.json`
+   486→          : `${PUBLIC_API_BASE}.json`;
+   487→        defaultResult.sort = 'hot';
+   488→        return defaultResult;
+   489→      }
+   490→
+   491→      // /r/<subreddit>/...
+   492→      if (pathParts[0] === 'r' && pathParts.length >= 2) {
+   493→        defaultResult.subreddit = pathParts[1];
+   494→
+   495→        if (pathParts.length === 2) {
+   496→          // /r/<subreddit>
+   497→          defaultResult.valid = true;
+   498→          defaultResult.apiUrl = this.buildApiUrl(`/r/${pathParts[1]}/hot`, isOldReddit, isJsonApi);
+   499→          defaultResult.sort = 'hot';
+   500→          return defaultResult;
+   501→        }
+   502→
+   503→        // Sort listings
+   504→        const validSorts = ['hot', 'new', 'rising', 'top', 'controversial'];
+   505→        if (validSorts.includes(pathParts[2])) {
+   506→          defaultResult.valid = true;
+   507→          defaultResult.sort = pathParts[2] as RedditListingParseResult['sort'];
+   508→
+   509→          // Check for time range (t parameter)
+   510→          const tParam = parsed.searchParams.get('t');
+   511→          if (tParam && ['hour', 'day', 'week', 'month', 'year', 'all'].includes(tParam)) {
+   512→            defaultResult.timeRange = tParam as RedditListingParseResult['timeRange'];
+   513→          }
+   514→
+   515→          defaultResult.apiUrl = this.buildApiUrl(
+   516→            `/r/${pathParts[1]}/${pathParts[2]}`,
+   517→            isOldReddit,
+   518→            isJsonApi,
+   519→            parsed.searchParams
+   520→          );
+   521→          return defaultResult;
+   522→        }
+   523→
+   524→        // Comments
+   525→        if (pathParts[2] === 'comments' && pathParts.length >= 4) {
+   526→          defaultResult.valid = true;
+   527→          defaultResult.postId = pathParts[3];
+   528→          defaultResult.apiUrl = this.buildApiUrl(
+   529→            `/r/${pathParts[1]}/comments/${pathParts[3]}`,
+   530→            isOldReddit,
+   531→            isJsonApi
+   532→          );
+   533→          defaultResult.sort = 'hot'; // Default comment sort
+   534→          return defaultResult;
+   535→        }
+   536→
+   537→        // Wiki
+   538→        if (pathParts[2] === 'wiki' && pathParts.length >= 4) {
+   539→          defaultResult.valid = true;
+   540→          defaultResult.apiUrl = this.buildApiUrl(
+   541→            `/r/${pathParts[1]}/wiki/${pathParts.slice(3).join('/')}`,
+   542→            isOldReddit,
+   543→            isJsonApi
+   544→          );
+   545→          return defaultResult;
+   546→        }
+   547→
+   548→        // Default subreddit page
+   549→        defaultResult.valid = true;
+   550→        defaultResult.apiUrl = this.buildApiUrl(
+   551→          `/r/${pathParts[1]}/hot`,
+   552→          isOldReddit,
+   553→          isJsonApi
+   554→        );
+   555→        defaultResult.sort = 'hot';
+   556→        return defaultResult;
+   557→      }
+   558→
+   559→      // /user/<username>/...
+   560→      if (pathParts[0] === 'user' && pathParts.length >= 2) {
+   561→        defaultResult.valid = true;
+   562→        defaultResult.username = pathParts[1];
+   563→
+   564→        const userSort = pathParts[2] || 'overview';
+   565→        defaultResult.apiUrl = this.buildApiUrl(
+   566→          `/user/${pathParts[1]}/${userSort}`,
+   567→          isOldReddit,
+   568→          isJsonApi
+   569→        );
+   570→        return defaultResult;
+   571→      }
+   572→
+   573→      // /search
+   574→      if (pathParts[0] === 'search') {
+   575→        defaultResult.valid = true;
+   576→        defaultResult.searchQuery = parsed.searchParams.get('q') || '';
+   577→        defaultResult.sort = (parsed.searchParams.get('sort') as RedditListingParseResult['sort']) || 'relevance';
+   578→        defaultResult.timeRange = (parsed.searchParams.get('t') as RedditListingParseResult['timeRange']) || null;
+   579→        defaultResult.apiUrl = this.buildApiUrl(
+   580→          '/search',
+   581→          isOldReddit,
+   582→          isJsonApi,
+   583→          parsed.searchParams
+   584→        );
+   585→        return defaultResult;
+   586→      }
+   587→
+   588→      // /r/popular, /r/all (special listings)
+   589→      if (pathParts[0] === 'r' && ['popular', 'all', 'friends', 'mod'].includes(pathParts[1])) {
+   590→        defaultResult.valid = true;
+   591→        defaultResult.subreddit = pathParts[1];
+   592→        const sort = pathParts[2] || 'hot';
+   593→        defaultResult.sort = ['hot', 'new', 'rising', 'top', 'controversial'].includes(sort) ? sort as RedditListingParseResult['sort'] : 'hot';
+   594→        defaultResult.apiUrl = this.buildApiUrl(
+   595→          `/r/${pathParts[1]}/${defaultResult.sort}`,
+   596→          isOldReddit,
+   597→          isJsonApi
+   598→        );
+   599→        return defaultResult;
+   600→      }
+   601→
+   602→      logger.warn({ url, pathParts }, 'Unrecognized Reddit URL pattern');
+   603→      return defaultResult;
+   604→    } catch (err: any) {
+   605→      logger.error({ url, err: err.message }, 'Failed to parse Reddit URL');
+   606→      return defaultResult;
+   607→    }
+   608→  }
+   609→
+   610→  // ===========================================================================
+   611→  // REQUEST ID GENERATION
+   612→  // ===========================================================================
+   613→
+   614→  /**
+   615→   * Generate a unique Reddit request ID for tracing.
+   616→   *
+   617→   * Reddit uses request IDs for debugging and potentially for
+   618→   * session correlation. Generating realistic IDs helps avoid
+   619→   * detection through ID pattern analysis.
+   620→   *
+   621→   * Format: <8-char-hex>-<4-char-hex>-<4-char-hex>-<4-char-hex>-<12-char-hex>
+   622→   * (Similar to UUID v4 format but with Reddit-specific patterns)
+   623→   *
+   624→   * @returns A unique request ID string
+   625→   */
+   626→  generateRequestId(): string {
+   627→    const hex = (length: number) => {
+   628→      let result = '';
+   629→      const chars = '0123456789abcdef';
+   630→      for (let i = 0; i < length; i++) {
+   631→        result += chars[Math.floor(Math.random() * chars.length)];
+   632→      }
+   633→      return result;
+   634→    };
+   635→
+   636→    // Reddit request IDs follow a UUID-like format
+   637→    const requestId = `${hex(8)}-${hex(4)}-${hex(4)}-${hex(4)}-${hex(12)}`;
+   638→
+   639→    // Cache the request ID briefly (for deduplication tracking)
+   640→    cacheSet(`${REQUEST_ID_CACHE_PREFIX}${requestId}`, Date.now(), 60).catch(() => {});
+   641→
+   642→    return requestId;
+   643→  }
+   644→
+   645→  // ===========================================================================
+   646→  // AUTHORIZATION URL GENERATION
+   647→  // ===========================================================================
+   648→
+   649→  /**
+   650→   * Generate an OAuth2 authorization URL for the code grant flow.
+   651→   * Users must visit this URL to authorize the application.
+   652→   *
+   653→   * @param state - CSRF protection state parameter
+   654→   * @param scopes - OAuth2 scopes to request
+   655→   * @param redirectUri - Redirect URI (must match app configuration)
+   656→   * @returns Authorization URL string
+   657→   */
+   658→  getAuthorizationUrl(
+   659→    state: string,
+   660→    scopes?: string[],
+   661→    redirectUri?: string
+   662→  ): string {
+   663→    const params = new URLSearchParams({
+   664→      client_id: this.config.clientId,
+   665→      response_type: 'code',
+   666→      state,
+   667→      redirect_uri: redirectUri || this.config.redirectUri || 'http://localhost:8080/callback',
+   668→      duration: 'permanent',
+   669→      scope: (scopes || this.config.scopes).join(' '),
+   670→    });
+   671→
+   672→    const url = `${OAUTH_AUTHORIZE_URL}?${params.toString()}`;
+   673→    logger.debug({ scopes: scopes || this.config.scopes }, 'Generated OAuth2 authorization URL');
+   674→    return url;
+   675→  }
+   676→
+   677→  // ===========================================================================
+   678→  // TOKEN STATUS
+   679→  // ===========================================================================
+   680→
+   681→  /**
+   682→   * Check if the current OAuth token is valid and not expired.
+   683→   */
+   684→  isTokenValid(): boolean {
+   685→    if (!this.currentToken) return false;
+   686→    if (!this.currentToken.success) return false;
+   687→    // Consider token invalid 5 minutes before actual expiry
+   688→    return this.currentToken.expiresAt > (Date.now() + 300000);
+   689→  }
+   690→
+   691→  /**
+   692→   * Get the current access token (if valid).
+   693→   */
+   694→  getAccessToken(): string | null {
+   695→    if (this.isTokenValid()) {
+   696→      return this.currentToken!.accessToken;
+   697→    }
+   698→    return null;
+   699→  }
+   700→
+   701→  /**
+   702→   * Get the current auth result.
+   703→   */
+   704→  getCurrentAuth(): RedditAuthResult | null {
+   705→    return this.currentToken;
+   706→  }
+   707→
+   708→  // ===========================================================================
+   709→  // STATISTICS
+   710→  // ===========================================================================
+   711→
+   712→  /**
+   713→   * Get API adapter statistics.
+   714→   */
+   715→  getStats(): Record<string, unknown> {
+   716→    return {
+   717→      ...this.stats,
+   718→      hasValidToken: this.isTokenValid(),
+   719→      tokenExpiresAt: this.currentToken?.expiresAt || null,
+   720→      tokenScope: this.currentToken?.scope || null,
+   721→    };
+   722→  }
+   723→
+   724→  // ===========================================================================
+   725→  // PRIVATE HELPERS
+   726→  // ===========================================================================
+   727→
+   728→  /**
+   729→   * Build request headers with proper authentication and anti-detection.
+   730→   */
+   731→  private buildRequestHeaders(
+   732→    useOAuth: boolean,
+   733→    requestId?: string,
+   734→    accessToken?: string
+   735→  ): Record<string, string> {
+   736→    const headers: Record<string, string> = {
+   737→      'User-Agent': this.config.userAgentFormat,
+   738→      'Accept': 'application/json',
+   739→      'Accept-Language': 'en-US,en;q=0.9',
+   740→      'Accept-Encoding': 'gzip, deflate, br',
+   741→      'Connection': 'keep-alive',
+   742→      'Cache-Control': 'no-cache',
+   743→      'Pragma': 'no-cache',
+   744→    };
+   745→
+   746→    // OAuth bearer token
+   747→    if (useOAuth) {
+   748→      const token = accessToken || this.currentToken?.accessToken;
+   749→      if (token) {
+   750→        headers['Authorization'] = `Bearer ${token}`;
+   751→      }
+   752→    }
+   753→
+   754→    // Reddit-specific headers
+   755→    headers['X-Reddit-Request-Id'] = requestId || this.generateRequestId();
+   756→
+   757→    // Origin and Referer for CORS compliance
+   758→    headers['Origin'] = 'https://www.reddit.com';
+   759→    headers['Referer'] = 'https://www.reddit.com/';
+   760→
+   761→    // Sec-Fetch headers (browser-like)
+   762→    headers['Sec-Fetch-Dest'] = 'empty';
+   763→    headers['Sec-Fetch-Mode'] = 'cors';
+   764→    headers['Sec-Fetch-Site'] = 'same-site';
+   765→
+   766→    // DNT and Sec-CH-UA (browser fingerprint consistency)
+   767→    headers['DNT'] = '1';
+   768→    headers['Sec-CH-UA'] = '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"';
+   769→    headers['Sec-CH-UA-Mobile'] = '?0';
+   770→    headers['Sec-CH-UA-Platform'] = '"Windows"';
+   771→
+   772→    return headers;
+   773→  }
+   774→
+   775→  /**
+   776→   * Build an API URL from a path, handling old.reddit.com and .json suffix.
+   777→   */
+   778→  private buildApiUrl(
+   779→    path: string,
+   780→    isOldReddit: boolean,
+   781→    isJsonApi: boolean,
+   782→    searchParams?: URLSearchParams
+   783→  ): string {
+   784→    const base = isOldReddit ? OLD_REDDIT_BASE : PUBLIC_API_BASE;
+   785→    let url = `${base}${path.replace(/^\//, '')}`;
+   786→
+   787→    if (isJsonApi && !url.endsWith('.json')) {
+   788→      url += '.json';
+   789→    }
+   790→
+   791→    if (searchParams && searchParams.toString()) {
+   792→      const separator = url.includes('?') ? '&' : '?';
+   793→      url += `${separator}${searchParams.toString()}`;
+   794→    }
+   795→
+   796→    return url;
+   797→  }
+   798→}
+   799→
+   800→// ===============================================================================
+   801→// SINGLETON
+   802→// ===============================================================================
+   803→
+   804→export const redditApiAdapter = new RedditApiAdapter();
+   805→

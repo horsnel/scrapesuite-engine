@@ -1,0 +1,2002 @@
+     1→/**
+     2→ * Crawling / Spidering Engine -- ScrapeSuite
+     3→ *
+     4→ * Turns ScrapeSuite from a single-URL scraper into a full website crawler.
+     5→ * Discovers pages by following links, parsing sitemaps, and spidering domains
+     6→ * while respecting depth limits, robots.txt, rate limits, and concurrency
+     7→ * controls.  Every page fetch goes through the existing orchestrator so that
+     8→ * proxy rotation, anti-bot evasion, and CAPTCHA solving work transparently.
+     9→ *
+    10→ * * Key features
+    11→ * --------------
+    12→ *  • URL Discovery  -- HTML link extraction (a, link[rel=next], area, iframe)
+    13→ *  • Sitemap Parsing -- XML sitemap + sitemap index + robots.txt directives
+    14→ *  • Depth Control   -- Configurable max crawl depth (1-10)
+    15→ *  • Domain Scoping  -- same-domain / same-subdomain / allow-external
+    16→ *  • URL Filtering   -- Regex include/exclude, file-extension blocklist
+    17→ *  • Deduplication   -- Normalised URL tracking (fragments, trailing slashes,
+    18→ *                       query-param ordering) with Redis-backed visited set
+    19→ *  • Concurrency     -- Configurable 1-20 concurrent page fetches
+    20→ *  • Politeness      -- Per-domain rate limiting, robots.txt, configurable delay
+    21→ *  • Content Extract -- Title, meta description, headings, structured data
+    22→ *  • Crawl Strategies -- BFS, DFS, Priority (URL scoring heuristic)
+    23→ *  • Orchestrator    -- Every fetch reuses proxy / anti-bot / CAPTCHA pipeline
+    24→ *  • State Persistence -- Redis-backed crawl state for pause / resume
+    25→ *  • Real-time Progress -- Pages crawled, URLs discovered, errors, elapsed
+    26→ *  • Output          -- Array of {url, title, depth, status, html?, extracted?}
+    27→ *
+    28→ * Usage
+    29→ * -----
+    30→ *   import { crawlEngine } from '../crawler';
+    31→ *   const results = await crawlEngine.start({
+    32→ *     seedUrls: ['https://example.com'],
+    33→ *     maxDepth: 3,
+    34→ *     maxPages: 500,
+    35→ *     strategy: 'bfs',
+    36→ *   });
+    37→ */
+    38→
+    39→import { createChildLogger } from '../utils/logger';
+    40→import { cacheGet, cacheSet, redis } from '../utils/redis';
+    41→import { db } from '../utils/db';
+    42→import { orchestrator } from '../orchestrator';
+    43→import { robotsParser } from '../robots/parser';
+    44→import { adaptiveRateLimiter } from '../rate-limiter';
+    45→import * as cheerio from 'cheerio';
+    46→import * as crypto from 'crypto';
+    47→
+    48→const logger = createChildLogger('crawler');
+    49→
+    50→// --- Constants ----------------------------------------------------------------
+    51→
+    52→/** Default maximum crawl depth when not specified. */
+    53→const DEFAULT_MAX_DEPTH = 3;
+    54→
+    55→/** Default maximum number of pages to crawl. */
+    56→const DEFAULT_MAX_PAGES = 100;
+    57→
+    58→/** Default concurrency for parallel page fetches. */
+    59→const DEFAULT_CONCURRENCY = 5;
+    60→
+    61→/** Default delay (ms) between requests to the same domain. */
+    62→const DEFAULT_DELAY_MS = 500;
+    63→
+    64→/** Minimum allowed concurrency. */
+    65→const MIN_CONCURRENCY = 1;
+    66→
+    67→/** Maximum allowed concurrency. */
+    68→const MAX_CONCURRENCY = 20;
+    69→
+    70→/** Minimum allowed depth. */
+    71→const MIN_DEPTH = 1;
+    72→
+    73→/** Maximum allowed depth. */
+    74→const MAX_DEPTH = 10;
+    75→
+    76→/** Redis key prefix for crawl state. */
+    77→const CRAWL_STATE_PREFIX = 'crawl:state:';
+    78→
+    79→/** Redis key prefix for the visited-URL set of a crawl. */
+    80→const CRAWL_VISITED_PREFIX = 'crawl:visited:';
+    81→
+    82→/** Redis TTL for crawl state (24 hours). */
+    83→const CRAWL_STATE_TTL_SECONDS = 86400;
+    84→
+    85→/** File extensions to skip by default. */
+    86→const DEFAULT_SKIP_EXTENSIONS = [
+    87→  '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp', '.ico',
+    88→  '.mp3', '.mp4', '.avi', '.mov', '.wmv', '.flv', '.wav', '.ogg',
+    89→  '.zip', '.tar', '.gz', '.rar', '.7z', '.bz2',
+    90→  '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+    91→  '.exe', '.dmg', '.iso', '.bin',
+    92→  '.css', '.js', '.woff', '.woff2', '.ttf', '.eot',
+    93→  '.rss', '.atom', '.json', '.xml',
+    94→];
+    95→
+    96→/** User-agent string for sitemap / robots.txt fetches. */
+    97→const SITEMAP_USER_AGENT = 'ScrapeSuite-Crawler (+https://scrapesuite.dev)';
+    98→
+    99→// --- Types --------------------------------------------------------------------
+   100→
+   101→/** Domain scoping mode -- controls which discovered links are followed. */
+   102→export type DomainScope = 'same-domain' | 'same-subdomain' | 'allow-external';
+   103→
+   104→/** Crawl traversal strategy. */
+   105→export type CrawlStrategy = 'bfs' | 'dfs' | 'priority';
+   106→
+   107→/** Status of a crawl job. */
+   108→export type CrawlStatus = 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled';
+   109→
+   110→/** A single discovered URL waiting to be crawled. */
+   111→export interface CrawlUrl {
+   112→  /** The normalised URL to crawl. */
+   113→  url: string;
+   114→  /** Depth of this URL relative to the seed (0 = seed). */
+   115→  depth: number;
+   116→  /** The URL that linked to this one (for backlink tracking). */
+   117→  parentUrl?: string;
+   118→  /** Link text or anchor content. */
+   119→  anchorText?: string;
+   120→  /** Heuristic priority score (higher = more important). */
+   121→  priority: number;
+   122→  /** When this URL was discovered. */
+   123→  discoveredAt: number;
+   124→}
+   125→
+   126→/** Result of crawling a single page. */
+   127→export interface CrawlPageResult {
+   128→  /** The normalised URL that was crawled. */
+   129→  url: string;
+   130→  /** Page title extracted from <title>. */
+   131→  title: string;
+   132→  /** Depth at which this page was found. */
+   133→  depth: number;
+   134→  /** HTTP status code of the response. */
+   135→  status: number;
+   136→  /** Raw HTML body (only if `includeHtml` was true). */
+   137→  html?: string;
+   138→  /** Structured content extracted from the page. */
+   139→  extracted?: PageExtractedContent;
+   140→  /** Final URL after any redirects. */
+   141→  finalUrl?: string;
+   142→  /** Response time in ms. */
+   143→  responseMs: number;
+   144→  /** Whether this was a cache hit. */
+   145→  cached: boolean;
+   146→  /** Error message if the page fetch failed. */
+   147→  error?: string;
+   148→}
+   149→
+   150→/** Structured content extracted from a single crawled page. */
+   151→export interface PageExtractedContent {
+   152→  /** Page <title>. */
+   153→  title: string;
+   154→  /** <meta name="description"> content. */
+   155→  metaDescription: string;
+   156→  /** <meta name="keywords"> content. */
+   157→  metaKeywords: string;
+   158→  /** Canonical URL from <link rel="canonical">. */
+   159→  canonicalUrl: string;
+   160→  /** OG title. */
+   161→  ogTitle: string;
+   162→  /** OG description. */
+   163→  ogDescription: string;
+   164→  /** OG image URL. */
+   165→  ogImage: string;
+   166→  /** Headings grouped by level (h1-h6). */
+   167→  headings: { level: number; text: string }[];
+   168→  /** All discovered outbound links (absolute URLs). */
+   169→  links: string[];
+   170→  /** JSON-LD structured data blocks. */
+   171→  jsonLd: Record<string, any>[];
+   172→  /** Word count of visible text. */
+   173→  wordCount: number;
+   174→  /** Language from <html lang>. */
+   175→  lang: string;
+   176→}
+   177→
+   178→/** Real-time progress snapshot for an active crawl. */
+   179→export interface CrawlProgress {
+   180→  /** Unique crawl ID. */
+   181→  crawlId: string;
+   182→  /** Current status. */
+   183→  status: CrawlStatus;
+   184→  /** Number of pages successfully crawled. */
+   185→  pagesCrawled: number;
+   186→  /** Number of URLs discovered (including those not yet crawled). */
+   187→  urlsDiscovered: number;
+   188→  /** Number of URLs still in the queue. */
+   189→  urlsQueued: number;
+   190→  /** Number of errors encountered. */
+   191→  errors: number;
+   192→  /** Elapsed time in ms since the crawl started. */
+   193→  elapsedMs: number;
+   194→  /** Average response time per page in ms. */
+   195→  avgResponseMs: number;
+   196→  /** Current requests per second. */
+   197→  rps: number;
+   198→  /** Per-domain breakdown. */
+   199→  domainStats: Record<string, { crawled: number; errors: number }>;
+   200→}
+   201→
+   202→/** Full configuration for a crawl job. */
+   203→export interface CrawlConfig {
+   204→  /** Seed URLs to start the crawl from. */
+   205→  seedUrls: string[];
+   206→  /** Maximum crawl depth (1-10). Default: 3. */
+   207→  maxDepth?: number;
+   208→  /** Maximum number of pages to crawl. Default: 100. */
+   209→  maxPages?: number;
+   210→  /** Concurrency (1-20). Default: 5. */
+   211→  concurrency?: number;
+   212→  /** Crawl strategy: bfs, dfs, or priority. Default: bfs. */
+   213→  strategy?: CrawlStrategy;
+   214→  /** Domain scoping mode. Default: same-domain. */
+   215→  domainScope?: DomainScope;
+   216→  /** Delay in ms between requests to the same domain. Default: 500. */
+   217→  delayMs?: number;
+   218→  /** Whether to respect robots.txt. Default: true. */
+   219→  respectRobotsTxt?: boolean;
+   220→  /** Whether to discover and parse XML sitemaps. Default: true. */
+   221→  parseSitemaps?: boolean;
+   222→  /** Whether to include raw HTML in the results. Default: false. */
+   223→  includeHtml?: boolean;
+   224→  /** Whether to extract structured content. Default: true. */
+   225→  extractContent?: boolean;
+   226→  /** File extensions to skip. Defaults to DEFAULT_SKIP_EXTENSIONS. */
+   227→  skipExtensions?: string[];
+   228→  /** Regex patterns -- URLs must match at least one to be included. */
+   229→  includePatterns?: string[];
+   230→  /** Regex patterns -- URLs matching any will be excluded. */
+   231→  excludePatterns?: string[];
+   232→  /** User ID for billing. */
+   233→  userId?: string;
+   234→  /** API key ID for billing. */
+   235→  apiKeyId?: string;
+   236→  /** Proxy tier for the orchestrator. */
+   237→  proxyTier?: string;
+   238→  /** Proxy country for the orchestrator. */
+   239→  proxyCountry?: string;
+   240→  /** Custom HTTP headers. */
+   241→  headers?: Record<string, string>;
+   242→  /** Timeout per page fetch in ms. Default: 30000. */
+   243→  timeout?: number;
+   244→  /** Resume a previously paused crawl by crawlId. */
+   245→  resumeCrawlId?: string;
+   246→  /** Callback invoked on each page completion for streaming progress. */
+   247→  onPageCrawled?: (result: CrawlPageResult, progress: CrawlProgress) => void;
+   248→  /** Callback invoked on crawl completion. */
+   249→  onCrawlComplete?: (results: CrawlPageResult[], progress: CrawlProgress) => void;
+   250→  /** Callback invoked on crawl error. */
+   251→  onCrawlError?: (error: Error, progress: CrawlProgress) => void;
+   252→}
+   253→
+   254→/** Persisted crawl state stored in Redis for pause / resume. */
+   255→interface CrawlState {
+   256→  /** Unique crawl ID. */
+   257→  crawlId: string;
+   258→  /** Seed URLs. */
+   259→  seedUrls: string[];
+   260→  /** Full config snapshot. */
+   261→  config: CrawlConfig;
+   262→  /** Current status. */
+   263→  status: CrawlStatus;
+   264→  /** URL queue (serialised). */
+   265→  queue: CrawlUrl[];
+   266→  /** Set of visited URL hashes. */
+   267→  visitedHashes: string[];
+   268→  /** Pages crawled so far. */
+   269→  pagesCrawled: number;
+   270→  /** Total URLs discovered. */
+   271→  urlsDiscovered: number;
+   272→  /** Error count. */
+   273→  errors: number;
+   274→  /** Total response time for average calculation. */
+   275→  totalResponseMs: number;
+   276→  /** Per-domain stats. */
+   277→  domainStats: Record<string, { crawled: number; errors: number }>;
+   278→  /** Timestamp when the crawl was started. */
+   279→  startedAt: number;
+   280→  /** Timestamp when the crawl was last updated. */
+   281→  updatedAt: number;
+   282→  /** Results collected so far (for resume). */
+   283→  results: CrawlPageResult[];
+   284→}
+   285→
+   286→// --- Internal Queue Implementations -------------------------------------------
+   287→
+   288→/**
+   289→ * BFS (breadth-first) queue -- FIFO.
+   290→ * Pages at the current depth are exhausted before moving to the next depth.
+   291→ */
+   292→class BFSQueue {
+   293→  private queue: CrawlUrl[] = [];
+   294→
+   295→  push(item: CrawlUrl): void {
+   296→    this.queue.push(item);
+   297→  }
+   298→
+   299→  pop(): CrawlUrl | undefined {
+   300→    return this.queue.shift();
+   301→  }
+   302→
+   303→  get size(): number {
+   304→    return this.queue.length;
+   305→  }
+   306→
+   307→  peek(): CrawlUrl | undefined {
+   308→    return this.queue[0];
+   309→  }
+   310→
+   311→  toArray(): CrawlUrl[] {
+   312→    return [...this.queue];
+   313→  }
+   314→
+   315→  static fromArray(items: CrawlUrl[]): BFSQueue {
+   316→    const q = new BFSQueue();
+   317→    q.queue = items;
+   318→    return q;
+   319→  }
+   320→}
+   321→
+   322→/**
+   323→ * DFS (depth-first) queue -- LIFO.
+   324→ * Follows links as deeply as possible before backtracking.
+   325→ */
+   326→class DFSQueue {
+   327→  private stack: CrawlUrl[] = [];
+   328→
+   329→  push(item: CrawlUrl): void {
+   330→    this.stack.push(item);
+   331→  }
+   332→
+   333→  pop(): CrawlUrl | undefined {
+   334→    return this.stack.pop();
+   335→  }
+   336→
+   337→  get size(): number {
+   338→    return this.stack.length;
+   339→  }
+   340→
+   341→  peek(): CrawlUrl | undefined {
+   342→    return this.stack[this.stack.length - 1];
+   343→  }
+   344→
+   345→  toArray(): CrawlUrl[] {
+   346→    return [...this.stack];
+   347→  }
+   348→
+   349→  static fromArray(items: CrawlUrl[]): DFSQueue {
+   350→    const q = new DFSQueue();
+   351→    q.stack = items;
+   352→    return q;
+   353→  }
+   354→}
+   355→
+   356→/**
+   357→ * Priority queue -- highest priority score first.
+   358→ * URL priority is computed by scoreUrl().
+   359→ */
+   360→class PriorityQueue {
+   361→  private heap: CrawlUrl[] = [];
+   362→
+   363→  push(item: CrawlUrl): void {
+   364→    this.heap.push(item);
+   365→    this.bubbleUp(this.heap.length - 1);
+   366→  }
+   367→
+   368→  pop(): CrawlUrl | undefined {
+   369→    if (this.heap.length === 0) return undefined;
+   370→    const top = this.heap[0];
+   371→    const last = this.heap.pop()!;
+   372→    if (this.heap.length > 0) {
+   373→      this.heap[0] = last;
+   374→      this.sinkDown(0);
+   375→    }
+   376→    return top;
+   377→  }
+   378→
+   379→  get size(): number {
+   380→    return this.heap.length;
+   381→  }
+   382→
+   383→  peek(): CrawlUrl | undefined {
+   384→    return this.heap[0];
+   385→  }
+   386→
+   387→  toArray(): CrawlUrl[] {
+   388→    return [...this.heap].sort((a, b) => b.priority - a.priority);
+   389→  }
+   390→
+   391→  private bubbleUp(idx: number): void {
+   392→    while (idx > 0) {
+   393→      const parent = Math.floor((idx - 1) / 2);
+   394→      if (this.heap[parent].priority >= this.heap[idx].priority) break;
+   395→      [this.heap[parent], this.heap[idx]] = [this.heap[idx], this.heap[parent]];
+   396→      idx = parent;
+   397→    }
+   398→  }
+   399→
+   400→  private sinkDown(idx: number): void {
+   401→    const n = this.heap.length;
+   402→    while (true) {
+   403→      let largest = idx;
+   404→      const left = 2 * idx + 1;
+   405→      const right = 2 * idx + 2;
+   406→      if (left < n && this.heap[left].priority > this.heap[largest].priority) largest = left;
+   407→      if (right < n && this.heap[right].priority > this.heap[largest].priority) largest = right;
+   408→      if (largest === idx) break;
+   409→      [this.heap[largest], this.heap[idx]] = [this.heap[idx], this.heap[largest]];
+   410→      idx = largest;
+   411→    }
+   412→  }
+   413→
+   414→  static fromArray(items: CrawlUrl[]): PriorityQueue {
+   415→    const q = new PriorityQueue();
+   416→    for (const item of items) q.push(item);
+   417→    return q;
+   418→  }
+   419→}
+   420→
+   421→/** Union type for any queue implementation. */
+   422→type CrawlQueue = BFSQueue | DFSQueue | PriorityQueue;
+   423→
+   424→// --- URL Normalisation & Utilities --------------------------------------------
+   425→
+   426→/**
+   427→ * Normalise a URL for deduplication.
+   428→ *
+   429→ * * Normalisation steps:
+   430→ *  1. Lowercase the hostname
+   431→ *  2. Strip the fragment (#)
+   432→ *  3. Strip trailing slashes (except for root /)
+   433→ *  4. Sort query parameters alphabetically
+   434→ *  5. Remove default ports (80 for http, 443 for https)
+   435→ *  6. Decode percent-encoded chars where safe
+   436→ */
+   437→function normaliseUrl(raw: string): string {
+   438→  try {
+   439→    const parsed = new URL(raw);
+   440→
+   441→    // Lowercase host
+   442→    parsed.hostname = parsed.hostname.toLowerCase();
+   443→
+   444→    // Strip fragment
+   445→    parsed.hash = '';
+   446→
+   447→    // Remove default ports
+   448→    if (
+   449→      (parsed.protocol === 'http:' && parsed.port === '80') ||
+   450→      (parsed.protocol === 'https:' && parsed.port === '443')
+   451→    ) {
+   452→      parsed.port = '';
+   453→    }
+   454→
+   455→    // Sort query params
+   456→    parsed.searchParams.sort();
+   457→
+   458→    let normalised = parsed.toString();
+   459→
+   460→    // Strip trailing slash (but keep root /)
+   461→    if (normalised.length > 1 && normalised.endsWith('/')) {
+   462→      // Only strip if it's not the root path
+   463→      const urlObj = new URL(normalised);
+   464→      if (urlObj.pathname !== '/' && urlObj.pathname.endsWith('/')) {
+   465→        urlObj.pathname = urlObj.pathname.replace(/\/+$/, '');
+   466→        normalised = urlObj.toString();
+   467→      }
+   468→    }
+   469→
+   470→    return normalised;
+   471→  } catch {
+   472→    // If URL parsing fails, return the raw string lowercased as a best effort
+   473→    return raw.toLowerCase();
+   474→  }
+   475→}
+   476→
+   477→/**
+   478→ * Compute a stable SHA-256 hash of a normalised URL.
+   479→ * Used for the Redis visited-set membership check.
+   480→ */
+   481→function hashUrl(url: string): string {
+   482→  const normalised = normaliseUrl(url);
+   483→  return crypto.createHash('sha256').update(normalised).digest('hex');
+   484→}
+   485→
+   486→/**
+   487→ * Extract the registrable domain from a hostname.
+   488→ * Simple heuristic: last two dot-separated labels.
+   489→ */
+   490→function extractRootDomain(hostname: string): string {
+   491→  const parts = hostname.toLowerCase().split('.');
+   492→  if (parts.length <= 2) return hostname.toLowerCase();
+   493→  return parts.slice(-2).join('.');
+   494→}
+   495→
+   496→/**
+   497→ * Check if two URLs are on the same domain.
+   498→ */
+   499→function isSameDomain(urlA: string, urlB: string): boolean {
+   500→  try {
+   501→    return new URL(urlA).hostname.toLowerCase() === new URL(urlB).hostname.toLowerCase();
+   502→  } catch {
+   503→    return false;
+   504→  }
+   505→}
+   506→
+   507→/**
+   508→ * Check if two URLs share the same subdomain (exact hostname match).
+   509→ */
+   510→function isSameSubdomain(urlA: string, urlB: string): boolean {
+   511→  try {
+   512→    return new URL(urlA).hostname.toLowerCase() === new URL(urlB).hostname.toLowerCase();
+   513→  } catch {
+   514→    return false;
+   515→  }
+   516→}
+   517→
+   518→/**
+   519→ * Check if a URL's file extension is in the skip list.
+   520→ */
+   521→function hasSkippedExtension(url: string, extensions: string[]): boolean {
+   522→  try {
+   523→    const pathname = new URL(url).pathname.toLowerCase();
+   524→    // Strip trailing slash for extension check
+   525→    const path = pathname.endsWith('/') ? pathname.slice(0, -1) : pathname;
+   526→    const lastSegment = path.split('/').pop() || '';
+   527→    return extensions.some((ext) => lastSegment.endsWith(ext));
+   528→  } catch {
+   529→    return false;
+   530→  }
+   531→}
+   532→
+   533→/**
+   534→ * Test a URL against an array of regex patterns.
+   535→ * Returns true if the URL matches ANY pattern.
+   536→ */
+   537→function matchesAnyPattern(url: string, patterns: string[]): boolean {
+   538→  for (const pattern of patterns) {
+   539→    try {
+   540→      const regex = new RegExp(pattern, 'i');
+   541→      if (regex.test(url)) return true;
+   542→    } catch {
+   543→      // Invalid regex -- skip
+   544→      logger.warn({ pattern }, 'Invalid URL filter pattern -- skipping');
+   545→    }
+   546→  }
+   547→  return false;
+   548→}
+   549→
+   550→/**
+   551→ * Heuristically score a URL for priority-based crawling.
+   552→ *
+   553→ * * Scoring factors:
+   554→ *  - Shorter paths rank higher (likely more important pages)
+   555→ *  - Paths containing "index", "home", "welcome" rank higher
+   556→ *  - HTTPS over HTTP
+   557→ *  - Shallower depth ranks higher
+   558→ *  - Paths without file extensions rank higher
+   559→ *  - Paths with fewer query parameters rank higher
+   560→ */
+   561→function scoreUrl(url: string, depth: number, anchorText?: string): number {
+   562→  let score = 100;
+   563→
+   564→  try {
+   565→    const parsed = new URL(url);
+   566→
+   567→    // Depth penalty
+   568→    score -= depth * 10;
+   569→
+   570→    // Path length penalty (shorter = more important)
+   571→    score -= parsed.pathname.split('/').filter(Boolean).length * 5;
+   572→
+   573→    // HTTPS bonus
+   574→    if (parsed.protocol === 'https:') score += 5;
+   575→
+   576→    // No file extension bonus (likely HTML)
+   577→    const lastSegment = parsed.pathname.split('/').pop() || '';
+   578→    if (!lastSegment.includes('.') || lastSegment.endsWith('.html') || lastSegment.endsWith('.htm')) {
+   579→      score += 10;
+   580→    }
+   581→
+   582→    // Fewer query params bonus
+   583→    score -= Array.from(parsed.searchParams.keys()).length * 3;
+   584→
+   585→    // Keyword bonuses in path
+   586→    const pathLower = parsed.pathname.toLowerCase();
+   587→    const highPriorityKeywords = ['index', 'home', 'welcome', 'about', 'contact', 'products', 'services', 'blog', 'pricing'];
+   588→    for (const kw of highPriorityKeywords) {
+   589→      if (pathLower.includes(kw)) {
+   590→        score += 8;
+   591→        break;
+   592→      }
+   593→    }
+   594→
+   595→    // Anchor text bonus -- non-empty anchor suggests important link
+   596→    if (anchorText && anchorText.trim().length > 0) {
+   597→      score += 3;
+   598→    }
+   599→
+   600→    // Root path bonus
+   601→    if (parsed.pathname === '/' || parsed.pathname === '') {
+   602→      score += 15;
+   603→    }
+   604→
+   605→  } catch {
+   606→    score -= 50; // Unparseable URL -- low priority
+   607→  }
+   608→
+   609→  return Math.max(0, score);
+   610→}
+   611→
+   612→/**
+   613→ * Resolve a potentially relative URL against a base URL.
+   614→ */
+   615→function resolveUrl(base: string, relative: string): string | null {
+   616→  try {
+   617→    return new URL(relative, base).toString();
+   618→  } catch {
+   619→    return null;
+   620→  }
+   621→}
+   622→
+   623→/**
+   624→ * Sleep for the specified number of milliseconds.
+   625→ */
+   626→function sleep(ms: number): Promise<void> {
+   627→  return new Promise((resolve) => setTimeout(resolve, ms));
+   628→}
+   629→
+   630→// --- HTML Link Extraction -----------------------------------------------------
+   631→
+   632→/**
+   633→ * Extract all links from an HTML document.
+   634→ *
+   635→ * * Extracts links from:
+   636→ *  - <a href="...">
+   637→ *  - <link rel="next" href="...">
+   638→ *  - <link rel="prev" href="...">
+   639→ *  - <area href="...">
+   640→ *  - <iframe src="...">
+   641→ *  - <frame src="...">
+   642→ *
+   643→ * Returns an array of { url, anchorText } objects with absolute URLs.
+   644→ */
+   645→function extractLinks(html: string, baseUrl: string): { url: string; anchorText: string }[] {
+   646→  const links: { url: string; anchorText: string }[] = [];
+   647→
+   648→  try {
+   649→    const $ = cheerio.load(html);
+   650→
+   651→    // <a href>
+   652→    $('a[href]').each((_idx, el) => {
+   653→      const href = $(el).attr('href');
+   654→      if (!href) return;
+   655→
+   656→      const resolved = resolveUrl(baseUrl, href);
+   657→      if (resolved) {
+   658→        const anchorText = $(el).text().trim().substring(0, 200);
+   659→        links.push({ url: resolved, anchorText });
+   660→      }
+   661→    });
+   662→
+   663→    // <link rel="next"> and <link rel="prev"> -- pagination
+   664→    $('link[rel="next"][href], link[rel="prev"][href]').each((_idx, el) => {
+   665→      const href = $(el).attr('href');
+   666→      if (!href) return;
+   667→
+   668→      const resolved = resolveUrl(baseUrl, href);
+   669→      if (resolved) {
+   670→        const rel = $(el).attr('rel') || '';
+   671→        links.push({ url: resolved, anchorText: `[link rel="${rel}"]` });
+   672→      }
+   673→    });
+   674→
+   675→    // <area href>
+   676→    $('area[href]').each((_idx, el) => {
+   677→      const href = $(el).attr('href');
+   678→      if (!href) return;
+   679→
+   680→      const resolved = resolveUrl(baseUrl, href);
+   681→      if (resolved) {
+   682→        const alt = $(el).attr('alt') || '';
+   683→        links.push({ url: resolved, anchorText: alt });
+   684→      }
+   685→    });
+   686→
+   687→    // <iframe src>
+   688→    $('iframe[src]').each((_idx, el) => {
+   689→      const src = $(el).attr('src');
+   690→      if (!src) return;
+   691→
+   692→      const resolved = resolveUrl(baseUrl, src);
+   693→      if (resolved) {
+   694→        links.push({ url: resolved, anchorText: '[iframe]' });
+   695→      }
+   696→    });
+   697→
+   698→    // <frame src>
+   699→    $('frame[src]').each((_idx, el) => {
+   700→      const src = $(el).attr('src');
+   701→      if (!src) return;
+   702→
+   703→      const resolved = resolveUrl(baseUrl, src);
+   704→      if (resolved) {
+   705→        links.push({ url: resolved, anchorText: '[frame]' });
+   706→      }
+   707→    });
+   708→  } catch (err: any) {
+   709→    logger.warn({ baseUrl, error: err.message }, 'Failed to extract links from HTML');
+   710→  }
+   711→
+   712→  return links;
+   713→}
+   714→
+   715→// --- Content Extraction -------------------------------------------------------
+   716→
+   717→/**
+   718→ * Extract structured content from an HTML document.
+   719→ *
+   720→ * * Extracts:
+   721→ *  - <title>
+   722→ *  - <meta name="description">
+   723→ *  - <meta name="keywords">
+   724→ *  - <link rel="canonical">
+   725→ *  - Open Graph (og:title, og:description, og:image)
+   726→ *  - Headings (h1-h6)
+   727→ *  - JSON-LD structured data
+   728→ *  - Word count
+   729→ *  - Language
+   730→ */
+   731→function extractContent(html: string, url: string): PageExtractedContent {
+   732→  const empty: PageExtractedContent = {
+   733→    title: '',
+   734→    metaDescription: '',
+   735→    metaKeywords: '',
+   736→    canonicalUrl: '',
+   737→    ogTitle: '',
+   738→    ogDescription: '',
+   739→    ogImage: '',
+   740→    headings: [],
+   741→    links: [],
+   742→    jsonLd: [],
+   743→    wordCount: 0,
+   744→    lang: '',
+   745→  };
+   746→
+   747→  try {
+   748→    const $ = cheerio.load(html);
+   749→
+   750→    // Title
+   751→    empty.title = $('title').first().text().trim();
+   752→
+   753→    // Meta description
+   754→    empty.metaDescription = $('meta[name="description"]').attr('content')?.trim() || '';
+   755→
+   756→    // Meta keywords
+   757→    empty.metaKeywords = $('meta[name="keywords"]').attr('content')?.trim() || '';
+   758→
+   759→    // Canonical
+   760→    const canonicalHref = $('link[rel="canonical"]').attr('href');
+   761→    if (canonicalHref) {
+   762→      empty.canonicalUrl = resolveUrl(url, canonicalHref) || canonicalHref;
+   763→    }
+   764→
+   765→    // Open Graph
+   766→    empty.ogTitle = $('meta[property="og:title"]').attr('content')?.trim() || '';
+   767→    empty.ogDescription = $('meta[property="og:description"]').attr('content')?.trim() || '';
+   768→    empty.ogImage = $('meta[property="og:image"]').attr('content')?.trim() || '';
+   769→
+   770→    // Headings
+   771→    $('h1, h2, h3, h4, h5, h6').each((_idx, el) => {
+   772→      const tagName = (el as any).tagName?.toLowerCase() || '';
+   773→      const level = parseInt(tagName.replace('h', ''), 10);
+   774→      if (level >= 1 && level <= 6) {
+   775→        const text = $(el).text().trim();
+   776→        if (text) {
+   777→          empty.headings.push({ level, text: text.substring(0, 500) });
+   778→        }
+   779→      }
+   780→    });
+   781→
+   782→    // Links (for extracted content -- all unique absolute URLs)
+   783→    const linkSet = new Set<string>();
+   784→    $('a[href]').each((_idx, el) => {
+   785→      const href = $(el).attr('href');
+   786→      if (!href) return;
+   787→      const resolved = resolveUrl(url, href);
+   788→      if (resolved && !linkSet.has(resolved)) {
+   789→        linkSet.add(resolved);
+   790→      }
+   791→    });
+   792→    empty.links = Array.from(linkSet);
+   793→
+   794→    // JSON-LD
+   795→    $('script[type="application/ld+json"]').each((_idx, el) => {
+   796→      try {
+   797→        const text = $(el).text().trim();
+   798→        if (text) {
+   799→          const parsed = JSON.parse(text);
+   800→          if (Array.isArray(parsed)) {
+   801→            empty.jsonLd.push(...parsed);
+   802→          } else {
+   803→            empty.jsonLd.push(parsed);
+   804→          }
+   805→        }
+   806→      } catch {
+   807→        // Malformed JSON-LD -- skip
+   808→      }
+   809→    });
+   810→
+   811→    // Word count -- strip tags and count
+   812→    const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
+   813→    empty.wordCount = bodyText ? bodyText.split(/\s+/).length : 0;
+   814→
+   815→    // Language
+   816→    empty.lang = $('html').attr('lang')?.trim() || '';
+   817→
+   818→  } catch (err: any) {
+   819→    logger.warn({ url, error: err.message }, 'Content extraction failed');
+   820→  }
+   821→
+   822→  return empty;
+   823→}
+   824→
+   825→// --- Sitemap Parsing ----------------------------------------------------------
+   826→
+   827→/** Parsed entry from an XML sitemap. */
+   828→interface SitemapUrl {
+   829→  loc: string;
+   830→  lastmod?: string;
+   831→  changefreq?: string;
+   832→  priority?: number;
+   833→}
+   834→
+   835→/** Parsed entry from a sitemap index. */
+   836→interface SitemapIndexEntry {
+   837→  loc: string;
+   838→  lastmod?: string;
+   839→}
+   840→
+   841→/**
+   842→ * Fetch and parse a robots.txt to discover sitemap URLs.
+   843→ */
+   844→async function discoverSitemapsFromRobots(domain: string): Promise<string[]> {
+   845→  try {
+   846→    const sitemaps = await robotsParser.getSitemaps(domain);
+   847→    logger.debug({ domain, sitemapCount: sitemaps.length }, 'Discovered sitemaps from robots.txt');
+   848→    return sitemaps;
+   849→  } catch (err: any) {
+   850→    logger.warn({ domain, error: err.message }, 'Failed to discover sitemaps from robots.txt');
+   851→    return [];
+   852→  }
+   853→}
+   854→
+   855→/**
+   856→ * Fetch a URL as plain text with a timeout.
+   857→ */
+   858→async function fetchText(url: string, timeoutMs: number = 15_000): Promise<string | null> {
+   859→  try {
+   860→    const controller = new AbortController();
+   861→    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+   862→
+   863→    const response = await fetch(url, {
+   864→      signal: controller.signal,
+   865→      headers: {
+   866→        'User-Agent': SITEMAP_USER_AGENT,
+   867→        'Accept': 'text/xml, application/xml, text/plain',
+   868→      },
+   869→      redirect: 'follow',
+   870→    });
+   871→
+   872→    clearTimeout(timeout);
+   873→
+   874→    if (!response.ok) {
+   875→      logger.debug({ url, status: response.status }, 'Sitemap fetch returned non-200');
+   876→      return null;
+   877→    }
+   878→
+   879→    return await response.text();
+   880→  } catch (err: any) {
+   881→    logger.debug({ url, error: err.message }, 'Sitemap fetch failed');
+   882→    return null;
+   883→  }
+   884→}
+   885→
+   886→/**
+   887→ * Parse an XML sitemap into a list of URLs.
+   888→ *
+   889→ * * Supports:
+   890→ *  - Standard sitemap (<urlset> with <url><loc> entries)
+   891→ *  - Sitemap index (<sitemapindex> with <sitemap><loc> entries)
+   892→ *  - Handles XML namespace prefixes gracefully
+   893→ */
+   894→function parseSitemapXml(xml: string): { urls: SitemapUrl[]; sitemaps: SitemapIndexEntry[] } {
+   895→  const urls: SitemapUrl[] = [];
+   896→  const sitemaps: SitemapIndexEntry[] = [];
+   897→
+   898→  try {
+   899→    const $ = cheerio.load(xml, { xmlMode: true });
+   900→
+   901→    // Standard sitemap
+   902→    $('urlset url, sitemap\\:urlset url').each((_idx, el) => {
+   903→      const loc = $(el).find('loc').first().text().trim();
+   904→      if (loc) {
+   905→        urls.push({
+   906→          loc,
+   907→          lastmod: $(el).find('lastmod').first().text().trim() || undefined,
+   908→          changefreq: $(el).find('changefreq').first().text().trim() || undefined,
+   909→          priority: parseFloat($(el).find('priority').first().text().trim()) || undefined,
+   910→        });
+   911→      }
+   912→    });
+   913→
+   914→    // Sitemap index
+   915→    $('sitemapindex sitemap, sitemap\\:sitemapindex sitemap').each((_idx, el) => {
+   916→      const loc = $(el).find('loc').first().text().trim();
+   917→      if (loc) {
+   918→        sitemaps.push({
+   919→          loc,
+   920→          lastmod: $(el).find('lastmod').first().text().trim() || undefined,
+   921→        });
+   922→      }
+   923→    });
+   924→
+   925→    // Also try with namespace-agnostic selectors
+   926→    // Some sitemaps use namespaced tags like <ns0:urlset>
+   927→    if (urls.length === 0 && sitemaps.length === 0) {
+   928→      $('url').each((_idx, el) => {
+   929→        const loc = $(el).find('loc').first().text().trim();
+   930→        if (loc) {
+   931→          urls.push({
+   932→            loc,
+   933→            lastmod: $(el).find('lastmod').first().text().trim() || undefined,
+   934→          });
+   935→        }
+   936→      });
+   937→
+   938→      $('sitemap').each((_idx, el) => {
+   939→        // Only if parent looks like sitemapindex
+   940→        const parentTag = ($(el).parent()[0] as any)?.tagName?.toLowerCase() || '';
+   941→        if (parentTag.includes('sitemapindex') || parentTag === 'sitemapindex') {
+   942→          const loc = $(el).find('loc').first().text().trim();
+   943→          if (loc) {
+   944→            sitemaps.push({
+   945→              loc,
+   946→              lastmod: $(el).find('lastmod').first().text().trim() || undefined,
+   947→            });
+   948→          }
+   949→        }
+   950→      });
+   951→    }
+   952→  } catch (err: any) {
+   953→    logger.warn({ error: err.message }, 'Sitemap XML parsing failed');
+   954→  }
+   955→
+   956→  return { urls, sitemaps };
+   957→}
+   958→
+   959→/**
+   960→ * Discover and parse all sitemaps for a given domain.
+   961→ *
+   962→ * * Discovery order:
+   963→ *  1. robots.txt Sitemap directives
+   964→ *  2. /sitemap.xml
+   965→ *  3. /sitemap_index.xml
+   966→ *  4. Recursively parse sitemap indexes
+   967→ *
+   968→ * Returns a deduplicated list of URLs found in the sitemaps.
+   969→ */
+   970→async function discoverSitemapUrls(
+   971→  domain: string,
+   972→  maxSitemapUrls: number = 50_000,
+   973→): Promise<SitemapUrl[]> {
+   974→  const allUrls: SitemapUrl[] = [];
+   975→  const seenLocs = new Set<string>();
+   976→  const processedIndexes = new Set<string>();
+   977→
+   978→  /**
+   979→   * Process a single sitemap (or sitemap index) URL.
+   980→   * Recursively follows sitemap index entries.
+   981→   */
+   982→  async function processSitemap(sitemapUrl: string, depth: number = 0): Promise<void> {
+   983→    if (depth > 5) {
+   984→      logger.warn({ sitemapUrl, depth }, 'Sitemap index recursion limit reached');
+   985→      return;
+   986→    }
+   987→
+   988→    if (allUrls.length >= maxSitemapUrls) return;
+   989→
+   990→    // Avoid reprocessing the same index
+   991→    const normalisedLoc = normaliseUrl(sitemapUrl);
+   992→    if (processedIndexes.has(normalisedLoc)) return;
+   993→    processedIndexes.add(normalisedLoc);
+   994→
+   995→    // Check Redis cache first
+   996→    const cacheKey = `sitemap:${normalisedLoc}`;
+   997→    const cached = await cacheGet<SitemapUrl[]>(cacheKey);
+   998→    if (cached) {
+   999→      for (const u of cached) {
+  1000→        if (!seenLocs.has(normaliseUrl(u.loc))) {
+  1001→          seenLocs.add(normaliseUrl(u.loc));
+  1002→          allUrls.push(u);
+  1003→        }
+  1004→      }
+  1005→      return;
+  1006→    }
+  1007→
+  1008→    const xml = await fetchText(sitemapUrl);
+  1009→    if (!xml) return;
+  1010→
+  1011→    const { urls, sitemaps } = parseSitemapXml(xml);
+  1012→
+  1013→    // Collect URLs from this sitemap
+  1014→    const pageUrls: SitemapUrl[] = [];
+  1015→    for (const u of urls) {
+  1016→      if (allUrls.length >= maxSitemapUrls) break;
+  1017→      const nLoc = normaliseUrl(u.loc);
+  1018→      if (!seenLocs.has(nLoc)) {
+  1019→        seenLocs.add(nLoc);
+  1020→        allUrls.push(u);
+  1021→        pageUrls.push(u);
+  1022→      }
+  1023→    }
+  1024→
+  1025→    // Cache the URLs from this sitemap
+  1026→    if (pageUrls.length > 0) {
+  1027→      await cacheSet(cacheKey, pageUrls, 3600).catch(() => {});
+  1028→    }
+  1029→
+  1030→    // Recursively process sitemap index entries
+  1031→    for (const s of sitemaps) {
+  1032→      if (allUrls.length >= maxSitemapUrls) break;
+  1033→      await processSitemap(s.loc, depth + 1);
+  1034→    }
+  1035→  }
+  1036→
+  1037→  // Step 1: Discover from robots.txt
+  1038→  const robotsSitemaps = await discoverSitemapsFromRobots(domain);
+  1039→
+  1040→  for (const sitemapUrl of robotsSitemaps) {
+  1041→    if (allUrls.length >= maxSitemapUrls) break;
+  1042→    await processSitemap(sitemapUrl);
+  1043→  }
+  1044→
+  1045→  // Step 2: Try /sitemap.xml if no URLs found yet
+  1046→  if (allUrls.length === 0) {
+  1047→    await processSitemap(`https://${domain}/sitemap.xml`);
+  1048→  }
+  1049→
+  1050→  // Step 3: Try /sitemap_index.xml if still no URLs
+  1051→  if (allUrls.length === 0) {
+  1052→    await processSitemap(`https://${domain}/sitemap_index.xml`);
+  1053→  }
+  1054→
+  1055→  logger.info(
+  1056→    { domain, urlCount: allUrls.length, indexCount: processedIndexes.size },
+  1057→    'Sitemap discovery completed',
+  1058→  );
+  1059→
+  1060→  return allUrls;
+  1061→}
+  1062→
+  1063→// --- Crawl Engine -------------------------------------------------------------
+  1064→
+  1065→/**
+  1066→ * Core crawling / spidering engine for ScrapeSuite.
+  1067→ *
+  1068→ * * Architecture:
+  1069→ *  1. Seed URLs are enqueued at depth 0
+  1070→ *  2. A configurable queue (BFS / DFS / Priority) determines fetch order
+  1071→ *  3. Each URL is fetched via the orchestrator (proxy, anti-bot, CAPTCHA)
+  1072→ *  4. Discovered links are filtered, normalised, and enqueued
+  1073→ *  5. Crawl state is persisted to Redis after every page for crash recovery
+  1074→ *  6. Concurrency is managed by a worker pool with per-domain rate limiting
+  1075→ *
+  1076→ * The engine is a singleton -- only one crawl runs at a time per instance,
+  1077→ * but multiple crawls can run in parallel across different processes using
+  1078→ * Redis-coordinated state.
+  1079→ */
+  1080→export class CrawlEngine {
+  1081→  // --- Active crawl tracking (in-memory) ---------------------------------
+  1082→
+  1083→  /** Currently active crawls, keyed by crawlId. */
+  1084→  private activeCrawls: Map<string, {
+  1085→    status: CrawlStatus;
+  1086→    queue: CrawlQueue;
+  1087→    visited: Set<string>;
+  1088→    config: CrawlConfig;
+  1089→    abortController: AbortController;
+  1090→    progress: CrawlProgress;
+  1091→    startTime: number;
+  1092→    totalResponseMs: number;
+  1093→    domainLastFetch: Map<string, number>;
+  1094→    results: CrawlPageResult[];
+  1095→  }> = new Map();
+  1096→
+  1097→  // --- Public API --------------------------------------------------------
+  1098→
+  1099→  /**
+  1100→   * Start a new crawl (or resume a previously paused one).
+  1101→   *
+  1102→   * * Lifecycle:
+  1103→   *  1. Validate and normalise config
+  1104→   *  2. If resumeCrawlId is provided, load state from Redis
+  1105→   *  3. Otherwise, create a new crawl with seed URLs
+  1106→   *  4. Optionally discover sitemap URLs and add to the queue
+  1107→   *  5. Run the crawl loop until completion, max pages, or cancellation
+  1108→   *  6. Persist final state and return results
+  1109→   */
+  1110→  async start(config: CrawlConfig): Promise<{ crawlId: string; results: CrawlPageResult[] }> {
+  1111→    // -- Validate config ---------------------------------------------------
+  1112→    const validatedConfig = this.validateConfig(config);
+  1113→
+  1114→    // -- Resume or create new ----------------------------------------------
+  1115→    let crawlId: string;
+  1116→    let queue: CrawlQueue;
+  1117→    let visited: Set<string>;
+  1118→    let existingResults: CrawlPageResult[] = [];
+  1119→    let pagesCrawled = 0;
+  1120→    let urlsDiscovered = 0;
+  1121→    let errors = 0;
+  1122→    let totalResponseMs = 0;
+  1123→    let domainStats: Record<string, { crawled: number; errors: number }> = {};
+  1124→
+  1125→    if (validatedConfig.resumeCrawlId) {
+  1126→      // Resume from Redis
+  1127→      const restored = await this.loadState(validatedConfig.resumeCrawlId);
+  1128→      if (!restored) {
+  1129→        throw new Error(`Crawl ${validatedConfig.resumeCrawlId} not found or expired`);
+  1130→      }
+  1131→
+  1132→      crawlId = restored.crawlId;
+  1133→      visited = new Set(restored.visitedHashes);
+  1134→      existingResults = restored.results || [];
+  1135→      pagesCrawled = restored.pagesCrawled;
+  1136→      urlsDiscovered = restored.urlsDiscovered;
+  1137→      errors = restored.errors;
+  1138→      totalResponseMs = restored.totalResponseMs;
+  1139→      domainStats = restored.domainStats || {};
+  1140→
+  1141→      // Rebuild queue
+  1142→      queue = this.createQueue(validatedConfig.strategy || 'bfs', restored.queue);
+  1143→
+  1144→      logger.info(
+  1145→        { crawlId, pagesCrawled, urlsDiscovered, queueSize: queue.size },
+  1146→        'Resuming crawl from saved state',
+  1147→      );
+  1148→    } else {
+  1149→      // New crawl
+  1150→      crawlId = crypto.randomUUID();
+  1151→      visited = new Set();
+  1152→
+  1153→      // Seed URLs
+  1154→      const seedUrls: CrawlUrl[] = [];
+  1155→      for (const rawUrl of validatedConfig.seedUrls) {
+  1156→        const normalised = normaliseUrl(rawUrl);
+  1157→        const hash = hashUrl(normalised);
+  1158→        if (!visited.has(hash)) {
+  1159→          visited.add(hash);
+  1160→          seedUrls.push({
+  1161→            url: normalised,
+  1162→            depth: 0,
+  1163→            priority: scoreUrl(normalised, 0),
+  1164→            discoveredAt: Date.now(),
+  1165→          });
+  1166→        }
+  1167→      }
+  1168→
+  1169→      urlsDiscovered = seedUrls.length;
+  1170→      queue = this.createQueue(validatedConfig.strategy || 'bfs', seedUrls);
+  1171→
+  1172→      logger.info(
+  1173→        { crawlId, seedCount: seedUrls.length, maxDepth: validatedConfig.maxDepth, maxPages: validatedConfig.maxPages },
+  1174→        'Starting new crawl',
+  1175→      );
+  1176→    }
+  1177→
+  1178→    // -- Sitemap discovery -------------------------------------------------
+  1179→    if (validatedConfig.parseSitemaps !== false) {
+  1180→      try {
+  1181→        const domains = this.extractSeedDomains(validatedConfig.seedUrls);
+  1182→        for (const domain of domains) {
+  1183→          const sitemapUrls = await discoverSitemapUrls(domain);
+  1184→          let addedFromSitemap = 0;
+  1185→          for (const su of sitemapUrls) {
+  1186→            const normalised = normaliseUrl(su.loc);
+  1187→            const hash = hashUrl(normalised);
+  1188→            if (!visited.has(hash)) {
+  1189→              visited.add(hash);
+  1190→              queue.push({
+  1191→                url: normalised,
+  1192→                depth: 0, // Sitemap URLs are treated as depth 0 seeds
+  1193→                priority: (su.priority || 0.5) * 100,
+  1194→                discoveredAt: Date.now(),
+  1195→              });
+  1196→              addedFromSitemap++;
+  1197→              urlsDiscovered++;
+  1198→            }
+  1199→          }
+  1200→          logger.info({ crawlId, domain, addedFromSitemap }, 'Sitemap URLs added to queue');
+  1201→        }
+  1202→      } catch (err: any) {
+  1203→        logger.warn({ crawlId, error: err.message }, 'Sitemap discovery failed -- continuing without sitemaps');
+  1204→      }
+  1205→    }
+  1206→
+  1207→    // -- Set up in-memory tracking -----------------------------------------
+  1208→    const abortController = new AbortController();
+  1209→    const progress: CrawlProgress = {
+  1210→      crawlId,
+  1211→      status: 'running',
+  1212→      pagesCrawled,
+  1213→      urlsDiscovered,
+  1214→      urlsQueued: queue.size,
+  1215→      errors,
+  1216→      elapsedMs: 0,
+  1217→      avgResponseMs: 0,
+  1218→      rps: 0,
+  1219→      domainStats,
+  1220→    };
+  1221→
+  1222→    this.activeCrawls.set(crawlId, {
+  1223→      status: 'running',
+  1224→      queue,
+  1225→      visited,
+  1226→      config: validatedConfig,
+  1227→      abortController,
+  1228→      progress,
+  1229→      startTime: Date.now(),
+  1230→      totalResponseMs,
+  1231→      domainLastFetch: new Map(),
+  1232→      results: existingResults,
+  1233→    });
+  1234→
+  1235→    // -- Run the crawl loop ------------------------------------------------
+  1236→    try {
+  1237→      const results = await this.runCrawlLoop(crawlId);
+  1238→      return { crawlId, results };
+  1239→    } catch (err: any) {
+  1240→      logger.error({ crawlId, error: err.message }, 'Crawl failed');
+  1241→      throw err;
+  1242→    }
+  1243→  }
+  1244→
+  1245→  /**
+  1246→   * Pause a running crawl.
+  1247→   * The crawl state is persisted to Redis and can be resumed later.
+  1248→   */
+  1249→  async pause(crawlId: string): Promise<boolean> {
+  1250→    const crawl = this.activeCrawls.get(crawlId);
+  1251→    if (!crawl || crawl.status !== 'running') {
+  1252→      logger.warn({ crawlId }, 'Cannot pause -- crawl not running');
+  1253→      return false;
+  1254→    }
+  1255→
+  1256→    crawl.status = 'paused';
+  1257→    crawl.abortController.abort();
+  1258→    crawl.progress.status = 'paused';
+  1259→
+  1260→    // Persist state
+  1261→    await this.saveState(crawlId);
+  1262→
+  1263→    logger.info({ crawlId, pagesCrawled: crawl.progress.pagesCrawled }, 'Crawl paused');
+  1264→    return true;
+  1265→  }
+  1266→
+  1267→  /**
+  1268→   * Cancel a running or paused crawl.
+  1269→   * Removes the crawl from memory and Redis.
+  1270→   */
+  1271→  async cancel(crawlId: string): Promise<boolean> {
+  1272→    const crawl = this.activeCrawls.get(crawlId);
+  1273→    if (!crawl) {
+  1274→      logger.warn({ crawlId }, 'Cannot cancel -- crawl not found');
+  1275→      return false;
+  1276→    }
+  1277→
+  1278→    crawl.status = 'cancelled';
+  1279→    crawl.abortController.abort();
+  1280→    crawl.progress.status = 'cancelled';
+  1281→
+  1282→    // Remove from memory
+  1283→    this.activeCrawls.delete(crawlId);
+  1284→
+  1285→    // Remove from Redis
+  1286→    try {
+  1287→      await redis.del(`${CRAWL_STATE_PREFIX}${crawlId}`);
+  1288→      await redis.del(`${CRAWL_VISITED_PREFIX}${crawlId}`);
+  1289→    } catch (err: any) {
+  1290→      logger.warn({ crawlId, error: err.message }, 'Failed to clean up Redis state');
+  1291→    }
+  1292→
+  1293→    logger.info({ crawlId }, 'Crawl cancelled');
+  1294→    return true;
+  1295→  }
+  1296→
+  1297→  /**
+  1298→   * Get the real-time progress of a crawl.
+  1299→   */
+  1300→  getProgress(crawlId: string): CrawlProgress | null {
+  1301→    const crawl = this.activeCrawls.get(crawlId);
+  1302→    if (!crawl) return null;
+  1303→
+  1304→    const elapsed = Date.now() - crawl.startTime;
+  1305→    crawl.progress.elapsedMs = elapsed;
+  1306→    crawl.progress.avgResponseMs = crawl.progress.pagesCrawled > 0
+  1307→      ? Math.round(crawl.totalResponseMs / crawl.progress.pagesCrawled)
+  1308→      : 0;
+  1309→    crawl.progress.rps = elapsed > 0 ? Math.round((crawl.progress.pagesCrawled / elapsed) * 1000 * 100) / 100 : 0;
+  1310→    crawl.progress.urlsQueued = crawl.queue.size;
+  1311→
+  1312→    return { ...crawl.progress };
+  1313→  }
+  1314→
+  1315→  /**
+  1316→   * Get all active crawl IDs.
+  1317→   */
+  1318→  getActiveCrawlIds(): string[] {
+  1319→    return Array.from(this.activeCrawls.keys());
+  1320→  }
+  1321→
+  1322→  // --- Crawl Loop --------------------------------------------------------
+  1323→
+  1324→  /**
+  1325→   * Core crawl loop -- runs until the queue is empty, maxPages is reached,
+  1326→   * or the crawl is paused/cancelled.
+  1327→   *
+  1328→   * * Uses a worker-pool pattern:
+  1329→   *  - N workers pull URLs from the shared queue
+  1330→   *  - Each worker respects per-domain rate limits
+  1331→   *  - Results are collected and new links enqueued
+  1332→   *  - State is persisted to Redis periodically
+  1333→   */
+  1334→  private async runCrawlLoop(crawlId: string): Promise<CrawlPageResult[]> {
+  1335→    const crawl = this.activeCrawls.get(crawlId);
+  1336→    if (!crawl) throw new Error(`Crawl ${crawlId} not found in memory`);
+  1337→
+  1338→    const { config, queue, visited, abortController } = crawl;
+  1339→    const maxPages = config.maxPages || DEFAULT_MAX_PAGES;
+  1340→    const concurrency = config.concurrency || DEFAULT_CONCURRENCY;
+  1341→
+  1342→    // Create worker promises
+  1343→    const workers: Promise<void>[] = [];
+  1344→    let stateSaveCounter = 0;
+  1345→
+  1346→    for (let i = 0; i < concurrency; i++) {
+  1347→      workers.push((async () => {
+  1348→        while (!abortController.signal.aborted) {
+  1349→          // Check if we've reached maxPages
+  1350→          if (crawl.progress.pagesCrawled >= maxPages) {
+  1351→            break;
+  1352→          }
+  1353→
+  1354→          // Get next URL from queue
+  1355→          const item = queue.pop();
+  1356→          if (!item) {
+  1357→            // Queue is empty -- wait briefly then check again
+  1358→            await sleep(200);
+  1359→            // Check again after wait -- another worker may have added URLs
+  1360→            if (queue.size === 0) break;
+  1361→            continue;
+  1362→          }
+  1363→
+  1364→          // Check depth limit
+  1365→          const maxDepth = config.maxDepth || DEFAULT_MAX_DEPTH;
+  1366→          if (item.depth > maxDepth) {
+  1367→            continue;
+  1368→          }
+  1369→
+  1370→          // Per-domain rate limiting
+  1371→          const domain = this.extractDomain(item.url);
+  1372→          if (domain) {
+  1373→            const delayMs = config.delayMs ?? DEFAULT_DELAY_MS;
+  1374→            const lastFetch = crawl.domainLastFetch.get(domain) || 0;
+  1375→            const elapsed = Date.now() - lastFetch;
+  1376→            if (elapsed < delayMs) {
+  1377→              // Put the item back and wait
+  1378→              queue.push(item);
+  1379→              await sleep(delayMs - elapsed);
+  1380→              continue;
+  1381→            }
+  1382→
+  1383→            // Also check with adaptive rate limiter
+  1384→            try {
+  1385→              const rateResult = await adaptiveRateLimiter.acquireToken(domain);
+  1386→              if (!rateResult.allowed) {
+  1387→                queue.push(item);
+  1388→                await sleep(rateResult.waitMs);
+  1389→                continue;
+  1390→              }
+  1391→            } catch {
+  1392→              // Rate limiter unavailable -- proceed with local delay only
+  1393→            }
+  1394→          }
+  1395→
+  1396→          // Robots.txt check
+  1397→          if (config.respectRobotsTxt !== false && domain) {
+  1398→            try {
+  1399→              const robotsCheck = await robotsParser.isAllowed(item.url, 'ScrapeSuite-Crawler');
+  1400→              if (!robotsCheck.allowed) {
+  1401→                logger.debug({ url: item.url }, 'Skipped -- disallowed by robots.txt');
+  1402→                // Respect crawl-delay from robots.txt if present
+  1403→                if (robotsCheck.crawlDelay && robotsCheck.crawlDelay > 0) {
+  1404→                  crawl.domainLastFetch.set(domain, Date.now() + robotsCheck.crawlDelay * 1000);
+  1405→                }
+  1406→                continue;
+  1407→              }
+  1408→
+  1409→              // Apply crawl-delay from robots.txt
+  1410→              if (robotsCheck.crawlDelay && robotsCheck.crawlDelay > 0) {
+  1411→                const effectiveDelay = Math.max(config.delayMs ?? DEFAULT_DELAY_MS, robotsCheck.crawlDelay * 1000);
+  1412→                crawl.domainLastFetch.set(domain, Date.now());
+  1413→                // Enforce crawl-delay by waiting before next request to this domain
+  1414→                const lastFetch = crawl.domainLastFetch.get(domain) || 0;
+  1415→                const elapsed = Date.now() - lastFetch;
+  1416→                if (elapsed < effectiveDelay) {
+  1417→                  await sleep(effectiveDelay - elapsed);
+  1418→                }
+  1419→              }
+  1420→            } catch (err: any) {
+  1421→              logger.debug({ url: item.url, error: err.message }, 'Robots.txt check failed -- proceeding');
+  1422→            }
+  1423→          }
+  1424→
+  1425→          // -- Fetch the page via the orchestrator -------------------------
+  1426→          const fetchStart = Date.now();
+  1427→          let pageResult: CrawlPageResult;
+  1428→
+  1429→          try {
+  1430→            const orchestratorResult = await orchestrator.processJob({
+  1431→              jobId: `crawl-${crawlId}-${hashUrl(item.url).substring(0, 12)}`,
+  1432→              url: item.url,
+  1433→              domain: domain || item.url,
+  1434→              userId: config.userId || 'system',
+  1435→              apiKeyId: config.apiKeyId || 'system',
+  1436→              strategy: 'auto',
+  1437→              proxyTier: config.proxyTier,
+  1438→              proxyCountry: config.proxyCountry,
+  1439→              headers: config.headers,
+  1440→              timeout: config.timeout,
+  1441→              respectRobotsTxt: false, // We already checked above
+  1442→              renderJs: false, // Crawling uses HTTP by default for speed
+  1443→              priority: 5,
+  1444→            });
+  1445→
+  1446→            const responseMs = Date.now() - fetchStart;
+  1447→
+  1448→            // Extract content from HTML
+  1449→            let extracted: PageExtractedContent | undefined;
+  1450→            const html = orchestratorResult.html || '';
+  1451→
+  1452→            if (html && config.extractContent !== false) {
+  1453→              extracted = extractContent(html, item.url);
+  1454→            }
+  1455→
+  1456→            pageResult = {
+  1457→              url: item.url,
+  1458→              title: extracted?.title || '',
+  1459→              depth: item.depth,
+  1460→              status: orchestratorResult.statusCode || 0,
+  1461→              html: config.includeHtml ? html : undefined,
+  1462→              extracted,
+  1463→              finalUrl: orchestratorResult.finalUrl,
+  1464→              responseMs,
+  1465→              cached: orchestratorResult.cached,
+  1466→              error: orchestratorResult.error,
+  1467→            };
+  1468→
+  1469→            // -- Discover new links from the page --------------------------
+  1470→            if (html && item.depth < (config.maxDepth || DEFAULT_MAX_DEPTH)) {
+  1471→              const rawLinks = extractLinks(html, orchestratorResult.finalUrl || item.url);
+  1472→              const newUrls = this.filterAndEnqueue(
+  1473→                rawLinks,
+  1474→                item.url,
+  1475→                item.depth + 1,
+  1476→                crawl,
+  1477→              );
+  1478→              crawl.progress.urlsDiscovered += newUrls;
+  1479→            }
+  1480→
+  1481→            // -- Record success --------------------------------------------
+  1482→            crawl.progress.pagesCrawled++;
+  1483→            crawl.totalResponseMs += responseMs;
+  1484→
+  1485→            if (domain) {
+  1486→              crawl.domainLastFetch.set(domain, Date.now());
+  1487→              if (!crawl.progress.domainStats[domain]) {
+  1488→                crawl.progress.domainStats[domain] = { crawled: 0, errors: 0 };
+  1489→              }
+  1490→              crawl.progress.domainStats[domain].crawled++;
+  1491→            }
+  1492→
+  1493→            // Record response to adaptive rate limiter
+  1494→            if (domain) {
+  1495→              try {
+  1496→                await adaptiveRateLimiter.recordResponse(domain, {
+  1497→                  success: (orchestratorResult.statusCode || 0) >= 200 && (orchestratorResult.statusCode || 0) < 400,
+  1498→                  statusCode: orchestratorResult.statusCode,
+  1499→                  responseMs,
+  1500→                });
+  1501→              } catch {
+  1502→                // Non-critical
+  1503→              }
+  1504→            }
+  1505→
+  1506→          } catch (err: any) {
+  1507→            const responseMs = Date.now() - fetchStart;
+  1508→            pageResult = {
+  1509→              url: item.url,
+  1510→              title: '',
+  1511→              depth: item.depth,
+  1512→              status: 0,
+  1513→              responseMs,
+  1514→              cached: false,
+  1515→              error: err.message,
+  1516→            };
+  1517→
+  1518→            crawl.progress.errors++;
+  1519→
+  1520→            if (domain) {
+  1521→              if (!crawl.progress.domainStats[domain]) {
+  1522→                crawl.progress.domainStats[domain] = { crawled: 0, errors: 0 };
+  1523→              }
+  1524→              crawl.progress.domainStats[domain].errors++;
+  1525→            }
+  1526→          }
+  1527→
+  1528→          // -- Store result ------------------------------------------------
+  1529→          crawl.results.push(pageResult);
+  1530→
+  1531→          // -- Invoke callback ---------------------------------------------
+  1532→          if (config.onPageCrawled) {
+  1533→            try {
+  1534→              config.onPageCrawled(pageResult, this.getProgress(crawlId)!);
+  1535→            } catch {
+  1536→              // Callback error -- don't break the crawl
+  1537→            }
+  1538→          }
+  1539→
+  1540→          // -- Periodic state persistence ----------------------------------
+  1541→          stateSaveCounter++;
+  1542→          if (stateSaveCounter % 10 === 0) {
+  1543→            await this.saveState(crawlId).catch((err) => {
+  1544→              logger.warn({ crawlId, error: (err as Error).message }, 'Periodic state save failed');
+  1545→            });
+  1546→          }
+  1547→        }
+  1548→      })());
+  1549→    }
+  1550→
+  1551→    // Wait for all workers to finish
+  1552→    await Promise.all(workers);
+  1553→
+  1554→    // -- Crawl complete -----------------------------------------------------
+  1555→    crawl.status = 'completed';
+  1556→    crawl.progress.status = 'completed';
+  1557→
+  1558→    // Final state save
+  1559→    await this.saveState(crawlId);
+  1560→
+  1561→    // Compute final progress
+  1562→    const finalProgress = this.getProgress(crawlId)!;
+  1563→
+  1564→    // Invoke completion callback
+  1565→    if (config.onCrawlComplete) {
+  1566→      try {
+  1567→        config.onCrawlComplete(crawl.results, finalProgress);
+  1568→      } catch {
+  1569→        // Callback error
+  1570→      }
+  1571→    }
+  1572→
+  1573→    // Clean up from active crawls
+  1574→    this.activeCrawls.delete(crawlId);
+  1575→
+  1576→    logger.info(
+  1577→      {
+  1578→        crawlId,
+  1579→        pagesCrawled: crawl.progress.pagesCrawled,
+  1580→        urlsDiscovered: crawl.progress.urlsDiscovered,
+  1581→        errors: crawl.progress.errors,
+  1582→        elapsedMs: finalProgress.elapsedMs,
+  1583→      },
+  1584→      'Crawl completed',
+  1585→    );
+  1586→
+  1587→    return crawl.results;
+  1588→  }
+  1589→
+  1590→  // --- URL Filtering & Enqueueing ----------------------------------------
+  1591→
+  1592→  /**
+  1593→   * Filter discovered links and enqueue those that pass all checks.
+  1594→   *
+  1595→   * * Filter pipeline (in order):
+  1596→   *  1. Resolve to absolute URL
+  1597→   *  2. Normalise URL
+  1598→   *  3. Skip non-HTTP(S) schemes
+  1599→   *  4. Domain scope check (same-domain / same-subdomain / external)
+  1600→   *  5. File extension blocklist
+  1601→   *  6. Include patterns (URL must match at least one)
+  1602→   *  7. Exclude patterns (URL must not match any)
+  1603→   *  8. Deduplication (skip already-visited URLs)
+  1604→   *
+  1605→   * Returns the number of new URLs added to the queue.
+  1606→   */
+  1607→  private filterAndEnqueue(
+  1608→    rawLinks: { url: string; anchorText: string }[],
+  1609→    parentUrl: string,
+  1610→    depth: number,
+  1611→    crawl: {
+  1612→      queue: CrawlQueue;
+  1613→      visited: Set<string>;
+  1614→      config: CrawlConfig;
+  1615→      progress: CrawlProgress;
+  1616→    },
+  1617→  ): number {
+  1618→    const {
+  1619→      queue,
+  1620→      visited,
+  1621→      config,
+  1622→      progress,
+  1623→    } = crawl;
+  1624→
+  1625→    let added = 0;
+  1626→
+  1627→    for (const link of rawLinks) {
+  1628→      try {
+  1629→        // Step 1: Already absolute (extractLinks resolves them)
+  1630→        const absolute = link.url;
+  1631→
+  1632→        // Step 2: Normalise
+  1633→        const normalised = normaliseUrl(absolute);
+  1634→        if (!normalised) continue;
+  1635→
+  1636→        // Step 3: Only HTTP(S)
+  1637→        if (!normalised.startsWith('http://') && !normalised.startsWith('https://')) {
+  1638→          continue;
+  1639→        }
+  1640→
+  1641→        // Step 4: Domain scope
+  1642→        const domainScope = config.domainScope || 'same-domain';
+  1643→        if (domainScope === 'same-domain') {
+  1644→          if (!isSameDomain(normalised, parentUrl)) continue;
+  1645→        } else if (domainScope === 'same-subdomain') {
+  1646→          if (!isSameSubdomain(normalised, parentUrl)) continue;
+  1647→        }
+  1648→        // 'allow-external' -- no domain filtering
+  1649→
+  1650→        // Step 5: Extension blocklist
+  1651→        const skipExtensions = config.skipExtensions || DEFAULT_SKIP_EXTENSIONS;
+  1652→        if (hasSkippedExtension(normalised, skipExtensions)) continue;
+  1653→
+  1654→        // Step 6: Include patterns
+  1655→        if (config.includePatterns && config.includePatterns.length > 0) {
+  1656→          if (!matchesAnyPattern(normalised, config.includePatterns)) continue;
+  1657→        }
+  1658→
+  1659→        // Step 7: Exclude patterns
+  1660→        if (config.excludePatterns && config.excludePatterns.length > 0) {
+  1661→          if (matchesAnyPattern(normalised, config.excludePatterns)) continue;
+  1662→        }
+  1663→
+  1664→        // Step 8: Deduplication
+  1665→        const hash = hashUrl(normalised);
+  1666→        if (visited.has(hash)) continue;
+  1667→        visited.add(hash);
+  1668→
+  1669→        // Enqueue
+  1670→        queue.push({
+  1671→          url: normalised,
+  1672→          depth,
+  1673→          parentUrl,
+  1674→          anchorText: link.anchorText,
+  1675→          priority: scoreUrl(normalised, depth, link.anchorText),
+  1676→          discoveredAt: Date.now(),
+  1677→        });
+  1678→
+  1679→        added++;
+  1680→      } catch {
+  1681→        // Skip unparseable links
+  1682→      }
+  1683→    }
+  1684→
+  1685→    progress.urlsQueued = queue.size;
+  1686→    return added;
+  1687→  }
+  1688→
+  1689→  // --- State Persistence -------------------------------------------------
+  1690→
+  1691→  /**
+  1692→   * Save the current crawl state to Redis for crash recovery / pause-resume.
+  1693→   *
+  1694→   * * Persisted data:
+  1695→   *  - Queue (serialised array)
+  1696→   *  - Visited set (as hash array)
+  1697→   *  - Results collected so far
+  1698→   *  - All counters and stats
+  1699→   */
+  1700→  private async saveState(crawlId: string): Promise<void> {
+  1701→    const crawl = this.activeCrawls.get(crawlId);
+  1702→    if (!crawl) return;
+  1703→
+  1704→    const state: CrawlState = {
+  1705→      crawlId,
+  1706→      seedUrls: crawl.config.seedUrls,
+  1707→      config: crawl.config,
+  1708→      status: crawl.status,
+  1709→      queue: crawl.queue.toArray(),
+  1710→      visitedHashes: Array.from(crawl.visited),
+  1711→      pagesCrawled: crawl.progress.pagesCrawled,
+  1712→      urlsDiscovered: crawl.progress.urlsDiscovered,
+  1713→      errors: crawl.progress.errors,
+  1714→      totalResponseMs: crawl.totalResponseMs,
+  1715→      domainStats: crawl.progress.domainStats,
+  1716→      startedAt: crawl.startTime,
+  1717→      updatedAt: Date.now(),
+  1718→      results: crawl.results,
+  1719→    };
+  1720→
+  1721→    try {
+  1722→      await cacheSet(`${CRAWL_STATE_PREFIX}${crawlId}`, state, CRAWL_STATE_TTL_SECONDS);
+  1723→
+  1724→      // Also persist the visited set separately for fast lookup
+  1725→      const visitedKey = `${CRAWL_VISITED_PREFIX}${crawlId}`;
+  1726→      const r = redis;
+  1727→      if (state.visitedHashes.length > 0) {
+  1728→        // Use a Redis set for O(1) membership checks
+  1729→        const pipeline = r.pipeline();
+  1730→        for (const hash of state.visitedHashes) {
+  1731→          pipeline.sadd(visitedKey, hash);
+  1732→        }
+  1733→        pipeline.expire(visitedKey, CRAWL_STATE_TTL_SECONDS);
+  1734→        await pipeline.exec();
+  1735→      }
+  1736→    } catch (err: any) {
+  1737→      logger.warn({ crawlId, error: err.message }, 'Failed to save crawl state to Redis');
+  1738→    }
+  1739→  }
+  1740→
+  1741→  /**
+  1742→   * Load a previously saved crawl state from Redis.
+  1743→   */
+  1744→  private async loadState(crawlId: string): Promise<CrawlState | null> {
+  1745→    try {
+  1746→      const state = await cacheGet<CrawlState>(`${CRAWL_STATE_PREFIX}${crawlId}`);
+  1747→      if (!state) return null;
+  1748→
+  1749→      // Also load the visited set from Redis for completeness
+  1750→      const visitedKey = `${CRAWL_VISITED_PREFIX}${crawlId}`;
+  1751→      try {
+  1752→        const visitedMembers = await redis.smembers(visitedKey);
+  1753→        if (visitedMembers.length > state.visitedHashes.length) {
+  1754→          state.visitedHashes = visitedMembers;
+  1755→        }
+  1756→      } catch {
+  1757→        // Fall back to the state's visitedHashes
+  1758→      }
+  1759→
+  1760→      logger.info(
+  1761→        { crawlId, pagesCrawled: state.pagesCrawled, queueSize: state.queue.length },
+  1762→        'Loaded crawl state from Redis',
+  1763→      );
+  1764→
+  1765→      return state;
+  1766→    } catch (err: any) {
+  1767→      logger.warn({ crawlId, error: err.message }, 'Failed to load crawl state from Redis');
+  1768→      return null;
+  1769→    }
+  1770→  }
+  1771→
+  1772→  /**
+  1773→   * List all persisted crawl states in Redis.
+  1774→   */
+  1775→  async listPersistedCrawls(): Promise<{ crawlId: string; status: CrawlStatus; pagesCrawled: number; updatedAt: number }[]> {
+  1776→    try {
+  1777→      const keys = await redis.keys(`${CRAWL_STATE_PREFIX}*`);
+  1778→      const results: { crawlId: string; status: CrawlStatus; pagesCrawled: number; updatedAt: number }[] = [];
+  1779→
+  1780→      for (const key of keys) {
+  1781→        try {
+  1782→          const state = await cacheGet<CrawlState>(key.replace('cache:', ''));
+  1783→          if (state) {
+  1784→            results.push({
+  1785→              crawlId: state.crawlId,
+  1786→              status: state.status,
+  1787→              pagesCrawled: state.pagesCrawled,
+  1788→              updatedAt: state.updatedAt,
+  1789→            });
+  1790→          }
+  1791→        } catch {
+  1792→          // Skip malformed entries
+  1793→        }
+  1794→      }
+  1795→
+  1796→      return results.sort((a, b) => b.updatedAt - a.updatedAt);
+  1797→    } catch (err: any) {
+  1798→      logger.warn({ error: err.message }, 'Failed to list persisted crawls');
+  1799→      return [];
+  1800→    }
+  1801→  }
+  1802→
+  1803→  /**
+  1804→   * Delete a persisted crawl state from Redis.
+  1805→   */
+  1806→  async deletePersistedCrawl(crawlId: string): Promise<boolean> {
+  1807→    try {
+  1808→      await redis.del(`${CRAWL_STATE_PREFIX}${crawlId}`);
+  1809→      await redis.del(`${CRAWL_VISITED_PREFIX}${crawlId}`);
+  1810→      return true;
+  1811→    } catch (err: any) {
+  1812→      logger.warn({ crawlId, error: err.message }, 'Failed to delete persisted crawl state');
+  1813→      return false;
+  1814→    }
+  1815→  }
+  1816→
+  1817→  // --- Config Validation -------------------------------------------------
+  1818→
+  1819→  /**
+  1820→   * Validate and apply defaults to a CrawlConfig.
+  1821→   * Throws on invalid values.
+  1822→   */
+  1823→  private validateConfig(config: CrawlConfig): CrawlConfig {
+  1824→    if (!config.seedUrls || config.seedUrls.length === 0) {
+  1825→      if (!config.resumeCrawlId) {
+  1826→        throw new Error('seedUrls is required when not resuming a crawl');
+  1827→      }
+  1828→    }
+  1829→
+  1830→    // Validate seed URLs
+  1831→    if (config.seedUrls) {
+  1832→      for (const url of config.seedUrls) {
+  1833→        try {
+  1834→          const parsed = new URL(url);
+  1835→          if (!['http:', 'https:'].includes(parsed.protocol)) {
+  1836→            throw new Error(`Invalid seed URL protocol: ${url}`);
+  1837→          }
+  1838→        } catch {
+  1839→          throw new Error(`Invalid seed URL: ${url}`);
+  1840→        }
+  1841→      }
+  1842→    }
+  1843→
+  1844→    // Clamp depth
+  1845→    const maxDepth = config.maxDepth ?? DEFAULT_MAX_DEPTH;
+  1846→    if (maxDepth < MIN_DEPTH || maxDepth > MAX_DEPTH) {
+  1847→      throw new Error(`maxDepth must be between ${MIN_DEPTH} and ${MAX_DEPTH}`);
+  1848→    }
+  1849→
+  1850→    // Clamp concurrency
+  1851→    const concurrency = config.concurrency ?? DEFAULT_CONCURRENCY;
+  1852→    if (concurrency < MIN_CONCURRENCY || concurrency > MAX_CONCURRENCY) {
+  1853→      throw new Error(`concurrency must be between ${MIN_CONCURRENCY} and ${MAX_CONCURRENCY}`);
+  1854→    }
+  1855→
+  1856→    // Validate strategy
+  1857→    if (config.strategy && !['bfs', 'dfs', 'priority'].includes(config.strategy)) {
+  1858→      throw new Error(`strategy must be 'bfs', 'dfs', or 'priority'`);
+  1859→    }
+  1860→
+  1861→    // Validate domain scope
+  1862→    if (config.domainScope && !['same-domain', 'same-subdomain', 'allow-external'].includes(config.domainScope)) {
+  1863→      throw new Error(`domainScope must be 'same-domain', 'same-subdomain', or 'allow-external'`);
+  1864→    }
+  1865→
+  1866→    // Validate regex patterns
+  1867→    if (config.includePatterns) {
+  1868→      for (const pattern of config.includePatterns) {
+  1869→        try {
+  1870→          new RegExp(pattern);
+  1871→        } catch {
+  1872→          throw new Error(`Invalid include pattern: ${pattern}`);
+  1873→        }
+  1874→      }
+  1875→    }
+  1876→
+  1877→    if (config.excludePatterns) {
+  1878→      for (const pattern of config.excludePatterns) {
+  1879→        try {
+  1880→          new RegExp(pattern);
+  1881→        } catch {
+  1882→          throw new Error(`Invalid exclude pattern: ${pattern}`);
+  1883→        }
+  1884→      }
+  1885→    }
+  1886→
+  1887→    return {
+  1888→      ...config,
+  1889→      maxDepth: Math.max(MIN_DEPTH, Math.min(MAX_DEPTH, maxDepth)),
+  1890→      maxPages: Math.max(1, config.maxPages ?? DEFAULT_MAX_PAGES),
+  1891→      concurrency: Math.max(MIN_CONCURRENCY, Math.min(MAX_CONCURRENCY, concurrency)),
+  1892→    };
+  1893→  }
+  1894→
+  1895→  // --- Queue Factory -----------------------------------------------------
+  1896→
+  1897→  /**
+  1898→   * Create the appropriate queue type based on the crawl strategy.
+  1899→   */
+  1900→  private createQueue(strategy: CrawlStrategy, initialItems: CrawlUrl[]): CrawlQueue {
+  1901→    switch (strategy) {
+  1902→      case 'dfs':
+  1903→        return DFSQueue.fromArray(initialItems);
+  1904→      case 'priority':
+  1905→        return PriorityQueue.fromArray(initialItems);
+  1906→      case 'bfs':
+  1907→      default:
+  1908→        return BFSQueue.fromArray(initialItems);
+  1909→    }
+  1910→  }
+  1911→
+  1912→  // --- Utility Methods ---------------------------------------------------
+  1913→
+  1914→  /**
+  1915→   * Extract the domain (hostname) from a URL.
+  1916→   */
+  1917→  private extractDomain(url: string): string | null {
+  1918→    try {
+  1919→      return new URL(url).hostname;
+  1920→    } catch {
+  1921→      return null;
+  1922→    }
+  1923→  }
+  1924→
+  1925→  /**
+  1926→   * Extract unique domains from a list of seed URLs.
+  1927→   */
+  1928→  private extractSeedDomains(urls: string[]): string[] {
+  1929→    const domains = new Set<string>();
+  1930→    for (const url of urls) {
+  1931→      try {
+  1932→        domains.add(new URL(url).hostname);
+  1933→      } catch {
+  1934→        // Skip invalid URLs
+  1935→      }
+  1936→    }
+  1937→    return Array.from(domains);
+  1938→  }
+  1939→
+  1940→  // --- Database Integration ----------------------------------------------
+  1941→
+  1942→  /**
+  1943→   * Persist crawl results to the database.
+  1944→   *
+  1945→   * * Stores:
+  1946→   *  - Crawl metadata (seed URLs, config, stats)
+  1947→   *  - Individual page results
+  1948→   *  - Discovered URLs (for future re-crawls)
+  1949→   */
+  1950→  async persistResults(crawlId: string, results: CrawlPageResult[], config: CrawlConfig): Promise<void> {
+  1951→    try {
+  1952→      // Store crawl metadata
+  1953→      await cacheSet(`crawl:results:${crawlId}`, {
+  1954→        crawlId,
+  1955→        seedUrls: config.seedUrls,
+  1956→        totalPages: results.length,
+  1957→        successfulPages: results.filter((r) => r.status >= 200 && r.status < 400).length,
+  1958→        errorPages: results.filter((r) => r.error).length,
+  1959→        completedAt: Date.now(),
+  1960→        config: {
+  1961→          maxDepth: config.maxDepth,
+  1962→          maxPages: config.maxPages,
+  1963→          strategy: config.strategy,
+  1964→          domainScope: config.domainScope,
+  1965→        },
+  1966→      }, CRAWL_STATE_TTL_SECONDS);
+  1967→
+  1968→      // Store individual results in chunks (Redis can handle large values but let's be safe)
+  1969→      const CHUNK_SIZE = 50;
+  1970→      for (let i = 0; i < results.length; i += CHUNK_SIZE) {
+  1971→        const chunk = results.slice(i, i + CHUNK_SIZE);
+  1972→        await cacheSet(`crawl:results:${crawlId}:chunk:${Math.floor(i / CHUNK_SIZE)}`, chunk, CRAWL_STATE_TTL_SECONDS);
+  1973→      }
+  1974→
+  1975→      logger.info(
+  1976→        { crawlId, totalResults: results.length },
+  1977→        'Crawl results persisted to Redis',
+  1978→      );
+  1979→    } catch (err: any) {
+  1980→      logger.warn({ crawlId, error: err.message }, 'Failed to persist crawl results');
+  1981→    }
+  1982→  }
+  1983→
+  1984→  /**
+  1985→   * Load persisted crawl results from Redis.
+  1986→   */
+  1987→  async loadResults(crawlId: string): Promise<CrawlPageResult[]> {
+  1988→    const results: CrawlPageResult[] = [];
+  1989→    let chunkIdx = 0;
+  1990→
+  1991→    try {
+  1992→      while (true) {
+  1993→        const chunk = await cacheGet<CrawlPageResult[]>(`crawl:results:${crawlId}:chunk:${chunkIdx}`);
+  1994→        if (!chunk) break;
+  1995→        results.push(...chunk);
+  1996→        chunkIdx++;
+  1997→      }
+  1998→    } catch (err: any) {
+  1999→      logger.warn({ crawlId, error: err.message }, 'Failed to load crawl results');
+  2000→    }
+
+[showing lines 1-2000 of 2087; use offset=2001 with limit to continue reading]

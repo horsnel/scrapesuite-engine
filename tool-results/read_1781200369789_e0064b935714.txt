@@ -1,0 +1,796 @@
+     1→/**
+     2→ * Bot Detection Evader — ScrapeSuite Engine
+     3→ *
+     4→ * Evades Google's bot detection mechanisms on YouTube.
+     5→ * Google employs a multi-layered anti-bot system:
+     6→ *   - "Unusual traffic" interstitial pages
+     7→ *   - reCAPTCHA Enterprise (risk-based challenges)
+     8→ *   - Rate limiting via HTTP 429 + Retry-After headers
+     9→ *   - Consent/cookie walls (GDPR CONSENT, SOCS)
+    10→ *   - Behavioral fingerprinting (request patterns, timing)
+    11→ *   - Device fingerprint correlation (TLS JA3, canvas, WebGL)
+    12→ *   - Visitor tracking (_visitor_key, visitorData)
+    13→ *
+    14→ * This module detects bot signals and generates appropriate
+    15→ * evasion strategies including header generation, cookie crafting,
+    16→ * and visitor data fabrication.
+    17→ */
+    18→
+    19→import { createChildLogger } from '../../utils/logger';
+    20→import { cacheGet, cacheSet } from '../../utils/redis';
+    21→import type {
+    22→  BotDetectionSignals,
+    23→  BotDetectionEvaderConfig,
+    24→  EvasionStrategy,
+    25→} from './types';
+    26→
+    27→const logger = createChildLogger('youtube-bot-evader');
+    28→
+    29→// ===============================================================================
+    30→// CONSTANTS
+    31→// ===============================================================================
+    32→
+    33→/** Default bot detection evader configuration */
+    34→const DEFAULT_EVADER_CONFIG: BotDetectionEvaderConfig = {
+    35→  minCooldownSeconds: 30,
+    36→  maxCooldownSeconds: 300,
+    37→  cooldownMultiplier: 1.5,
+    38→  maxCooldownCapSeconds: 3600,
+    39→  autoSolveCaptcha: true,
+    40→  autoRotateDevice: true,
+    41→  autoRotateProxy: true,
+    42→  unusualTrafficPatterns: [
+    43→    'unusual traffic',
+    44→    'not a robot',
+    45→    'verify you are human',
+    46→    'captcha',
+    47→    'sorry, we just need to make sure',
+    48→    'our systems have detected',
+    49→    'automated requests',
+    50→  ],
+    51→  fastResponseThresholdMs: 50,
+    52→};
+    53→
+    54→/** Chrome versions for realistic User-Agent generation */
+    55→const CHROME_VERSIONS = [
+    56→  '125.0.6422.113',
+    57→  '126.0.6478.55',
+    58→  '126.0.6478.62',
+    59→  '127.0.6533.72',
+    60→  '127.0.6533.88',
+    61→  '128.0.6613.84',
+    62→  '128.0.6613.113',
+    63→  '129.0.6668.58',
+    64→  '130.0.6723.48',
+    65→  '131.0.6778.70',
+    66→];
+    67→
+    68→/** Operating system strings for User-Agent */
+    69→const OS_STRINGS: Record<string, string[]> = {
+    70→  windows: [
+    71→    'Windows NT 10.0; Win64; x64',
+    72→    'Windows NT 10.0; Win64; x64',
+    73→    'Windows NT 11.0; Win64; x64',
+    74→  ],
+    75→  mac: [
+    76→    'Macintosh; Intel Mac OS X 10_15_7',
+    77→    'Macintosh; Intel Mac OS X 11_6_1',
+    78→    'Macintosh; Intel Mac OS X 12_7_4',
+    79→    'Macintosh; Intel Mac OS X 13_5_2',
+    80→    'Macintosh; Intel Mac OS X 14_3_1',
+    81→    'Macintosh; Intel Mac OS X 15_0',
+    82→  ],
+    83→  linux: [
+    84→    'X11; Linux x86_64',
+    85→    'X11; Ubuntu; Linux x86_64',
+    86→    'X11; Fedora; Linux x86_64',
+    87→  ],
+    88→};
+    89→
+    90→/** Screen resolutions commonly used on desktop */
+    91→const COMMON_RESOLUTIONS = [
+    92→  { width: 1920, height: 1080, dpr: 1 },
+    93→  { width: 1920, height: 1080, dpr: 1.25 },
+    94→  { width: 2560, height: 1440, dpr: 1 },
+    95→  { width: 1366, height: 768, dpr: 1 },
+    96→  { width: 1536, height: 864, dpr: 1.25 },
+    97→  { width: 1440, height: 900, dpr: 2 },
+    98→  { width: 2560, height: 1600, dpr: 2 },
+    99→  { width: 3840, height: 2160, dpr: 1 },
+   100→  { width: 1680, height: 1050, dpr: 1 },
+   101→  { width: 1280, height: 720, dpr: 1 },
+   102→];
+   103→
+   104→/** Platform strings matching OS */
+   105→const PLATFORM_MAP: Record<string, string> = {
+   106→  'Windows NT': 'Win32',
+   107→  'Macintosh': 'MacIntel',
+   108→  'Linux': 'Linux x86_64',
+   109→  'X11': 'Linux x86_64',
+   110→};
+   111→
+   112→/** Cache key prefix for evasion state */
+   113→const CACHE_KEY_PREFIX = 'youtube:evader';
+   114→
+   115→// ===============================================================================
+   116→// HELPER FUNCTIONS
+   117→// ===============================================================================
+   118→
+   119→/**
+   120→ * Pick a random element from an array.
+   121→ */
+   122→function randomPick<T>(arr: T[]): T {
+   123→  return arr[Math.floor(Math.random() * arr.length)];
+   124→}
+   125→
+   126→/**
+   127→ * Generate a random hexadecimal string of the given length.
+   128→ */
+   129→function randomHex(length: number): string {
+   130→  const chars = '0123456789abcdef';
+   131→  let result = '';
+   132→  for (let i = 0; i < length; i++) {
+   133→    result += chars[Math.floor(Math.random() * chars.length)];
+   134→  }
+   135→  return result;
+   136→}
+   137→
+   138→/**
+   139→ * Generate a random base64-like string.
+   140→ */
+   141→function randomBase64(length: number): string {
+   142→  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+   143→  let result = '';
+   144→  for (let i = 0; i < length; i++) {
+   145→    result += chars[Math.floor(Math.random() * chars.length)];
+   146→  }
+   147→  return result;
+   148→}
+   149→
+   150→/**
+   151→ * Generate a random alphanumeric string.
+   152→ */
+   153→function randomAlphanumeric(length: number): string {
+   154→  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+   155→  let result = '';
+   156→  for (let i = 0; i < length; i++) {
+   157→    result += chars[Math.floor(Math.random() * chars.length)];
+   158→  }
+   159→  return result;
+   160→}
+   161→
+   162→/**
+   163→ * Generate a random number in range [min, max].
+   164→ */
+   165→function randomBetween(min: number, max: number): number {
+   166→  return Math.floor(Math.random() * (max - min + 1)) + min;
+   167→}
+   168→
+   169→// ===============================================================================
+   170→// BOT DETECTION EVADER CLASS
+   171→// ===============================================================================
+   172→
+   173→export class BotDetectionEvader {
+   174→  private config: BotDetectionEvaderConfig;
+   175→  private consecutiveDetections = 0;
+   176→  private lastDetectionTime = 0;
+   177→  private currentCooldownEnd = 0;
+   178→  private stats = {
+   179→    totalDetections: 0,
+   180→    totalEvasions: 0,
+   181→    captchaEncounters: 0,
+   182→    unusualTrafficEncounters: 0,
+   183→    rateLimitEncounters: 0,
+   184→    consentWallEncounters: 0,
+   185→    successfulEvasions: 0,
+   186→  };
+   187→
+   188→  constructor(config?: Partial<BotDetectionEvaderConfig>) {
+   189→    this.config = { ...DEFAULT_EVADER_CONFIG, ...config };
+   190→    logger.info('YouTube bot detection evader initialized');
+   191→  }
+   192→
+   193→  // ---------------------------------------------------------------------------
+   194→  // SIGNAL DETECTION
+   195→  // ---------------------------------------------------------------------------
+   196→
+   197→  /**
+   198→   * Detect Google bot detection signals from a response.
+   199→   *
+   200→   * Analyzes HTTP response headers, body content, status codes, and timing
+   201→   * to identify when YouTube/Google has flagged the request as automated.
+   202→   *
+   203→   * @param response - The HTTP response to analyze
+   204→   * @returns Detected bot signals
+   205→   */
+   206→  detectBotSignals(response: {
+   207→    status: number;
+   208→    headers: Record<string, string>;
+   209→    body?: string;
+   210→    url?: string;
+   211→    responseTimeMs?: number;
+   212→  }): BotDetectionSignals {
+   213→    const signals: BotDetectionSignals = {
+   214→      unusualTrafficPage: false,
+   215→      captchaDetected: false,
+   216→      rateLimited: false,
+   217→      consentWall: false,
+   218→      loginWall: false,
+   219→      verificationRedirect: false,
+   220→      responseTimeAnomaly: false,
+   221→      statusCode: response.status,
+   222→      detectedAt: Date.now(),
+   223→    };
+   224→
+   225→    const body = response.body?.toLowerCase() || '';
+   226→    const headers = response.headers || {};
+   227→
+   228→    // Detect "unusual traffic" page
+   229→    for (const pattern of this.config.unusualTrafficPatterns) {
+   230→      if (body.includes(pattern.toLowerCase())) {
+   231→        signals.unusualTrafficPage = true;
+   232→        break;
+   233→      }
+   234→    }
+   235→
+   236→    // Detect CAPTCHA
+   237→    if (
+   238→      body.includes('recaptcha') ||
+   239→      body.includes('g-recaptcha') ||
+   240→      body.includes('sitekey') ||
+   241→      body.includes('captcha') ||
+   242→      headers['x-recaptcha'] !== undefined
+   243→    ) {
+   244→      signals.captchaDetected = true;
+   245→
+   246→      // Determine CAPTCHA type
+   247→      if (body.includes('enterprise') || body.includes('recaptchaenterprise')) {
+   248→        signals.captchaType = 'enterprise';
+   249→      } else if (body.includes('recaptcha-checkbox') || body.includes("recaptcha['fallback']")) {
+   250→        signals.captchaType = 'v2';
+   251→      } else {
+   252→        signals.captchaType = 'v3';
+   253→      }
+   254→    }
+   255→
+   256→    // Detect rate limiting
+   257→    if (response.status === 429) {
+   258→      signals.rateLimited = true;
+   259→      signals.rateLimitDetails = {
+   260→        remaining: headers['x-ratelimit-remaining']
+   261→          ? parseInt(headers['x-ratelimit-remaining'], 10)
+   262→          : undefined,
+   263→        resetAt: headers['x-ratelimit-reset']
+   264→          ? parseInt(headers['x-ratelimit-reset'], 10)
+   265→          : undefined,
+   266→        retryAfter: headers['retry-after']
+   267→          ? parseInt(headers['retry-after'], 10)
+   268→          : undefined,
+   269→      };
+   270→    }
+   271→
+   272→    // Detect consent wall
+   273→    if (
+   274→      body.includes('consent.youtube.com') ||
+   275→      body.includes('google.com/consent') ||
+   276→      body.includes('"consentBumpV2"') ||
+   277→      headers['x-consent-redirect'] !== undefined
+   278→    ) {
+   279→      signals.consentWall = true;
+   280→    }
+   281→
+   282→    // Detect login wall
+   283→    if (
+   284→      body.includes('accounts.google.com/signin') ||
+   285→      body.includes('"signInEndpoint"') ||
+   286→      body.includes('login_required')
+   287→    ) {
+   288→      signals.loginWall = true;
+   289→    }
+   290→
+   291→    // Detect verification redirect
+   292→    if (
+   293→      response.status === 302 ||
+   294→      response.status === 303 ||
+   295→      response.status === 307
+   296→    ) {
+   297→      const location = headers['location'] || '';
+   298→      if (
+   299→        location.includes('google.com/sorry') ||
+   300→        location.includes('google.com/verify') ||
+   301→        location.includes('accounts.google.com') ||
+   302→        location.includes('recaptcha')
+   303→      ) {
+   304→        signals.verificationRedirect = true;
+   305→      }
+   306→    }
+   307→
+   308→    // Detect response time anomaly (suspiciously fast = CDN cache or bot detection)
+   309→    if (response.responseTimeMs !== undefined && response.responseTimeMs < this.config.fastResponseThresholdMs) {
+   310→      signals.responseTimeAnomaly = true;
+   311→    }
+   312→
+   313→    // Determine bot classification based on signals
+   314→    const signalCount = [
+   315→      signals.unusualTrafficPage,
+   316→      signals.captchaDetected,
+   317→      signals.rateLimited,
+   318→      signals.verificationRedirect,
+   319→    ].filter(Boolean).length;
+   320→
+   321→    if (signalCount === 0) {
+   322→      signals.botClassification = 'none';
+   323→    } else if (signalCount === 1) {
+   324→      signals.botClassification = 'suspicious';
+   325→    } else if (signalCount === 2) {
+   326→      signals.botClassification = 'bot';
+   327→    } else {
+   328→      signals.botClassification = 'confirmed_bot';
+   329→    }
+   330→
+   331→    // Update internal state if detection found
+   332→    if (signalCount > 0) {
+   333→      this.consecutiveDetections++;
+   334→      this.lastDetectionTime = Date.now();
+   335→      this.stats.totalDetections++;
+   336→
+   337→      if (signals.unusualTrafficPage) this.stats.unusualTrafficEncounters++;
+   338→      if (signals.captchaDetected) this.stats.captchaEncounters++;
+   339→      if (signals.rateLimited) this.stats.rateLimitEncounters++;
+   340→      if (signals.consentWall) this.stats.consentWallEncounters++;
+   341→
+   342→      logger.warn({
+   343→        signals: {
+   344→          unusualTraffic: signals.unusualTrafficPage,
+   345→          captcha: signals.captchaDetected,
+   346→          captchaType: signals.captchaType,
+   347→          rateLimited: signals.rateLimited,
+   348→          consentWall: signals.consentWall,
+   349→          loginWall: signals.loginWall,
+   350→          verificationRedirect: signals.verificationRedirect,
+   351→          classification: signals.botClassification,
+   352→        },
+   353→        consecutiveDetections: this.consecutiveDetections,
+   354→      }, 'YouTube bot detection signals detected');
+   355→    } else {
+   356→      this.consecutiveDetections = Math.max(0, this.consecutiveDetections - 1);
+   357→    }
+   358→
+   359→    return signals;
+   360→  }
+   361→
+   362→  // ---------------------------------------------------------------------------
+   363→  // EVASION STRATEGY GENERATION
+   364→  // ---------------------------------------------------------------------------
+   365→
+   366→  /**
+   367→   * Generate an evasion strategy based on detected bot signals.
+   368→   *
+   369→   * Analyzes the combination of detected signals to produce a comprehensive
+   370→   * evasion strategy that includes cooldown timing, identity rotation,
+   371→   * and header/cookie modifications.
+   372→   *
+   373→   * @param signals - The detected bot signals
+   374→   * @returns Evasion strategy to apply
+   375→   */
+   376→  generateEvadeStrategy(signals: BotDetectionSignals): EvasionStrategy {
+   377→    const strategy: EvasionStrategy = {
+   378→      requiresCooldown: false,
+   379→      cooldownDurationSeconds: 0,
+   380→      rotateCookies: false,
+   381→      rotateDevice: false,
+   382→      rotateProxy: false,
+   383→      requiresCaptchaSolve: false,
+   384→      headerModifications: {},
+   385→      cookieModifications: {},
+   386→      priority: 3,
+   387→      description: 'No evasion needed',
+   388→    };
+   389→
+   390→    // --- Unusual traffic page ---
+   391→    if (signals.unusualTrafficPage) {
+   392→      const cooldown = this.calculateCooldown();
+   393→      strategy.requiresCooldown = true;
+   394→      strategy.cooldownDurationSeconds = cooldown;
+   395→      strategy.rotateCookies = true;
+   396→      strategy.rotateDevice = this.config.autoRotateDevice;
+   397→      strategy.rotateProxy = this.config.autoRotateProxy;
+   398→      strategy.priority = 1;
+   399→      strategy.description = `Unusual traffic page detected. Cooldown ${cooldown}s, rotate identity.`;
+   400→
+   401→      // Add fresh consent cookies
+   402→      strategy.cookieModifications = {
+   403→        ...this.buildConsentCookies(),
+   404→      };
+   405→    }
+   406→
+   407→    // --- CAPTCHA detected ---
+   408→    if (signals.captchaDetected) {
+   409→      strategy.requiresCaptchaSolve = this.config.autoSolveCaptcha;
+   410→      strategy.requiresCooldown = true;
+   411→      strategy.cooldownDurationSeconds = Math.max(
+   412→        strategy.cooldownDurationSeconds,
+   413→        this.calculateCooldown(),
+   414→      );
+   415→      strategy.rotateDevice = true;
+   416→      strategy.rotateProxy = true;
+   417→      strategy.priority = 1;
+   418→      strategy.description = `CAPTCHA (${signals.captchaType}) detected. Requires solving + cooldown.`;
+   419→
+   420→      // Modify headers to appear more human
+   421→      strategy.headerModifications = {
+   422→        ...this.buildEvadeHeaders(),
+   423→      };
+   424→    }
+   425→
+   426→    // --- Rate limited ---
+   427→    if (signals.rateLimited) {
+   428→      const retryAfter = signals.rateLimitDetails?.retryAfter || 60;
+   429→      strategy.requiresCooldown = true;
+   430→      strategy.cooldownDurationSeconds = Math.max(
+   431→        strategy.cooldownDurationSeconds,
+   432→        retryAfter * 2,
+   433→      );
+   434→      strategy.rotateProxy = true;
+   435→      strategy.priority = 2;
+   436→      strategy.description = `Rate limited (429). Cooldown ${retryAfter * 2}s, rotate proxy.`;
+   437→
+   438→      // Add rate-limit-aware headers
+   439→      strategy.headerModifications['X-Origin'] = 'https://www.youtube.com';
+   440→    }
+   441→
+   442→    // --- Consent wall ---
+   443→    if (signals.consentWall) {
+   444→      strategy.rotateCookies = true;
+   445→      strategy.priority = 2;
+   446→      strategy.description = 'Consent wall triggered. Rotating consent cookies.';
+   447→      strategy.cookieModifications = {
+   448→        ...this.buildConsentCookies(),
+   449→      };
+   450→    }
+   451→
+   452→    // --- Login wall ---
+   453→    if (signals.loginWall) {
+   454→      strategy.priority = 3;
+   455→      strategy.description = 'Login wall encountered. Some content requires authentication.';
+   456→      strategy.headerModifications['X-Auth-Required'] = 'true';
+   457→    }
+   458→
+   459→    // --- Verification redirect ---
+   460→    if (signals.verificationRedirect) {
+   461→      const cooldown = this.calculateCooldown();
+   462→      strategy.requiresCooldown = true;
+   463→      strategy.cooldownDurationSeconds = Math.max(
+   464→        strategy.cooldownDurationSeconds,
+   465→        cooldown,
+   466→      );
+   467→      strategy.rotateDevice = true;
+   468→      strategy.rotateProxy = true;
+   469→      strategy.priority = 1;
+   470→      strategy.description = `Verification redirect detected. Cooldown ${cooldown}s, full rotation.`;
+   471→    }
+   472→
+   473→    // --- Response time anomaly ---
+   474→    if (signals.responseTimeAnomaly) {
+   475→      strategy.headerModifications['X-Request-Spacing'] = 'true';
+   476→      strategy.priority = Math.min(strategy.priority, 4) as 1 | 2 | 3 | 4 | 5;
+   477→      if (strategy.description === 'No evasion needed') {
+   478→        strategy.description = 'Response time anomaly detected. Adding request spacing.';
+   479→      }
+   480→    }
+   481→
+   482→    // Set cooldown end time if required
+   483→    if (strategy.requiresCooldown && strategy.cooldownDurationSeconds > 0) {
+   484→      this.currentCooldownEnd = Date.now() + strategy.cooldownDurationSeconds * 1000;
+   485→    }
+   486→
+   487→    this.stats.totalEvasions++;
+   488→    logger.info({
+   489→      strategy: {
+   490→        cooldown: strategy.cooldownDurationSeconds,
+   491→        rotateCookies: strategy.rotateCookies,
+   492→        rotateDevice: strategy.rotateDevice,
+   493→        rotateProxy: strategy.rotateProxy,
+   494→        captchaSolve: strategy.requiresCaptchaSolve,
+   495→        priority: strategy.priority,
+   496→      },
+   497→    }, 'Evasion strategy generated');
+   498→
+   499→    return strategy;
+   500→  }
+   501→
+   502→  // ---------------------------------------------------------------------------
+   503→  // HEADER GENERATION
+   504→  // ---------------------------------------------------------------------------
+   505→
+   506→  /**
+   507→   * Generate realistic Chrome headers for YouTube requests.
+   508→   *
+   509→   * Produces a complete set of HTTP headers that mimic a real Chrome browser
+   510→   * accessing YouTube, including proper Accept headers, Sec-CH-UA hints,
+   511→   * and YouTube-specific headers like X-YouTube-Client-Name.
+   512→   *
+   513→   * @param options - Optional overrides for header generation
+   514→   * @returns Headers object for HTTP requests
+   515→   */
+   516→  buildEvadeHeaders(options?: {
+   517→    clientName?: string;
+   518→    clientVersion?: string;
+   519→    referer?: string;
+   520→    origin?: string;
+   521→    language?: string;
+   522→    region?: string;
+   523→  }): Record<string, string> {
+   524→    const chromeVersion = randomPick(CHROME_VERSIONS);
+   525→    const majorVersion = chromeVersion.split('.')[0];
+   526→    const osString = randomPick([
+   527→      ...OS_STRINGS.windows,
+   528→      ...OS_STRINGS.mac,
+   529→      ...OS_STRINGS.linux,
+   530→    ]);
+   531→    const language = options?.language || 'en';
+   532→    const region = options?.region || 'US';
+   533→    const origin = options?.origin || 'https://www.youtube.com';
+   534→
+   535→    // Detect platform for Sec-CH-UA-Platform
+   536→    let secChPlatform = '"Windows"';
+   537→    if (osString.includes('Macintosh')) secChPlatform = '"macOS"';
+   538→    else if (osString.includes('Linux')) secChPlatform = '"Linux"';
+   539→
+   540→    const headers: Record<string, string> = {
+   541→      'User-Agent': `Mozilla/5.0 (${osString}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`,
+   542→      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+   543→      'Accept-Language': `${language}-${region},${language};q=0.9,en;q=0.8`,
+   544→      'Accept-Encoding': 'gzip, deflate, br',
+   545→      'Cache-Control': 'max-age=0',
+   546→      'Sec-Ch-Ua': `"Chromium";v="${majorVersion}", "Google Chrome";v="${majorVersion}", "Not-A.Brand";v="99"`,
+   547→      'Sec-Ch-Ua-Mobile': '?0',
+   548→      'Sec-Ch-Ua-Platform': secChPlatform,
+   549→      'Sec-Fetch-Dest': 'document',
+   550→      'Sec-Fetch-Mode': 'navigate',
+   551→      'Sec-Fetch-Site': 'same-origin',
+   552→      'Sec-Fetch-User': '?1',
+   553→      'Upgrade-Insecure-Requests': '1',
+   554→      'Origin': origin,
+   555→      'Referer': options?.referer || `${origin}/`,
+   556→    };
+   557→
+   558→    // YouTube-specific InnerTube headers
+   559→    if (options?.clientName) {
+   560→      headers['X-Youtube-Client-Name'] = options.clientName;
+   561→    }
+   562→    if (options?.clientVersion) {
+   563→      headers['X-Youtube-Client-Version'] = options.clientVersion;
+   564→    }
+   565→
+   566→    // Add DNT (Do Not Track) — about 25% of real users have it enabled
+   567→    if (Math.random() < 0.25) {
+   568→      headers['DNT'] = '1';
+   569→    }
+   570→
+   571→    return headers;
+   572→  }
+   573→
+   574→  // ---------------------------------------------------------------------------
+   575→  // CONSENT COOKIE GENERATION
+   576→  // ---------------------------------------------------------------------------
+   577→
+   578→  /**
+   579→   * Generate YouTube consent cookies required for GDPR/cookie compliance.
+   580→   *
+   581→   * YouTube requires specific consent cookies before serving content in
+   582→   * many regions. This generates valid CONSENT, SOCS, and related cookies
+   583→   * that indicate the user has accepted the terms.
+   584→   *
+   585→   * @returns Cookie key-value pairs for consent
+   586→   */
+   587→  buildConsentCookies(): Record<string, string> {
+   588→    const cookies: Record<string, string> = {};
+   589→
+   590→    // CONSENT cookie — Google consent status
+   591→    // Format: "PENDING+{number}" or "YES+{number}" (accepted)
+   592→    // The number is a random consent ID
+   593→    const consentId = randomBetween(100, 999);
+   594→    cookies['CONSENT'] = `YES+cb.20210328-17-p0.en+FX+${consentId}`;
+   595→
+   596→    // SOCS cookie — Same-Origin Cookie Setting
+   597→    // Indicates cookie consent has been given
+   598→    // Value is a base64-encoded JSON object
+   599→    const socsValue = Buffer.from(
+   600→      JSON.stringify({
+   601→        visitId: randomAlphanumeric(21),
+   602→        lastVisitTime: Date.now(),
+   603→        consentStatus: 1, // 1 = consented
+   604→        isUserSignedIn: false,
+   605→        isGmUser: false,
+   606→        isEtmUser: false,
+   607→        consentTimestamp: Date.now(),
+   608→      }),
+   609→    ).toString('base64');
+   610→    cookies['SOCS'] = `CAESHAgBEhJnd3NfMjAyMzEwMTAtMF9SQzIaAmVuIAEaBgiA-LaoBg`;
+   611→
+   612→    // GPS cookie — YouTube's GDPR Processing Stamp
+   613→    cookies['GPS'] = '1';
+   614→
+   615→    // YSC cookie — YouTube Service Cookie (session identifier)
+   616→    cookies['YSC'] = randomAlphanumeric(24);
+   617→
+   618→    // VISITOR_INFO1_LIVE — Visitor tracking cookie
+   619→    // 11-character alphanumeric string
+   620→    cookies['VISITOR_INFO1_LIVE'] = randomAlphanumeric(11);
+   621→
+   622→    // PREF cookie — YouTube preferences
+   623→    // f6 = 43200 (12-hour history), hl=en (language), gl=US (region)
+   624→    const fGroup = randomBetween(1, 8);
+   625→    cookies['PREF'] = `f${fGroup}=43200&hl=en&gl=US`;
+   626→
+   627→    // __Secure-1PSID — First-party secure session ID
+   628→    // This is a Google-signed cookie (starts with a specific prefix)
+   629→    cookies['__Secure-1PSID'] = randomAlphanumeric(80);
+   630→
+   631→    // __Secure-3PSID — Third-party secure session ID
+   632→    cookies['__Secure-3PSID'] = randomAlphanumeric(80);
+   633→
+   634→    // SIDCC — Session ID Cookie (for cross-site request forgery protection)
+   635→    cookies['SIDCC'] = `AFvY0eb0-${randomAlphanumeric(40)}`;
+   636→
+   637→    return cookies;
+   638→  }
+   639→
+   640→  // ---------------------------------------------------------------------------
+   641→  // VISITOR DATA GENERATION
+   642→  // ---------------------------------------------------------------------------
+   643→
+   644→  /**
+   645→   * Generate valid YouTube visitor data (_visitor_key and visitorData).
+   646→   *
+   647→   * YouTube uses visitor tracking to correlate requests and detect
+   648→   * automated access. This generates realistic visitor identifiers
+   649→   * that are consistent with real browser sessions.
+   650→   *
+   651→   * @returns Visitor data object with key and data string
+   652→   */
+   653→  generateYouTubeVisitorData(): {
+   654→    visitorKey: string;
+   655→    visitorData: string;
+   656→    visitorId: string;
+   657→  } {
+   658→    // _visitor_key — A random hex string (typically 16 characters)
+   659→    const visitorKey = randomHex(16);
+   660→
+   661→    // visitorData — Base64-encoded protobuf containing visitor info
+   662→    // Real format: base64-encoded string starting with "Cgs"
+   663→    // This is a protobuf-encoded message with:
+   664→    //   - field 1: visitor ID (string)
+   665→    //   - field 2: timestamp
+   666→    // We generate a plausible base64 string
+   667→
+   668→    const visitorId = randomAlphanumeric(11);
+   669→
+   670→    // Simulate the protobuf structure:
+   671→    // The visitorData in YouTube is a base64-encoded proto that contains
+   672→    // a visitor ID and timestamp. We build a realistic-looking one.
+   673→    const timestamp = Math.floor(Date.now() / 1000);
+   674→
+   675→    // Build raw protobuf-like bytes for visitorData
+   676→    // Field 1 (length-delimited): visitor ID
+   677→    // Field 2 (varint): timestamp
+   678→    const idBytes = Buffer.from(visitorId, 'utf-8');
+   679→    const protoParts: number[] = [];
+   680→
+   681→    // Field 1: tag = (1 << 3) | 2 = 0x0A (length-delimited)
+   682→    protoParts.push(0x0A);
+   683→    protoParts.push(idBytes.length);
+   684→    for (let i = 0; i < idBytes.length; i++) {
+   685→      protoParts.push(idBytes[i]!);
+   686→    }
+   687→
+   688→    // Field 2: tag = (2 << 3) | 0 = 0x10 (varint)
+   689→    protoParts.push(0x10);
+   690→    // Encode timestamp as varint
+   691→    let ts = timestamp;
+   692→    while (ts > 0x7F) {
+   693→      protoParts.push((ts & 0x7F) | 0x80);
+   694→      ts >>>= 7;
+   695→    }
+   696→    protoParts.push(ts & 0x7F);
+   697→
+   698→    const visitorData = Buffer.from(protoParts).toString('base64');
+   699→
+   700→    logger.debug({
+   701→      visitorKey: visitorKey.substring(0, 8) + '...',
+   702→      visitorId,
+   703→    }, 'Generated YouTube visitor data');
+   704→
+   705→    return {
+   706→      visitorKey,
+   707→      visitorData,
+   708→      visitorId,
+   709→    };
+   710→  }
+   711→
+   712→  // ---------------------------------------------------------------------------
+   713→  // UTILITY METHODS
+   714→  // ---------------------------------------------------------------------------
+   715→
+   716→  /**
+   717→   * Calculate cooldown duration based on consecutive detection count.
+   718→   * Uses exponential backoff with a configurable multiplier and cap.
+   719→   *
+   720→   * @returns Cooldown duration in seconds
+   721→   */
+   722→  private calculateCooldown(): number {
+   723→    const base = this.config.minCooldownSeconds;
+   724→    const multiplier = Math.pow(
+   725→      this.config.cooldownMultiplier,
+   726→      this.consecutiveDetections,
+   727→    );
+   728→    const cooldown = Math.min(
+   729→      base * multiplier,
+   730→      this.config.maxCooldownCapSeconds,
+   731→    );
+   732→
+   733→    // Add jitter (±20%) to avoid synchronized retries
+   734→    const jitter = cooldown * 0.2 * (Math.random() * 2 - 1);
+   735→
+   736→    return Math.max(
+   737→      this.config.minCooldownSeconds,
+   738→      Math.round(cooldown + jitter),
+   739→    );
+   740→  }
+   741→
+   742→  /**
+   743→   * Check if currently in a cooldown period.
+   744→   *
+   745→   * @returns Remaining cooldown in seconds (0 if not cooling down)
+   746→   */
+   747→  getRemainingCooldown(): number {
+   748→    if (this.currentCooldownEnd <= Date.now()) return 0;
+   749→    return Math.ceil((this.currentCooldownEnd - Date.now()) / 1000);
+   750→  }
+   751→
+   752→  /**
+   753→   * Clear the current cooldown period.
+   754→   */
+   755→  clearCooldown(): void {
+   756→    this.currentCooldownEnd = 0;
+   757→    logger.info('Cooldown cleared');
+   758→  }
+   759→
+   760→  /**
+   761→   * Record a successful evasion to improve success rate tracking.
+   762→   */
+   763→  recordEvasionSuccess(): void {
+   764→    this.stats.successfulEvasions++;
+   765→  }
+   766→
+   767→  /**
+   768→   * Generate a random screen resolution from common desktop resolutions.
+   769→   *
+   770→   * @returns Screen resolution object
+   771→   */
+   772→  generateRandomResolution(): { width: number; height: number; dpr: number } {
+   773→    return randomPick(COMMON_RESOLUTIONS);
+   774→  }
+   775→
+   776→  /**
+   777→   * Get evader statistics.
+   778→   */
+   779→  getStats(): Record<string, unknown> {
+   780→    return {
+   781→      ...this.stats,
+   782→      consecutiveDetections: this.consecutiveDetections,
+   783→      currentCooldownSeconds: this.getRemainingCooldown(),
+   784→      evasionSuccessRate: this.stats.totalEvasions > 0
+   785→        ? this.stats.successfulEvasions / this.stats.totalEvasions
+   786→        : 1,
+   787→    };
+   788→  }
+   789→}
+   790→
+   791→// ===============================================================================
+   792→// SINGLETON
+   793→// ===============================================================================
+   794→
+   795→export const botDetectionEvader = new BotDetectionEvader();
+   796→

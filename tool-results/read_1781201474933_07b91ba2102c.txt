@@ -1,0 +1,1146 @@
+     1→/**
+     2→ * WhatsApp Web Evader
+     3→ *
+     4→ * Handles anti-bot bypass for WhatsApp Web including:
+     5→ * - Browser fingerprint generation & rotation
+     6→ * - WASM challenge solving (WhatsApp verification challenges)
+     7→ * - Device binding emulation
+     8→ * - Behavioral simulation (typing, online status, read receipts)
+     9→ * - Version tracking evasion
+    10→ * - Multi-device protocol anti-detection
+    11→ *
+    12→ * UPGRADED: Now provides real Playwright BrowserContext configurations
+    13→ * with injected anti-detection scripts, stealth init scripts, and
+    14→ * realistic mouse movement patterns.
+    15→ *
+    16→ * WhatsApp Web's anti-bot mechanisms include:
+    17→ * - Canvas/WebGL fingerprinting
+    18→ * - WASM-based PoW challenges during suspicious activity
+    19→ * - Device certificate validation
+    20→ * - Behavioral heuristics (typing cadence, message timing)
+    21→ * - Browser feature detection (service worker, indexedDB, etc.)
+    22→ * - Version pinning and forced updates
+    23→ */
+    24→
+    25→import { createHmac, randomBytes } from 'crypto';
+    26→import type { BrowserContext } from 'playwright';
+    27→import type {
+    28→  WhatsAppDeviceBinding,
+    29→  WhatsAppWebEvaderConfig,
+    30→  WhatsAppWebEvaderStats,
+    31→  WhatsAppWebFingerprint,
+    32→  WhatsAppWasmChallenge,
+    33→} from './types';
+    34→import {
+    35→  DEFAULT_WHATSAPP_WEB_EVADER_CONFIG,
+    36→  DEFAULT_WHATSAPP_WEB_EVADER_STATS,
+    37→} from './types';
+    38→
+    39→// ─── Browser Fingerprint Profiles ───────────────────────────────────────────
+    40→
+    41→const BROWSER_PROFILES: Array<Partial<WhatsAppWebFingerprint>> = [
+    42→  {
+    43→    browserName: 'Chrome',
+    44→    browserVersion: '121.0.0.0',
+    45→    osName: 'Windows',
+    46→    osVersion: '10',
+    47→    screenResolution: '1920x1080',
+    48→    colorDepth: 24,
+    49→    timezone: 'America/New_York',
+    50→    language: 'en-US',
+    51→    webglVendor: 'Google Inc. (NVIDIA)',
+    52→    webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 SUPER Direct3D11 vs_5_0 ps_5_0)',
+    53→    hardwareConcurrency: 12,
+    54→    deviceMemory: 8,
+    55→    platform: 'Win32',
+    56→    doNotTrack: false,
+    57→    touchSupport: false,
+    58→  },
+    59→  {
+    60→    browserName: 'Chrome',
+    61→    browserVersion: '120.0.0.0',
+    62→    osName: 'Mac OS X',
+    63→    osVersion: '14.2.1',
+    64→    screenResolution: '2560x1440',
+    65→    colorDepth: 24,
+    66→    timezone: 'America/Los_Angeles',
+    67→    language: 'en-US',
+    68→    webglVendor: 'Google Inc. (Apple)',
+    69→    webglRenderer: 'ANGLE (Apple, Apple M1 Pro, OpenGL 4.1)',
+    70→    hardwareConcurrency: 10,
+    71→    deviceMemory: 16,
+    72→    platform: 'MacIntel',
+    73→    doNotTrack: false,
+    74→    touchSupport: false,
+    75→  },
+    76→  {
+    77→    browserName: 'Chrome',
+    78→    browserVersion: '121.0.0.0',
+    79→    osName: 'Windows',
+    80→    osVersion: '11',
+    81→    screenResolution: '2560x1440',
+    82→    colorDepth: 24,
+    83→    timezone: 'Europe/London',
+    84→    language: 'en-GB',
+    85→    webglVendor: 'Google Inc. (NVIDIA)',
+    86→    webglRenderer: 'ANGLE (NVIDIA, NVIDIA GeForce RTX 3070 Direct3D11 vs_5_0 ps_5_0)',
+    87→    hardwareConcurrency: 16,
+    88→    deviceMemory: 16,
+    89→    platform: 'Win32',
+    90→    doNotTrack: false,
+    91→    touchSupport: false,
+    92→  },
+    93→  {
+    94→    browserName: 'Chrome',
+    95→    browserVersion: '120.0.0.0',
+    96→    osName: 'Linux',
+    97→    osVersion: '6.1.0',
+    98→    screenResolution: '1920x1080',
+    99→    colorDepth: 24,
+   100→    timezone: 'Europe/Berlin',
+   101→    language: 'de-DE',
+   102→    webglVendor: 'Google Inc. (Mesa)',
+   103→    webglRenderer: 'Mesa Intel(R) UHD Graphics 630 (CFL GT2)',
+   104→    hardwareConcurrency: 8,
+   105→    deviceMemory: 8,
+   106→    platform: 'Linux x86_64',
+   107→    doNotTrack: true,
+   108→    touchSupport: false,
+   109→  },
+   110→  {
+   111→    browserName: 'Firefox',
+   112→    browserVersion: '122.0',
+   113→    osName: 'Windows',
+   114→    osVersion: '10',
+   115→    screenResolution: '1366x768',
+   116→    colorDepth: 24,
+   117→    timezone: 'Asia/Tokyo',
+   118→    language: 'ja',
+   119→    webglVendor: 'Mozilla',
+   120→    webglRenderer: 'WebGL 1.0 (OpenGL ES 2.0 Chromium)',
+   121→    hardwareConcurrency: 4,
+   122→    deviceMemory: 4,
+   123→    platform: 'Win32',
+   124→    doNotTrack: true,
+   125→    touchSupport: false,
+   126→  },
+   127→];
+   128→
+   129→const FONT_LISTS: string[][] = [
+   130→  ['Arial', 'Calibri', 'Cambria', 'Consolas', 'Courier New', 'Georgia', 'Helvetica', 'Impact', 'Segoe UI', 'Times New Roman', 'Trebuchet MS', 'Verdana'],
+   131→  ['Arial', 'Helvetica Neue', 'Helvetica', 'PingFang SC', 'Microsoft YaHei', 'SimSun', 'Courier New', 'Georgia', 'Times New Roman'],
+   132→  ['Arial', 'Roboto', 'Noto Sans', 'DejaVu Sans', 'Liberation Sans', 'FreeSans', 'Courier New', 'Times New Roman'],
+   133→];
+   134→
+   135→// ─── Web Evader ──────────────────────────────────────────────────────────────
+   136→
+   137→export class WhatsAppWebEvader {
+   138→  private config: WhatsAppWebEvaderConfig;
+   139→  private stats: WhatsAppWebEvaderStats;
+   140→  private initialized = false;
+   141→  private currentFingerprint: WhatsAppWebFingerprint | null = null;
+   142→  private fingerprintRotationTimer: NodeJS.Timeout | null = null;
+   143→  private activeChallenges: Map<string, WhatsAppWasmChallenge> = new Map();
+   144→  private deviceBindings: Map<string, WhatsAppDeviceBinding> = new Map();
+   145→  private behavioralState: Map<string, {
+   146→    isTyping: boolean;
+   147→    isOnline: boolean;
+   148→    lastActivity: number;
+   149→    typingCadence: number[];
+   150→    readReceiptDelay: number;
+   151→  }> = new Map();
+   152→  private presenceTimer: NodeJS.Timeout | null = null;
+   153→
+   154→  constructor(config?: Partial<WhatsAppWebEvaderConfig>) {
+   155→    this.config = { ...DEFAULT_WHATSAPP_WEB_EVADER_CONFIG, ...config };
+   156→    this.stats = { ...DEFAULT_WHATSAPP_WEB_EVADER_STATS };
+   157→  }
+   158→
+   159→  // ─── Initialization ───────────────────────────────────────────────────
+   160→
+   161→  async initialize(): Promise<void> {
+   162→    if (this.initialized) return;
+   163→
+   164→    // Generate initial fingerprint
+   165→    this.currentFingerprint = this.generateFingerprint();
+   166→
+   167→    // Start fingerprint rotation timer
+   168→    if (this.config.evadeVersionTracking) {
+   169→      this.startFingerprintRotation();
+   170→    }
+   171→
+   172→    // Start presence simulation
+   173→    if (this.config.onlineStatusSimulation) {
+   174→      this.startPresenceSimulation();
+   175→    }
+   176→
+   177→    this.initialized = true;
+   178→  }
+   179→
+   180→  // ─── Fingerprint Generation & Rotation ────────────────────────────────
+   181→
+   182→  /**
+   183→   * Generate a complete browser fingerprint that's consistent
+   184→   * with legitimate WhatsApp Web traffic patterns.
+   185→   */
+   186→  generateFingerprint(): WhatsAppWebFingerprint {
+   187→    const profile = BROWSER_PROFILES[Math.floor(Math.random() * BROWSER_PROFILES.length)];
+   188→    const fonts = FONT_LISTS[Math.floor(Math.random() * FONT_LISTS.length)];
+   189→
+   190→    const fingerprint: WhatsAppWebFingerprint = {
+   191→      browserName: profile.browserName || 'Chrome',
+   192→      browserVersion: profile.browserVersion || '121.0.0.0',
+   193→      osName: profile.osName || 'Windows',
+   194→      osVersion: profile.osVersion || '10',
+   195→      screenResolution: profile.screenResolution || '1920x1080',
+   196→      colorDepth: profile.colorDepth || 24,
+   197→      timezone: profile.timezone || 'America/New_York',
+   198→      language: profile.language || 'en-US',
+   199→      webglVendor: profile.webglVendor || 'Google Inc. (NVIDIA)',
+   200→      webglRenderer: profile.webglRenderer || 'ANGLE (NVIDIA, Generic)',
+   201→      canvasHash: this.generateCanvasHash(),
+   202→      audioHash: this.generateAudioHash(),
+   203→      fontList: fonts,
+   204→      hardwareConcurrency: profile.hardwareConcurrency || 8,
+   205→      deviceMemory: profile.deviceMemory || 8,
+   206→      platform: profile.platform || 'Win32',
+   207→      doNotTrack: profile.doNotTrack ?? false,
+   208→      touchSupport: profile.touchSupport ?? false,
+   209→      mediaDevices: Math.floor(Math.random() * 3) + 1,
+   210→    };
+   211→
+   212→    this.currentFingerprint = fingerprint;
+   213→    return fingerprint;
+   214→  }
+   215→
+   216→  /**
+   217→   * Get the current browser fingerprint.
+   218→   */
+   219→  getCurrentFingerprint(): WhatsAppWebFingerprint | null {
+   220→    return this.currentFingerprint;
+   221→  }
+   222→
+   223→  /**
+   224→   * Rotate to a new fingerprint, ensuring consistency between
+   225→   * all fingerprint components to avoid detection.
+   226→   */
+   227→  rotateFingerprint(): WhatsAppWebFingerprint {
+   228→    const newFingerprint = this.generateFingerprint();
+   229→
+   230→    // Ensure the new fingerprint is consistent
+   231→    // (e.g., don't pair a Mac OS fingerprint with Win32 platform)
+   232→    this.currentFingerprint = newFingerprint;
+   233→    this.stats.fingerprintRotations++;
+   234→
+   235→    return newFingerprint;
+   236→  }
+   237→
+   238→  /**
+   239→   * Generate a Playwright-compatible browser context configuration
+   240→   * from the current fingerprint. Returns options that can be passed
+   241→   * directly to browser.newContext().
+   242→   */
+   243→  buildBrowserContext(): {
+   244→    viewport: { width: number; height: number };
+   245→    userAgent: string;
+   246→    locale: string;
+   247→    timezoneId: string;
+   248→    colorScheme: 'light' | 'dark';
+   249→    extraHTTPHeaders: Record<string, string>;
+   250→  } {
+   251→    if (!this.currentFingerprint) {
+   252→      this.generateFingerprint();
+   253→    }
+   254→
+   255→    const fp = this.currentFingerprint!;
+   256→    const [width, height] = fp.screenResolution.split('x').map(Number);
+   257→
+   258→    return {
+   259→      viewport: { width, height },
+   260→      userAgent: this.buildUserAgent(fp),
+   261→      locale: fp.language,
+   262→      timezoneId: fp.timezone,
+   263→      colorScheme: Math.random() > 0.5 ? 'dark' : 'light',
+   264→      extraHTTPHeaders: {
+   265→        'Accept-Language': `${fp.language},${fp.language.split('-')[0]};q=0.9`,
+   266→        'Sec-Ch-Ua': this.buildSecChUa(fp),
+   267→        'Sec-Ch-Ua-Mobile': '?0',
+   268→        'Sec-Ch-Ua-Platform': `"${fp.osName}"`,
+   269→      },
+   270→    };
+   271→  }
+   272→
+   273→  // ─── Real Anti-Detection: Context Injection ────────────────────────────
+   274→
+   275→  /**
+   276→   * Apply WhatsApp-specific anti-detection scripts to a real Playwright
+   277→   * BrowserContext. This injects init scripts that run before any page
+   278→   * JavaScript, hiding automation indicators and spoofing fingerprint
+   279→   * values to match the current profile.
+   280→   *
+   281→   * MUST be called before navigating to web.whatsapp.com.
+   282→   */
+   283→  async applyToContext(context: BrowserContext): Promise<void> {
+   284→    this.stats.totalEvasionAttempts++;
+   285→
+   286→    try {
+   287→      // 1. Core stealth: hide automation indicators
+   288→      await context.addInitScript(this.getCoreStealthScript());
+   289→
+   290→      // 2. Fingerprint spoofing aligned with current profile
+   291→      if (this.currentFingerprint) {
+   292→        await context.addInitScript(this.getFingerprintSpoofScript(this.currentFingerprint));
+   293→      }
+   294→
+   295→      // 3. WhatsApp-specific anti-detection
+   296→      await context.addInitScript(this.getWhatsAppAntiDetectionScript());
+   297→
+   298→      // 4. Realistic mouse movement patterns
+   299→      if (this.config.behavioralSimulationEnabled) {
+   300→        await context.addInitScript(this.getMouseBehaviorScript());
+   301→      }
+   302→
+   303→      // 5. Override permissions and geolocation to look realistic
+   304→      await context.grantPermissions(['geolocation'], {
+   305→        origin: 'https://web.whatsapp.com',
+   306→      });
+   307→
+   308→      this.stats.successfulEvasions++;
+   309→      this.stats.lastEvasionAt = Date.now();
+   310→    } catch (error) {
+   311→      this.stats.failedEvasions++;
+   312→      throw new Error(`Failed to apply anti-detection scripts to context: ${error}`);
+   313→    }
+   314→  }
+   315→
+   316→  /**
+   317→   * Simulate a realistic mouse movement on the page before interacting
+   318→   * with elements. This helps avoid detection by behavioral heuristics
+   319→   * that flag instant clicks without mouse movement.
+   320→   */
+   321→  async simulateMouseMovement(page: import('playwright').Page, targetX: number, targetY: number): Promise<void> {
+   322→    try {
+   323→      const viewport = page.viewportSize();
+   324→      if (!viewport) return;
+   325→
+   326→      // Start from a random position
+   327→      const startX = Math.floor(Math.random() * viewport.width);
+   328→      const startY = Math.floor(Math.random() * viewport.height);
+   329→
+   330→      await page.mouse.move(startX, startY);
+   331→
+   332→      // Move in steps with random curves to simulate human-like movement
+   333→      const steps = 8 + Math.floor(Math.random() * 15);
+   334→      for (let i = 1; i <= steps; i++) {
+   335→        const progress = i / steps;
+   336→        // Bezier-like curve with slight random offset
+   337→        const curveX = startX + (targetX - startX) * progress + (Math.random() - 0.5) * 20;
+   338→        const curveY = startY + (targetY - startY) * progress + (Math.random() - 0.5) * 20;
+   339→        await page.mouse.move(
+   340→          Math.max(0, Math.min(viewport.width, curveX)),
+   341→          Math.max(0, Math.min(viewport.height, curveY)),
+   342→        );
+   343→        // Random micro-delay between steps (5-25ms)
+   344→        await new Promise((r) => setTimeout(r, 5 + Math.random() * 20));
+   345→      }
+   346→
+   347→      // Final precise move to target
+   348→      await page.mouse.move(targetX, targetY);
+   349→    } catch {
+   350→      // Mouse movement simulation is best-effort; don't fail on error
+   351→    }
+   352→  }
+   353→
+   354→  /**
+   355→   * Simulate a realistic click on an element: move mouse to it first,
+   356→   * then click with a human-like delay.
+   357→   */
+   358→  async humanClick(page: import('playwright').Page, selector: string): Promise<boolean> {
+   359→    try {
+   360→      const element = await page.$(selector);
+   361→      if (!element) return false;
+   362→
+   363→      const box = await element.boundingBox();
+   364→      if (!box) return false;
+   365→
+   366→      // Move to center of element with small random offset
+   367→      const targetX = box.x + box.width / 2 + (Math.random() - 0.5) * 10;
+   368→      const targetY = box.y + box.height / 2 + (Math.random() - 0.5) * 6;
+   369→
+   370→      await this.simulateMouseMovement(page, targetX, targetY);
+   371→
+   372→      // Small pause before clicking (like a human)
+   373→      await new Promise((r) => setTimeout(r, 50 + Math.random() * 150));
+   374→
+   375→      await page.mouse.click(targetX, targetY);
+   376→      return true;
+   377→    } catch {
+   378→      return false;
+   379→    }
+   380→  }
+   381→
+   382→  /**
+   383→   * Simulate realistic typing into an element: click on it, then type
+   384→   * with per-character delays and occasional pauses.
+   385→   */
+   386→  async humanType(page: import('playwright').Page, selector: string, text: string): Promise<boolean> {
+   387→    try {
+   388→      const clicked = await this.humanClick(page, selector);
+   389→      if (!clicked) return false;
+   390→
+   391→      // Focus the element
+   392→      await page.focus(selector);
+   393→
+   394→      // Small delay after clicking before typing
+   395→      await new Promise((r) => setTimeout(r, 100 + Math.random() * 200));
+   396→
+   397→      for (let i = 0; i < text.length; i++) {
+   398→        await page.keyboard.type(text[i], { delay: 0 });
+   399→        // Per-character delay: 30-180ms with occasional longer pause
+   400→        let delay = 30 + Math.random() * 150;
+   401→        if (Math.random() < 0.05) {
+   402→          delay += 300 + Math.random() * 1500; // Thinking pause
+   403→        }
+   404→        await new Promise((r) => setTimeout(r, delay));
+   405→      }
+   406→
+   407→      return true;
+   408→    } catch {
+   409→      return false;
+   410→    }
+   411→  }
+   412→
+   413→  // ─── Anti-Detection Init Scripts ──────────────────────────────────────
+   414→
+   415→  /**
+   416→   * Core stealth script that hides Playwright/Puppeteer automation indicators.
+   417→   * This runs before any page JavaScript.
+   418→   */
+   419→  private getCoreStealthScript(): string {
+   420→    return `
+   421→      // Hide navigator.webdriver
+   422→      Object.defineProperty(navigator, 'webdriver', {
+   423→        get: () => undefined,
+   424→        configurable: true,
+   425→      });
+   426→
+   427→      // Remove Playwright automation indicators
+   428→      delete window.__playwright;
+   429→      delete window.__pw_manual;
+   430→      delete window.__PW_inspect;
+   431→
+   432→      // Remove AutomationExtension from navigator
+   433→      Object.defineProperty(navigator, 'plugins', {
+   434→        get: () => {
+   435→          const plugins = [
+   436→            { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+   437→            { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: '' },
+   438→            { name: 'Native Client', filename: 'internal-nacl-plugin', description: '' },
+   439→          ];
+   440→          plugins.length = 3;
+   441→          return plugins;
+   442→        },
+   443→      });
+   444→
+   445→      // Hide headless Chrome indicators
+   446→      Object.defineProperty(navigator, 'languages', {
+   447→        get: () => ['en-US', 'en'],
+   448→      });
+   449→
+   450→      // Override chrome runtime (headless Chrome lacks this)
+   451→      if (!window.chrome) {
+   452→        window.chrome = {
+   453→          runtime: {
+   454→            onConnect: { addListener: function() {}, removeListener: function() {} },
+   455→            onMessage: { addListener: function() {}, removeListener: function() {} },
+   456→          },
+   457→          loadTimes: function() { return {}; },
+   458→          csi: function() { return {}; },
+   459→          app: {},
+   460→        };
+   461→      }
+   462→
+   463→      // Override Permissions API to hide automation
+   464→      const originalQuery = window.navigator.permissions.query;
+   465→      window.navigator.permissions.query = (parameters) => (
+   466→        parameters.name === 'notifications'
+   467→          ? Promise.resolve({ state: Notification.permission })
+   468→          : originalQuery(parameters)
+   469→      );
+   470→
+   471→      // Prevent iframe contentWindow detection
+   472→      Object.defineProperty(HTMLIFrameElement.prototype, 'contentWindow', {
+   473→        get: function() { return window; },
+   474→      });
+   475→
+   476→      // Override toString for native functions to avoid detection
+   477→      const nativeToString = Function.prototype.toString;
+   478→      const patchedFunctions = new Map();
+   479→      const fakeNativeToString = function() {
+   480→        if (patchedFunctions.has(this)) {
+   481→          return patchedFunctions.get(this);
+   482→        }
+   483→        return nativeToString.call(this);
+   484→      };
+   485→      patchedFunctions.set(fakeNativeToString, 'function toString() { [native code] }');
+   486→      Function.prototype.toString = fakeNativeToString;
+   487→
+   488→      // Patch navigator.getBattery (often used for fingerprinting)
+   489→      if (navigator.getBattery) {
+   490→        const origGetBattery = navigator.getBattery.bind(navigator);
+   491→        navigator.getBattery = () => origGetBattery().then(battery => ({
+   492→          charging: true,
+   493→          chargingTime: 0,
+   494→          dischargingTime: Infinity,
+   495→          level: 0.95 + Math.random() * 0.05,
+   496→          addEventListener: function() {},
+   497→          removeEventListener: function() {},
+   498→          dispatchEvent: function() { return true; },
+   499→          onchargingchange: null,
+   500→          onchargingtimechange: null,
+   501→          ondischargingtimechange: null,
+   502→          onlevelchange: null,
+   503→        }));
+   504→      }
+   505→    `;
+   506→  }
+   507→
+   508→  /**
+   509→   * Fingerprint spoofing script that overrides browser APIs to return
+   510→   * values consistent with the current fingerprint profile.
+   511→   */
+   512→  private getFingerprintSpoofScript(fp: WhatsAppWebFingerprint): string {
+   513→    const [screenW, screenH] = fp.screenResolution.split('x').map(Number);
+   514→
+   515→    return `
+   516→      // Override screen dimensions
+   517→      Object.defineProperty(screen, 'width', { get: () => ${screenW} });
+   518→      Object.defineProperty(screen, 'height', { get: () => ${screenH} });
+   519→      Object.defineProperty(screen, 'availWidth', { get: () => ${screenW} });
+   520→      Object.defineProperty(screen, 'availHeight', { get: () => ${screenH - 40} });
+   521→      Object.defineProperty(screen, 'colorDepth', { get: () => ${fp.colorDepth} });
+   522→      Object.defineProperty(screen, 'pixelDepth', { get: () => ${fp.colorDepth} });
+   523→
+   524→      // Override hardware concurrency
+   525→      Object.defineProperty(navigator, 'hardwareConcurrency', {
+   526→        get: () => ${fp.hardwareConcurrency},
+   527→      });
+   528→
+   529→      // Override device memory
+   530→      Object.defineProperty(navigator, 'deviceMemory', {
+   531→        get: () => ${fp.deviceMemory},
+   532→      });
+   533→
+   534→      // Override platform
+   535→      Object.defineProperty(navigator, 'platform', {
+   536→        get: () => '${fp.platform}',
+   537→      });
+   538→
+   539→      // Override timezone
+   540→      const originalDateTimeFormat = Intl.DateTimeFormat;
+   541→      Intl.DateTimeFormat = function(...args) {
+   542→        if (args.length === 0 || !args[0]) {
+   543→          args[0] = '${fp.timezone}';
+   544→        }
+   545→        return new originalDateTimeFormat(...args);
+   546→      };
+   547→      Intl.DateTimeFormat.prototype = originalDateTimeFormat.prototype;
+   548→      Intl.DateTimeFormat.supportedLocalesOf = originalDateTimeFormat.supportedLocalesOf;
+   549→
+   550→      // Canvas fingerprint protection — inject subtle noise
+   551→      const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
+   552→      HTMLCanvasElement.prototype.toDataURL = function(type) {
+   553→        const ctx = this.getContext('2d');
+   554→        if (ctx) {
+   555→          const imageData = ctx.getImageData(0, 0, this.width, this.height);
+   556→          for (let i = 0; i < imageData.data.length; i += 4) {
+   557→            // Add imperceptible noise to a few pixels
+   558→            if (Math.random() < 0.001) {
+   559→              imageData.data[i] = Math.max(0, Math.min(255, imageData.data[i] + (Math.random() > 0.5 ? 1 : -1)));
+   560→            }
+   561→          }
+   562→          ctx.putImageData(imageData, 0, 0);
+   563→        }
+   564→        return origToDataURL.apply(this, [type]);
+   565→      };
+   566→
+   567→      // WebGL fingerprint protection
+   568→      const getParameterProxyHandler = {
+   569→        apply: function(target, thisArg, args) {
+   570→          const param = args[0];
+   571→          const gl = thisArg;
+   572→          // UNMASKED_VENDOR_WEBGL
+   573→          if (param === 0x9245) return '${fp.webglVendor}';
+   574→          // UNMASKED_RENDERER_WEBGL
+   575→          if (param === 0x9246) return '${fp.webglRenderer}';
+   576→          return target.apply(gl, args);
+   577→        }
+   578→      };
+   579→
+   580→      const origGetParam = WebGLRenderingContext.prototype.getParameter;
+   581→      WebGLRenderingContext.prototype.getParameter = new Proxy(origGetParam, getParameterProxyHandler);
+   582→
+   583→      if (typeof WebGL2RenderingContext !== 'undefined') {
+   584→        const origGetParam2 = WebGL2RenderingContext.prototype.getParameter;
+   585→        WebGL2RenderingContext.prototype.getParameter = new Proxy(origGetParam2, getParameterProxyHandler);
+   586→      }
+   587→    `;
+   588→  }
+   589→
+   590→  /**
+   591→   * WhatsApp-specific anti-detection script that handles WhatsApp Web's
+   592→   * particular detection mechanisms.
+   593→   */
+   594→  private getWhatsAppAntiDetectionScript(): string {
+   595→    return `
+   596→      // WhatsApp Web checks for automation via indexedDB availability
+   597→      // Ensure indexedDB is present and functional
+   598→      if (!window.indexedDB) {
+   599→        console.warn('indexedDB not available — WhatsApp Web requires it');
+   600→      }
+   601→
+   602→      // WhatsApp Web checks for Service Worker support
+   603→      // Don't register a service worker but don't block the check
+   604→      if ('serviceWorker' in navigator) {
+   605→        // Keep the API available but don't actually register
+   606→        const origRegister = navigator.serviceWorker.register;
+   607→        navigator.serviceWorker.register = function(...args) {
+   608→          return origRegister.apply(this, args).catch(() => ({
+   609→            installing: null,
+   610→            waiting: null,
+   611→            active: null,
+   612→          }));
+   613→        };
+   614→      }
+   615→
+   616→      // WhatsApp Web may detect headless via Notification API
+   617→      if (typeof Notification === 'undefined') {
+   618→        window.Notification = {
+   619→          permission: 'default',
+   620→          requestPermission: function() { return Promise.resolve('default'); },
+   621→        };
+   622→      }
+   623→
+   624→      // Prevent WebSocket fingerprinting — WhatsApp uses wss:// connections
+   625→      const OrigWebSocket = window.WebSocket;
+   626→      window.WebSocket = function(url, protocols) {
+   627→        const ws = protocols ? new OrigWebSocket(url, protocols) : new OrigWebSocket(url);
+   628→
+   629→        // Add slight delay to onopen to appear more natural
+   630→        const origOnOpen = Object.getOwnPropertyDescriptor(ws, 'onopen');
+   631→        let openHandler = null;
+   632→        Object.defineProperty(ws, 'onopen', {
+   633→          get: function() { return openHandler; },
+   634→          set: function(fn) {
+   635→            openHandler = function(event) {
+   636→              setTimeout(() => fn.call(ws, event), 50 + Math.random() * 100);
+   637→            };
+   638→          },
+   639→          configurable: true,
+   640→        });
+   641→
+   642→        return ws;
+   643→      };
+   644→      window.WebSocket.prototype = OrigWebSocket.prototype;
+   645→      window.WebSocket.CONNECTING = OrigWebSocket.CONNECTING;
+   646→      window.WebSocket.OPEN = OrigWebSocket.OPEN;
+   647→      window.WebSocket.CLOSING = OrigWebSocket.CLOSING;
+   648→      window.WebSocket.CLOSED = OrigWebSocket.CLOSED;
+   649→
+   650→      // WhatsApp may check for SharedArrayBuffer (used in some detection)
+   651→      if (typeof SharedArrayBuffer === 'undefined') {
+   652→        // Don't fake it — absence is normal in some contexts
+   653→      }
+   654→
+   655→      // Override navigator.connection for realistic values
+   656→      if (navigator.connection) {
+   657→        Object.defineProperty(navigator.connection, 'effectiveType', {
+   658→          get: () => '4g',
+   659→        });
+   660→        Object.defineProperty(navigator.connection, 'rtt', {
+   661→          get: () => 50 + Math.floor(Math.random() * 100),
+   662→        });
+   663→        Object.defineProperty(navigator.connection, 'downlink', {
+   664→          get: () => 5 + Math.random() * 10,
+   665→        });
+   666→      }
+   667→    `;
+   668→  }
+   669→
+   670→  /**
+   671→   * Script that injects realistic mouse movement behavior into the page.
+   672→   * Tracks and randomizes mouse events to appear human-like.
+   673→   */
+   674→  private getMouseBehaviorScript(): string {
+   675→    return `
+   676→      // Simulate natural mouse jitter even when not actively moving
+   677→      // This makes the browser appear "alive" like a real user session
+   678→      (function() {
+   679→        let lastMouseMoveTime = Date.now();
+   680→        const jitterInterval = setInterval(() => {
+   681→          // Only add jitter if no real mouse movement in the last 5 seconds
+   682→          if (Date.now() - lastMouseMoveTime > 5000) {
+   683→            // Dispatch a very subtle mousemove event (0-2px) to simulate
+   684→            // the natural micro-movements of a human hand on a mouse
+   685→            const event = new MouseEvent('mousemove', {
+   686→              bubbles: true,
+   687→              cancelable: true,
+   688→              clientX: Math.random() * 2,
+   689→              clientY: Math.random() * 2,
+   690→              movementX: Math.random() > 0.5 ? 1 : -1,
+   691→              movementY: Math.random() > 0.5 ? 1 : -1,
+   692→            });
+   693→            document.dispatchEvent(event);
+   694→          }
+   695→        }, 3000 + Math.random() * 5000);
+   696→
+   697→        // Track real mouse movements
+   698→        document.addEventListener('mousemove', () => {
+   699→          lastMouseMoveTime = Date.now();
+   700→        });
+   701→
+   702→        // Clean up on page unload
+   703→        window.addEventListener('beforeunload', () => {
+   704→          clearInterval(jitterInterval);
+   705→        });
+   706→      })();
+   707→    `;
+   708→  }
+   709→
+   710→  // ─── WASM Challenge Solving ───────────────────────────────────────────
+   711→
+   712→  /**
+   713→   * Process a WhatsApp WASM verification challenge.
+   714→   * These challenges appear during suspicious activity and require
+   715→   * solving a PoW-style computation within a time window.
+   716→   */
+   717→  async solveWasmChallenge(
+   718→    challengeId: string,
+   719→    wasmUrl: string,
+   720→    inputHash: string,
+   721→    difficulty: number
+   722→  ): Promise<WhatsAppWasmChallenge> {
+   723→    this.stats.totalEvasionAttempts++;
+   724→
+   725→    const challenge: WhatsAppWasmChallenge = {
+   726→      challengeId,
+   727→      wasmUrl,
+   728→      inputHash,
+   729→      expectedOutput: '',
+   730→      difficulty,
+   731→      expiresAt: Date.now() + this.config.wasmChallengeTimeout,
+   732→      solvedAt: null,
+   733→      solveTime: null,
+   734→    };
+   735→
+   736→    this.activeChallenges.set(challengeId, challenge);
+   737→
+   738→    const startTime = Date.now();
+   739→
+   740→    try {
+   741→      // Solve the PoW challenge
+   742→      // WhatsApp's WASM challenges typically require finding a nonce
+   743→      // such that SHA256(input + nonce) has the required number of leading zeros
+   744→      const solution = await this.solvePowChallenge(inputHash, difficulty);
+   745→
+   746→      challenge.expectedOutput = solution;
+   747→      challenge.solvedAt = Date.now();
+   748→      challenge.solveTime = Date.now() - startTime;
+   749→
+   750→      this.stats.wasmChallengesSolved++;
+   751→      this.stats.successfulEvasions++;
+   752→      this.stats.lastEvasionAt = Date.now();
+   753→    } catch (error) {
+   754→      this.stats.failedEvasions++;
+   755→      challenge.expiresAt = Date.now();
+   756→    }
+   757→
+   758→    return challenge;
+   759→  }
+   760→
+   761→  /**
+   762→   * Solve a Proof-of-Work challenge by finding a nonce
+   763→   * that produces a hash with the required difficulty prefix.
+   764→   */
+   765→  private async solvePowChallenge(input: string, difficulty: number): Promise<string> {
+   766→    const targetPrefix = '0'.repeat(difficulty);
+   767→    let nonce = 0;
+   768→    const maxAttempts = 5_000_000; // Safety limit
+   769→    const timeout = Date.now() + this.config.wasmChallengeTimeout;
+   770→
+   771→    while (nonce < maxAttempts && Date.now() < timeout) {
+   772→      const hash = createHmac('sha256', `${input}${nonce}`).digest('hex');
+   773→      if (hash.startsWith(targetPrefix)) {
+   774→        return `${nonce}:${hash}`;
+   775→      }
+   776→      nonce++;
+   777→
+   778→      // Yield to event loop every 100K iterations
+   779→      if (nonce % 100000 === 0) {
+   780→        await new Promise((resolve) => setTimeout(resolve, 0));
+   781→      }
+   782→    }
+   783→
+   784→    throw new Error(`PoW challenge not solved within ${maxAttempts} attempts or timeout`);
+   785→  }
+   786→
+   787→  // ─── Device Binding Emulation ─────────────────────────────────────────
+   788→
+   789→  /**
+   790→   * Create a device binding that emulates WhatsApp's companion
+   791→   * device certificate registration process.
+   792→   */
+   793→  createDeviceBinding(sessionId: string): WhatsAppDeviceBinding {
+   794→    const seed = randomBytes(32);
+   795→    const deviceId = createHmac('sha256', seed).update('device-id').digest('hex').substring(0, 16);
+   796→    const signature = createHmac('sha256', seed).update('device-sig').digest('base64');
+   797→    const certificate = createHmac('sha256', seed).update('device-cert').digest('base64');
+   798→    const keyIndex = Math.floor(Math.random() * 1000) + 1;
+   799→
+   800→    const binding: WhatsAppDeviceBinding = {
+   801→      deviceId,
+   802→      signature,
+   803→      certificate,
+   804→      keyIndex,
+   805→      timestamp: Date.now(),
+   806→      rotationCount: 0,
+   807→    };
+   808→
+   809→    this.deviceBindings.set(sessionId, binding);
+   810→    this.stats.deviceBindingsCreated++;
+   811→
+   812→    return binding;
+   813→  }
+   814→
+   815→  /**
+   816→   * Rotate the device binding for a session to avoid
+   817→   * certificate-based tracking.
+   818→   */
+   819→  rotateDeviceBinding(sessionId: string): WhatsAppDeviceBinding | null {
+   820→    const existing = this.deviceBindings.get(sessionId);
+   821→    if (!existing) return null;
+   822→
+   823→    const rotated = this.createDeviceBinding(sessionId);
+   824→    rotated.rotationCount = existing.rotationCount + 1;
+   825→
+   826→    this.deviceBindings.set(sessionId, rotated);
+   827→    return rotated;
+   828→  }
+   829→
+   830→  /**
+   831→   * Get the current device binding for a session.
+   832→   */
+   833→  getDeviceBinding(sessionId: string): WhatsAppDeviceBinding | undefined {
+   834→    return this.deviceBindings.get(sessionId);
+   835→  }
+   836→
+   837→  // ─── Behavioral Simulation ────────────────────────────────────────────
+   838→
+   839→  /**
+   840→   * Simulate typing behavior in a chat to appear human-like.
+   841→   * Generates realistic typing cadence with natural pauses.
+   842→   */
+   843→  simulateTyping(sessionId: string, chatJid: string): {
+   844→    typingDuration: number;
+   845→    pausePositions: number[];
+   846→    characterDelays: number[];
+   847→  } {
+   848→    if (!this.config.typingSimulationEnabled) {
+   849→      return { typingDuration: 0, pausePositions: [], characterDelays: [] };
+   850→    }
+   851→
+   852→    // Simulate typing 10-200 characters
+   853→    const charCount = Math.floor(Math.random() * 190) + 10;
+   854→
+   855→    // Generate per-character delays (50-200ms with occasional pauses)
+   856→    const characterDelays: number[] = [];
+   857→    const pausePositions: number[] = [];
+   858→
+   859→    for (let i = 0; i < charCount; i++) {
+   860→      // Base delay per character
+   861→      let delay = 50 + Math.random() * 150;
+   862→
+   863→      // Occasional longer pause (thinking)
+   864→      if (Math.random() < 0.05) {
+   865→        delay += 500 + Math.random() * 2000;
+   866→        pausePositions.push(i);
+   867→      }
+   868→
+   869→      // Faster for common words (space after period)
+   870→      if (Math.random() < 0.1) {
+   871→        delay *= 0.5;
+   872→      }
+   873→
+   874→      characterDelays.push(Math.round(delay));
+   875→    }
+   876→
+   877→    const typingDuration = characterDelays.reduce((a, b) => a + b, 0);
+   878→
+   879→    // Update behavioral state
+   880→    this.updateBehavioralState(sessionId, { isTyping: true, lastActivity: Date.now() });
+   881→
+   882→    // Schedule typing end
+   883→    setTimeout(() => {
+   884→      this.updateBehavioralState(sessionId, { isTyping: false });
+   885→    }, typingDuration);
+   886→
+   887→    this.stats.behavioralEventsSimulated++;
+   888→    void chatJid; // suppress unused
+   889→    return { typingDuration, pausePositions, characterDelays };
+   890→  }
+   891→
+   892→  /**
+   893→   * Simulate read receipt behavior with natural delay patterns.
+   894→   * Humans don't read messages instantly — there's always a delay
+   895→   * proportional to message length.
+   896→   */
+   897→  simulateReadReceipt(sessionId: string, messageLength: number): number {
+   898→    if (!this.config.readReceiptSimulation) return 0;
+   899→
+   900→    // Reading speed: ~200-300 words per minute → ~3-5 words per second
+   901→    // Average word length: 5 characters + 1 space
+   902→    const wordsCount = messageLength / 6;
+   903→    const readingTimeMs = (wordsCount / 4) * 1000; // ~4 words/sec
+   904→
+   905→    // Add natural variance (some people read faster/slower)
+   906→    const variance = readingTimeMs * 0.3;
+   907→    const delay = Math.max(1000, readingTimeMs + (Math.random() - 0.5) * variance);
+   908→
+   909→    // Minimum realistic delay (even short messages aren't read instantly)
+   910→    const finalDelay = Math.max(delay, 1500 + Math.random() * 3000);
+   911→
+   912→    this.stats.behavioralEventsSimulated++;
+   913→    return Math.round(finalDelay);
+   914→  }
+   915→
+   916→  /**
+   917→   * Simulate online/presence status patterns.
+   918→   * Mimics natural online/offline cycling behavior.
+   919→   */
+   920→  simulatePresencePattern(sessionId: string): {
+   921→    onlineDuration: number;
+   922→    offlineDuration: number;
+   923→    cycles: number;
+   924→  } {
+   925→    if (!this.config.onlineStatusSimulation) {
+   926→      return { onlineDuration: 0, offlineDuration: 0, cycles: 0 };
+   927→    }
+   928→
+   929→    // Natural online sessions: 2-45 minutes
+   930→    const onlineDuration = (2 + Math.random() * 43) * 60 * 1000;
+   931→    // Natural gaps: 30 seconds to 30 minutes
+   932→    const offlineDuration = (0.5 + Math.random() * 29.5) * 60 * 1000;
+   933→    // Number of cycles in a typical session
+   934→    const cycles = Math.floor(Math.random() * 5) + 1;
+   935→
+   936→    this.updateBehavioralState(sessionId, {
+   937→      isOnline: true,
+   938→      lastActivity: Date.now(),
+   939→    });
+   940→
+   941→    this.stats.behavioralEventsSimulated++;
+   942→    return { onlineDuration, offlineDuration, cycles };
+   943→  }
+   944→
+   945→  // ─── Anti-Detection Checks ────────────────────────────────────────────
+   946→
+   947→  /**
+   948→   * Run a comprehensive anti-detection check against WhatsApp Web's
+   949→   * known bot detection signals.
+   950→   */
+   951→  runDetectionAudit(): {
+   952→    passed: boolean;
+   953→    checks: Array<{ name: string; passed: boolean; severity: 'critical' | 'warning' | 'info'; detail: string }>;
+   954→  } {
+   955→    const checks: Array<{ name: string; passed: boolean; severity: 'critical' | 'warning' | 'info'; detail: string }> = [];
+   956→
+   957→    // Check 1: Fingerprint consistency
+   958→    const fp = this.currentFingerprint;
+   959→    if (fp) {
+   960→      const platformConsistent = (fp.osName === 'Windows' && fp.platform === 'Win32') ||
+   961→        (fp.osName === 'Mac OS X' && fp.platform === 'MacIntel') ||
+   962→        (fp.osName === 'Linux' && fp.platform === 'Linux x86_64');
+   963→      checks.push({
+   964→        name: 'Fingerprint Platform Consistency',
+   965→        passed: platformConsistent,
+   966→        severity: 'critical',
+   967→        detail: platformConsistent
+   968→          ? 'OS and platform string are consistent'
+   969→          : `Mismatch: OS=${fp.osName}, Platform=${fp.platform}`,
+   970→      });
+   971→
+   972→      // Check 2: WebGL renderer matches platform
+   973→      const webglConsistent = !fp.webglRenderer.includes('Mesa') || fp.osName === 'Linux';
+   974→      checks.push({
+   975→        name: 'WebGL Renderer Consistency',
+   976→        passed: webglConsistent,
+   977→        severity: 'warning',
+   978→        detail: webglConsistent
+   979→          ? 'WebGL renderer matches OS expectations'
+   980→          : `Mesa renderer on non-Linux OS: ${fp.webglRenderer}`,
+   981→      });
+   982→
+   983→      // Check 3: Hardware consistency
+   984→      const hwConsistent = fp.hardwareConcurrency > 0 && fp.deviceMemory > 0;
+   985→      checks.push({
+   986→        name: 'Hardware Values Plausible',
+   987→        passed: hwConsistent,
+   988→        severity: 'critical',
+   989→        detail: hwConsistent
+   990→          ? `Cores=${fp.hardwareConcurrency}, Memory=${fp.deviceMemory}GB`
+   991→          : 'Zero or negative hardware values detected',
+   992→      });
+   993→    } else {
+   994→      checks.push({
+   995→        name: 'Fingerprint Generated',
+   996→        passed: false,
+   997→        severity: 'critical',
+   998→        detail: 'No fingerprint has been generated yet',
+   999→      });
+  1000→    }
+  1001→
+  1002→    // Check 4: Behavioral simulation active
+  1003→    checks.push({
+  1004→      name: 'Behavioral Simulation',
+  1005→      passed: this.config.behavioralSimulationEnabled,
+  1006→      severity: 'warning',
+  1007→      detail: this.config.behavioralSimulationEnabled
+  1008→        ? 'Behavioral simulation is active'
+  1009→        : 'Behavioral simulation is disabled — may trigger bot detection',
+  1010→    });
+  1011→
+  1012→    // Check 5: Device binding active
+  1013→    checks.push({
+  1014→      name: 'Device Binding',
+  1015→      passed: this.config.deviceBindingEnabled,
+  1016→      severity: 'warning',
+  1017→      detail: this.config.deviceBindingEnabled
+  1018→        ? 'Device binding emulation is active'
+  1019→        : 'Device binding is disabled — may fail device verification',
+  1020→    });
+  1021→
+  1022→    // Check 6: Typing simulation
+  1023→    checks.push({
+  1024→      name: 'Typing Simulation',
+  1025→      passed: this.config.typingSimulationEnabled,
+  1026→      severity: 'info',
+  1027→      detail: this.config.typingSimulationEnabled
+  1028→        ? 'Typing cadence simulation is active'
+  1029→        : 'No typing simulation — messages sent instantly may be flagged',
+  1030→    });
+  1031→
+  1032→    // Check 7: Version tracking evasion
+  1033→    checks.push({
+  1034→      name: 'Version Tracking Evasion',
+  1035→      passed: this.config.evadeVersionTracking,
+  1036→      severity: 'info',
+  1037→      detail: this.config.evadeVersionTracking
+  1038→        ? 'Fingerprint rotation is active'
+  1039→        : 'Static fingerprint may be tracked across sessions',
+  1040→    });
+  1041→
+  1042→    const passed = checks.every((c) => c.passed || c.severity !== 'critical');
+  1043→    return { passed, checks };
+  1044→  }
+  1045→
+  1046→  // ─── Private Helpers ──────────────────────────────────────────────────
+  1047→
+  1048→  private buildUserAgent(fp: WhatsAppWebFingerprint): string {
+  1049→    if (fp.browserName === 'Firefox') {
+  1050→      return `Mozilla/5.0 (${fp.osName === 'Windows' ? 'Windows NT 10.0' : fp.osName === 'Mac OS X' ? 'Macintosh; Intel Mac OS X 10.15' : 'X11; Linux x86_64'}; ${fp.language}) Gecko/20100101 Firefox/${fp.browserVersion}`;
+  1051→    }
+  1052→    return `Mozilla/5.0 (${fp.osName === 'Windows' ? 'Windows NT 10.0; Win64; x64' : fp.osName === 'Mac OS X' ? 'Macintosh; Intel Mac OS X 10_15_7' : 'X11; Linux x86_64'}; ${fp.language}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${fp.browserVersion} Safari/537.36`;
+  1053→  }
+  1054→
+  1055→  private buildSecChUa(fp: WhatsAppWebFingerprint): string {
+  1056→    if (fp.browserName === 'Firefox') return '';
+  1057→    const major = fp.browserVersion.split('.')[0];
+  1058→    return `"Not A(Brand";v="99", "Google Chrome";v="${major}", "Chromium";v="${major}"`;
+  1059→  }
+  1060→
+  1061→  private generateCanvasHash(): string {
+  1062→    return createHmac('sha256', randomBytes(16))
+  1063→      .update('canvas-fingerprint')
+  1064→      .digest('hex')
+  1065→      .substring(0, 32);
+  1066→  }
+  1067→
+  1068→  private generateAudioHash(): string {
+  1069→    return createHmac('sha256', randomBytes(16))
+  1070→      .update('audio-fingerprint')
+  1071→      .digest('hex')
+  1072→      .substring(0, 32);
+  1073→  }
+  1074→
+  1075→  private startFingerprintRotation(): void {
+  1076→    if (this.fingerprintRotationTimer) {
+  1077→      clearInterval(this.fingerprintRotationTimer);
+  1078→    }
+  1079→
+  1080→    this.fingerprintRotationTimer = setInterval(() => {
+  1081→      this.rotateFingerprint();
+  1082→    }, this.config.fingerprintRotationInterval);
+  1083→  }
+  1084→
+  1085→  private startPresenceSimulation(): void {
+  1086→    if (this.presenceTimer) {
+  1087→      clearInterval(this.presenceTimer);
+  1088→    }
+  1089→
+  1090→    this.presenceTimer = setInterval(() => {
+  1091→      // Simulate natural presence updates
+  1092→      for (const [sessionId, state] of this.behavioralState) {
+  1093→        if (state.isOnline) {
+  1094→          state.lastActivity = Date.now();
+  1095→        }
+  1096→      }
+  1097→    }, this.config.presenceInterval);
+  1098→  }
+  1099→
+  1100→  private updateBehavioralState(
+  1101→    sessionId: string,
+  1102→    update: Partial<{ isTyping: boolean; isOnline: boolean; lastActivity: number }>
+  1103→  ): void {
+  1104→    const existing = this.behavioralState.get(sessionId) || {
+  1105→      isTyping: false,
+  1106→      isOnline: false,
+  1107→      lastActivity: 0,
+  1108→      typingCadence: [],
+  1109→      readReceiptDelay: 2000,
+  1110→    };
+  1111→
+  1112→    this.behavioralState.set(sessionId, {
+  1113→      ...existing,
+  1114→      ...update,
+  1115→    });
+  1116→  }
+  1117→
+  1118→  // ─── Stats ────────────────────────────────────────────────────────────
+  1119→
+  1120→  getStats(): WhatsAppWebEvaderStats {
+  1121→    return { ...this.stats };
+  1122→  }
+  1123→
+  1124→  // ─── Shutdown ─────────────────────────────────────────────────────────
+  1125→
+  1126→  async shutdown(): Promise<void> {
+  1127→    if (this.fingerprintRotationTimer) {
+  1128→      clearInterval(this.fingerprintRotationTimer);
+  1129→      this.fingerprintRotationTimer = null;
+  1130→    }
+  1131→    if (this.presenceTimer) {
+  1132→      clearInterval(this.presenceTimer);
+  1133→      this.presenceTimer = null;
+  1134→    }
+  1135→
+  1136→    this.activeChallenges.clear();
+  1137→    this.deviceBindings.clear();
+  1138→    this.behavioralState.clear();
+  1139→    this.currentFingerprint = null;
+  1140→    this.initialized = false;
+  1141→  }
+  1142→}
+  1143→
+  1144→// Singleton
+  1145→export const whatsappWebEvader = new WhatsAppWebEvader();
+  1146→

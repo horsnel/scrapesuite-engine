@@ -1,0 +1,548 @@
+   200→   200→   200→      this.stats.fallbackUsed++;
+   201→   201→   201→      return xbogusSigner.generate(params);
+   202→   202→   202→    }
+   203→   203→   203→  }
+   204→   204→   204→
+   205→   205→   205→  /**
+   206→   206→   206→   * Force a fresh extraction of the X-Bogus algorithm from TikTok's CDN.
+   207→   207→   207→   * Invalidates all caches (in-memory and Redis).
+   208→   208→   208→   */
+   209→   209→   209→  async refreshAlgorithm(): Promise<void> {
+   210→   210→   210→    this.stats.extractionAttempts++;
+   211→   211→   211→    const extractStart = performance.now();
+   212→   212→   212→
+   213→   213→   213→    try {
+   214→   214→   214→      logger.info('Refreshing X-Bogus algorithm from TikTok CDN');
+   215→   215→   215→
+   216→   216→   216→      // Step 1: Discover script URLs from TikTok's main page
+   217→   217→   217→      const scriptUrls = await this.fetchAlgorithmScripts();
+   218→   218→   218→      if (scriptUrls.length === 0) {
+   219→   219→   219→        throw new Error('No algorithm script URLs discovered from TikTok page');
+   220→   220→   220→      }
+   221→   221→   221→
+   222→   222→   222→      logger.info({ scriptCount: scriptUrls.length }, 'Discovered candidate script URLs');
+   223→   223→   223→
+   224→   224→   224→      // Step 2: Download and identify the algorithm JS
+   225→   225→   225→      const algorithmJS = await this.downloadAlgorithmJS(scriptUrls);
+   226→   226→   226→      if (!algorithmJS) {
+   227→   227→   227→        throw new Error('Downloaded scripts did not contain X-Bogus algorithm');
+   228→   228→   228→      }
+   229→   229→   229→
+   230→   230→   230→      // Step 3: Detect version
+   231→   231→   231→      const version = await this.detectAlgorithmVersion(algorithmJS);
+   232→   232→   232→
+   233→   233→   233→      // Step 4: Cache in-memory
+   234→   234→   234→      const cached: CachedAlgorithm = {
+   235→   235→   235→        js: algorithmJS,
+   236→   236→   236→        extractedAt: Date.now(),
+   237→   237→   237→        version,
+   238→   238→   238→      };
+   239→   239→   239→      this.algorithmCache.set(version, cached);
+   240→   240→   240→      this.stats.algorithmVersion = version;
+   241→   241→   241→      this.stats.lastExtractionAt = Date.now();
+   242→   242→   242→      this.stats.lastExtractionDurationMs = performance.now() - extractStart;
+   243→   243→   243→      this.stats.extractionSuccesses++;
+   244→   244→   244→
+   245→   245→   245→      // Step 5: Persist to Redis with 2-hour TTL
+   246→   246→   246→      try {
+   247→   247→   247→        await cacheSet(
+   248→   248→   248→          XBogusCDNExtractor.ALGORITHM_REDIS_KEY,
+   249→   249→   249→          { js: algorithmJS, version, extractedAt: cached.extractedAt },
+   250→   250→   250→          Math.floor(XBogusCDNExtractor.ALGORITHM_CACHE_MS / 1000),
+   251→   251→   251→        );
+   252→   252→   252→      } catch (redisErr: unknown) {
+   253→   253→   253→        logger.debug({ error: (redisErr as Error).message }, 'Redis cache write failed -- continuing with in-memory cache only');
+   254→   254→   254→      }
+   255→   255→   255→
+   256→   256→   256→      logger.info(
+   257→   257→   257→        { version, jsSize: algorithmJS.length, durationMs: this.stats.lastExtractionDurationMs.toFixed(0) },
+   258→   258→   258→        'X-Bogus algorithm extracted and cached',
+   259→   259→   259→      );
+   260→   260→   260→    } catch (err: unknown) {
+   261→   261→   261→      const message = err instanceof Error ? err.message : String(err);
+   262→   262→   262→      this.stats.extractionFailures++;
+   263→   263→   263→      logger.error({ error: message }, 'Failed to refresh X-Bogus algorithm from CDN');
+   264→   264→   264→    }
+   265→   265→   265→  }
+   266→   266→   266→
+   267→   267→   267→  /**
+   268→   268→   268→   * Return operational statistics for monitoring / diagnostics.
+   269→   269→   269→   */
+   270→   270→   270→  getStats(): Record<string, unknown> {
+   271→   271→   271→    return {
+   272→   272→   272→      ...this.stats,
+   273→   273→   273→      initialized: this.initialized,
+   274→   274→   274→      algorithmCacheSize: this.algorithmCache.size,
+   275→   275→   275→      algorithmCacheEntries: Array.from(this.algorithmCache.entries()).map(([version, entry]) => ({
+   276→   276→   276→        version,
+   277→   277→   277→        jsSize: entry.js.length,
+   278→   278→   278→        ageMs: Date.now() - entry.extractedAt,
+   279→   279→   279→      })),
+   280→   280→   280→    };
+   281→   281→   281→  }
+   282→   282→   282→
+   283→   283→   283→  // ===========================================================================
+   284→   284→   284→  // ALGORITHM DISCOVERY
+   285→   285→   285→  // ===========================================================================
+   286→   286→   286→
+   287→   287→   287→  /**
+   288→   288→   288→   * Navigate to TikTok's main page in a Playwright context, intercept loaded
+   289→   289→   289→   * script resources, and return URLs for scripts that may contain the X-Bogus
+   290→   290→   290→   * signing algorithm.
+   291→   291→   291→   *
+   292→   292→   292→   * Strategy:
+   293→   293→   293→   *  - Create an incognito browser context with realistic headers
+   294→   294→   294→   *  - Intercept network responses for JS content-type
+   295→   295→   295→   *  - Filter URLs against known CDN hostname patterns
+   296→   296→   296→   *  - Also parse the initial HTML for `<script src="...">` tags
+   297→   297→   297→   */
+   298→   298→   298→  private async fetchAlgorithmScripts(): Promise<string[]> {
+   299→   299→   299→    if (!this.browser) {
+   300→   300→   300→      throw new Error('Browser not initialized');
+   301→   301→   301→    }
+   302→   302→   302→
+   303→   303→   303→    const collectedUrls = new Set<string>();
+   304→   304→   304→    let context: BrowserContext | null = null;
+   305→   305→   305→
+   306→   306→   306→    try {
+   307→   307→   307→      context = await this.browser.newContext({
+   308→   308→   308→        userAgent: DEFAULT_UA,
+   309→   309→   309→        viewport: { width: 1920, height: 1080 },
+   310→   310→   310→        locale: 'en-US',
+   311→   311→   311→        timezoneId: 'America/New_York',
+   312→   312→   312→        extraHTTPHeaders: {
+   313→   313→   313→          'Accept-Language': 'en-US,en;q=0.9',
+   314→   314→   314→          'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+   315→   315→   315→          'Sec-CH-UA-Mobile': '?0',
+   316→   316→   316→          'Sec-CH-UA-Platform': '"Windows"',
+   317→   317→   317→        },
+   318→   318→   318→      });
+   319→   319→   319→
+   320→   320→   320→      // Mask Playwright automation signals
+   321→   321→   321→      await context.addInitScript(() => {
+   322→   322→   322→        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+   323→   323→   323→        const w = globalThis as Record<string, unknown>;
+   324→   324→   324→        delete w.__playwright;
+   325→   325→   325→        delete w.__pw_manual;
+   326→   326→   326→        delete w.__PW_inspect;
+   327→   327→   327→      });
+   328→   328→   328→
+   329→   329→   329→      const page = await context.newPage();
+   330→   330→   330→
+   331→   331→   331→      // Intercept JS responses and collect their URLs
+   332→   332→   332→      page.on('response', (response) => {
+   333→   333→   333→        const url = response.url();
+   334→   334→   334→        const contentType = response.headers()['content-type'] || '';
+   335→   335→   335→        if (
+   336→   336→   336→          contentType.includes('javascript') ||
+   337→   337→   337→          url.endsWith('.js') ||
+   338→   338→   338→          url.includes('.js?') ||
+   339→   339→   339→          TIKTOK_CDN_HOSTS.some((host) => url.includes(host))
+   340→   340→   340→        ) {
+   341→   341→   341→          collectedUrls.add(url);
+   342→   342→   342→        }
+   343→   343→   343→      });
+   344→   344→   344→
+   345→   345→   345→      // Navigate to TikTok main page (tolerate non-200; we still collect scripts)
+   346→   346→   346→      try {
+   347→   347→   347→        await page.goto('https://www.tiktok.com', {
+   348→   348→   348→          waitUntil: 'domcontentloaded',
+   349→   349→   349→          timeout: 30_000,
+   350→   350→   350→        });
+   351→   351→   351→      } catch (navErr: unknown) {
+   352→   352→   352→        logger.debug({ error: (navErr as Error).message }, 'TikTok page navigation issue -- collected scripts anyway');
+   353→   353→   353→      }
+   354→   354→   354→
+   355→   355→   355→      // Wait a moment for lazy-loaded scripts
+   356→   356→   356→      await page.waitForTimeout(3000);
+   357→   357→   357→
+   358→   358→   358→      // Also parse the initial HTML for <script src> tags as a fallback
+   359→   359→   359→      const htmlScriptUrls = await page.evaluate(() => {
+   360→   360→   360→        const scripts = Array.from(document.querySelectorAll('script[src]'));
+   361→   361→   361→        return scripts.map((s) => s.getAttribute('src') || '');
+   362→   362→   362→      });
+   363→   363→   363→
+   364→   364→   364→      for (const url of htmlScriptUrls) {
+   365→   365→   365→        if (url) collectedUrls.add(url);
+   366→   366→   366→      }
+   367→   367→   367→
+   368→   368→   368→      await page.close();
+   369→   369→   369→    } catch (err: unknown) {
+   370→   370→   370→      const message = err instanceof Error ? err.message : String(err);
+   371→   371→   371→      logger.error({ error: message }, 'Error while fetching algorithm script URLs from TikTok');
+   372→   372→   372→    } finally {
+   373→   373→   373→      if (context) {
+   374→   374→   374→        try { await context.close(); } catch {}
+   375→   375→   375→      }
+   376→   376→   376→    }
+   377→   377→   377→
+   378→   378→   378→    return Array.from(collectedUrls);
+   379→   379→   379→  }
+   380→   380→   380→
+   381→   381→   381→  // ===========================================================================
+   382→   382→   382→  // ALGORITHM DOWNLOAD
+   383→   383→   383→  // ===========================================================================
+   384→   384→   384→
+   385→   385→   385→  /**
+   386→   386→   386→   * Download each candidate script, inspect its content for X-Bogus algorithm
+   387→   387→   387→   * signatures, and return the concatenated matching JS.
+   388→   388→   388→   *
+   389→   389→   389→   * Checks the Redis cache first before downloading.
+   390→   390→   390→   */
+   391→   391→   391→  private async downloadAlgorithmJS(scriptUrls: string[]): Promise<string | null> {
+   392→   392→   392→    // Check Redis cache first
+   393→   393→   393→    try {
+   394→   394→   394→      const cached = await cacheGet<{ js: string; version: string; extractedAt: number }>(
+   395→   395→   395→        XBogusCDNExtractor.ALGORITHM_REDIS_KEY,
+   396→   396→   396→      );
+   397→   397→   397→      if (cached && cached.js && Date.now() - cached.extractedAt < XBogusCDNExtractor.ALGORITHM_CACHE_MS) {
+   398→   398→   398→        this.stats.cacheHits++;
+   399→   399→   399→        logger.info({ version: cached.version }, 'Algorithm cache hit (Redis)');
+   400→   400→   400→        const version = await this.detectAlgorithmVersion(cached.js);
+   401→   401→   401→        this.algorithmCache.set(version, {
+   402→   402→   402→          js: cached.js,
+   403→   403→   403→          extractedAt: cached.extractedAt,
+   404→   404→   404→          version,
+   405→   405→   405→        });
+   406→   406→   406→        return cached.js;
+   407→   407→   407→      }
+   408→   408→   408→    } catch (err: unknown) {
+   409→   409→   409→      logger.debug({ error: (err as Error).message }, 'Redis cache read failed -- proceeding to download');
+   410→   410→   410→    }
+   411→   411→   411→
+   412→   412→   412→    // Check in-memory cache
+   413→   413→   413→    for (const [version, entry] of this.algorithmCache.entries()) {
+   414→   414→   414→      if (Date.now() - entry.extractedAt < XBogusCDNExtractor.ALGORITHM_CACHE_MS) {
+   415→   415→   415→        this.stats.cacheHits++;
+   416→   416→   416→        logger.info({ version }, 'Algorithm cache hit (memory)');
+   417→   417→   417→        return entry.js;
+   418→   418→   418→      }
+   419→   419→   419→    }
+   420→   420→   420→
+   421→   421→   421→    this.stats.cacheMisses++;
+   422→   422→   422→
+   423→   423→   423→    // Download and scan each candidate script
+   424→   424→   424→    const algorithmChunks: string[] = [];
+   425→   425→   425→
+   426→   426→   426→    for (const url of scriptUrls) {
+   427→   427→   427→      try {
+   428→   428→   428→        const response = await fetch(url, {
+   429→   429→   429→          headers: {
+   430→   430→   430→            'User-Agent': DEFAULT_UA,
+   431→   431→   431→            'Accept': '*/*',
+   432→   432→   432→            'Accept-Language': 'en-US,en;q=0.9',
+   433→   433→   433→            Referer: 'https://www.tiktok.com/',
+   434→   434→   434→          },
+   435→   435→   435→          signal: AbortSignal.timeout(15_000),
+   436→   436→   436→        });
+   437→   437→   437→
+   438→   438→   438→        if (!response.ok) continue;
+   439→   439→   439→
+   440→   440→   440→        const js = await response.text();
+   441→   441→   441→
+   442→   442→   442→        // Test if this script contains X-Bogus algorithm indicators
+   443→   443→   443→        if (this.containsAlgorithm(js)) {
+   444→   444→   444→          algorithmChunks.push(js);
+   445→   445→   445→          logger.debug({ url: url.substring(0, 120), size: js.length }, 'Identified X-Bogus algorithm script');
+   446→   446→   446→        }
+   447→   447→   447→      } catch (err: unknown) {
+   448→   448→   448→        logger.debug({ url: url.substring(0, 120), error: (err as Error).message }, 'Failed to download candidate script');
+   449→   449→   449→      }
+   450→   450→   450→    }
+   451→   451→   451→
+   452→   452→   452→    if (algorithmChunks.length === 0) {
+   453→   453→   453→      logger.warn({ urlCount: scriptUrls.length }, 'No algorithm scripts found among candidates');
+   454→   454→   454→      return null;
+   455→   455→   455→    }
+   456→   456→   456→
+   457→   457→   457→    return algorithmChunks.join('\n;//---SEPARATOR---;\n');
+   458→   458→   458→  }
+   459→   459→   459→
+   460→   460→   460→  /**
+   461→   461→   461→   * Check whether a JS string contains patterns consistent with the X-Bogus
+   462→   462→   462→   * signing algorithm.
+   463→   463→   463→   */
+   464→   464→   464→  private containsAlgorithm(js: string): boolean {
+   465→   465→   465→    // Must match at least two distinct patterns to reduce false positives
+   466→   466→   466→    let matchCount = 0;
+   467→   467→   467→    for (const pattern of XBOGUS_SIGNATURE_PATTERNS) {
+   468→   468→   468→      if (pattern.test(js)) {
+   469→   469→   469→        matchCount++;
+   470→   470→   470→        if (matchCount >= 2) return true;
+   471→   471→   471→      }
+   472→   472→   472→    }
+   473→   473→   473→    return false;
+   474→   474→   474→  }
+   475→   475→   475→
+   476→   476→   476→  // ===========================================================================
+   477→   477→   477→  // SANDBOX EXECUTION
+   478→   478→   478→  // ===========================================================================
+   479→   479→   479→
+   480→   480→   480→  /**
+   481→   481→   481→   * Execute the extracted X-Bogus algorithm inside a fresh Playwright
+   482→   482→   482→   * incognito context and return the generated signature.
+   483→   483→   483→   *
+   484→   484→   484→   * Security model:
+   485→   485→   485→   *  - A brand-new incognito context is created per call
+   486→   486→   486→   *  - Realistic TikTok headers and cookies (ttwid, msToken) are set
+   487→   487→   487→   *  - The algorithm JS is injected via page.addScriptTag
+   488→   488→   488→   *  - The signing function is invoked via page.evaluate()
+   489→   489→   489→   *  - The context is destroyed after extracting the result
+   490→   490→   490→   */
+   491→   491→   491→  private async executeInSandbox(algorithmJS: string, params: XBogusParams): Promise<string> {
+   492→   492→   492→    if (!this.browser) {
+   493→   493→   493→      throw new Error('Browser not initialized -- cannot execute in sandbox');
+   494→   494→   494→    }
+   495→   495→   495→
+   496→   496→   496→    this.stats.sandboxExecutions++;
+   497→   497→   497→    let context: BrowserContext | null = null;
+   498→   498→   498→
+   499→   499→   499→    try {
+   500→   500→   500→      // Step 1: Create incognito context with realistic TikTok headers
+   501→   501→   501→      context = await this.browser.newContext({
+   502→   502→   502→        userAgent: params.userAgent || DEFAULT_UA,
+   503→   503→   503→        viewport: { width: 1920, height: 1080 },
+   504→   504→   504→        locale: 'en-US',
+   505→   505→   505→        timezoneId: 'America/New_York',
+   506→   506→   506→        extraHTTPHeaders: {
+   507→   507→   507→          'Accept-Language': 'en-US,en;q=0.9',
+   508→   508→   508→          'Sec-CH-UA': '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+   509→   509→   509→          'Sec-CH-UA-Mobile': '?0',
+   510→   510→   510→          'Sec-CH-UA-Platform': '"Windows"',
+   511→   511→   511→        },
+   512→   512→   512→      });
+   513→   513→   513→
+   514→   514→   514→      // Set realistic TikTok cookies
+   515→   515→   515→      await context.addCookies([
+   516→   516→   516→        {
+   517→   517→   517→          name: 'ttwid',
+   518→   518→   518→          value: this.generateTTWid(),
+   519→   519→   519→          domain: '.tiktok.com',
+   520→   520→   520→          path: '/',
+   521→   521→   521→        },
+   522→   522→   522→        {
+   523→   523→   523→          name: 'msToken',
+   524→   524→   524→          value: this.generateMsToken(),
+   525→   525→   525→          domain: '.tiktok.com',
+   526→   526→   526→          path: '/',
+   527→   527→   527→        },
+   528→   528→   528→        {
+   529→   529→   529→          name: 'odin_tt',
+   530→   530→   530→          value: this.generateOdinTT(),
+   531→   531→   531→          domain: '.tiktok.com',
+   532→   532→   532→          path: '/',
+   533→   533→   533→        },
+   534→   534→   534→      ]);
+   535→   535→   535→
+   536→   536→   536→      // Mask automation indicators
+   537→   537→   537→      await context.addInitScript(() => {
+   538→   538→   538→        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+   539→   539→   539→        const w = globalThis as Record<string, unknown>;
+   540→   540→   540→        delete w.__playwright;
+   541→   541→   541→        delete w.__pw_manual;
+   542→   542→   542→        delete w.__PW_inspect;
+   543→   543→   543→      });
+   544→   544→   544→
+   545→   545→   545→      const page = await context.newPage();
+   546→   546→   546→
+   547→   547→   547→      // Step 2: Navigate to a blank TikTok-origin page so the algorithm JS
+   548→   548→   548→      // runs in the correct origin context
+   549→   549→   549→      await page.goto('about:blank');
+   550→   550→   550→
+   551→   551→   551→      // Step 3: Inject the algorithm JavaScript
+   552→   552→   552→      await page.addScriptTag({ content: algorithmJS });
+   553→   553→   553→
+   554→   554→   554→      // Step 4: Attempt to call the X-Bogus signing function
+   555→   555→   555→      // TikTok's algorithm is typically exposed via a global function or
+   556→   556→   556→      // accessible through their module system. We try multiple known entry points.
+   557→   557→   557→      const xBogus = await page.evaluate(
+   558→   558→   558→        ({ url, queryString, userAgent, timestamp, body }) => {
+   559→   559→   559→          // Attempt 1: Direct global function (byted_acrawler.sign)
+   560→   560→   560→          try {
+   561→   561→   561→            const byted = (window as Record<string, any>).byted_acrawler;
+   562→   562→   562→            if (byted && typeof byted.sign === 'function') {
+   563→   563→   563→              const result = byted.sign({
+   564→   564→   564→                url: url + queryString,
+   565→   565→   565→                userAgent,
+   566→   566→   566→                timestamp,
+   567→   567→   567→                body: body || '',
+   568→   568→   568→              });
+   569→   569→   569→              if (typeof result === 'string' && result.length > 10) return result;
+   570→   570→   570→              if (result && typeof result.x_bogus === 'string') return result.x_bogus;
+   571→   571→   571→              if (result && typeof result['X-Bogus'] === 'string') return result['X-Bogus'];
+   572→   572→   572→            }
+   573→   573→   573→          } catch {}
+   574→   574→   574→
+   575→   575→   575→          // Attempt 2: window._bytedParam via module system
+   576→   576→   576→          try {
+   577→   577→   577→            const param = (window as Record<string, any>)._bytedParam;
+   578→   578→   578→            if (param && typeof param.sign === 'function') {
+   579→   579→   579→              return param.sign(url + queryString, userAgent, timestamp, body || '');
+   580→   580→   580→            }
+   581→   581→   581→          } catch {}
+   582→   582→   582→
+   583→   583→   583→          // Attempt 3: _webmssdk_env or similar entry
+   584→   584→   584→          try {
+   585→   585→   585→            const env = (window as Record<string, any>)._webmssdk_env;
+   586→   586→   586→            if (env && typeof env.sign === 'function') {
+   587→   587→   587→              return env.sign(url + queryString, body || '', userAgent);
+   588→   588→   588→            }
+   589→   589→   589→          } catch {}
+   590→   590→   590→
+   591→   591→   591→          // Attempt 4: Search for the signing function in global scope
+   592→   592→   592→          const globalKeys = Object.keys(window);
+   593→   593→   593→          for (const key of globalKeys) {
+   594→   594→   594→            try {
+   595→   595→   595→              const val = (window as Record<string, any>)[key];
+   596→   596→   596→              if (val && typeof val === 'object' && typeof val.sign === 'function') {
+   597→   597→   597→                const result = val.sign({ url: url + queryString, userAgent, timestamp, body: body || '' });
+   598→   598→   598→                if (typeof result === 'string' && result.length > 10) return result;
+   599→   599→   599→                if (result && typeof result.x_bogus === 'string') return result.x_bogus;
+   600→   600→   600→                if (result && typeof result['X-Bogus'] === 'string') return result['X-Bogus'];
+   601→   601→   601→              }
+   602→   602→   602→            } catch {}
+   603→   603→   603→          }
+   604→   604→   604→
+   605→   605→   605→          return null;
+   606→   606→   606→        },
+   607→   607→   607→        {
+   608→   608→   608→          url: params.url,
+   609→   609→   609→          queryString: params.queryString,
+   610→   610→   610→          userAgent: params.userAgent,
+   611→   611→   611→          timestamp: params.timestamp,
+   612→   612→   612→          body: params.body || '',
+   613→   613→   613→        },
+   614→   614→   614→      );
+   615→   615→   615→
+   616→   616→   616→      await page.close();
+   617→   617→   617→
+   618→   618→   618→      if (typeof xBogus === 'string' && xBogus.length > 10) {
+   619→   619→   619→        return xBogus;
+   620→   620→   620→      }
+   621→   621→   621→
+   622→   622→   622→      throw new Error('Sandbox execution did not produce a valid X-Bogus signature');
+   623→   623→   623→    } catch (err: unknown) {
+   624→   624→   624→      const message = err instanceof Error ? err.message : String(err);
+   625→   625→   625→      this.stats.sandboxFailures++;
+   626→   626→   626→      logger.error({ error: message }, 'Sandbox execution failed');
+   627→   627→   627→      throw err;
+   628→   628→   628→    } finally {
+   629→   629→   629→      if (context) {
+   630→   630→   630→        try { await context.close(); } catch {}
+   631→   631→   631→      }
+   632→   632→   632→    }
+   633→   633→   633→  }
+   634→   634→   634→
+   635→   635→   635→  // ===========================================================================
+   636→   636→   636→  // ALGORITHM VERSION DETECTION
+   637→   637→   637→  // ===========================================================================
+   638→   638→   638→
+   639→   639→   639→  /**
+   640→   640→   640→   * Detect the X-Bogus algorithm version from the extracted JavaScript.
+   641→   641→   641→   * Looks for version prefixes like "DFSzswVO" and other identifiers.
+   642→   642→   642→   */
+   643→   643→   643→  private async detectAlgorithmVersion(js: string): Promise<string> {
+   644→   644→   644→    for (const pattern of VERSION_PATTERNS) {
+   645→   645→   645→      const match = js.match(pattern);
+   646→   646→   646→      if (match) {
+   647→   647→   647→        return match[0].replace(/"/g, '');
+   648→   648→   648→      }
+   649→   649→   649→    }
+   650→   650→   650→
+   651→   651→   651→    // Fallback: hash the first 512 bytes to create a stable version id
+   652→   652→   652→    const sample = js.substring(0, 512);
+   653→   653→   653→    let hash = 0;
+   654→   654→   654→    for (let i = 0; i < sample.length; i++) {
+   655→   655→   655→      const chr = sample.charCodeAt(i);
+   656→   656→   656→      hash = ((hash << 5) - hash + chr) | 0;
+   657→   657→   657→    }
+   658→   658→   658→    return `custom-${Math.abs(hash).toString(16).slice(0, 8)}`;
+   659→   659→   659→  }
+   660→   660→   660→
+   661→   661→   661→  // ===========================================================================
+   662→   662→   662→  // PRIVATE HELPERS
+   663→   663→   663→  // ===========================================================================
+   664→   664→   664→
+   665→   665→   665→  /**
+   666→   666→   666→   * Retrieve the algorithm JS from in-memory cache, Redis, or by performing
+   667→   667→   667→   * a fresh CDN extraction.
+   668→   668→   668→   */
+   669→   669→   669→  private async getAlgorithm(): Promise<CachedAlgorithm | null> {
+   670→   670→   670→    // Check in-memory cache (any version, as long as it's not expired)
+   671→   671→   671→    for (const [version, entry] of this.algorithmCache.entries()) {
+   672→   672→   672→      if (Date.now() - entry.extractedAt < XBogusCDNExtractor.ALGORITHM_CACHE_MS) {
+   673→   673→   673→        this.stats.cacheHits++;
+   674→   674→   674→        return entry;
+   675→   675→   675→      }
+   676→   676→   676→    }
+   677→   677→   677→
+   678→   678→   678→    // Check Redis cache
+   679→   679→   679→    try {
+   680→   680→   680→      const cached = await cacheGet<{ js: string; version: string; extractedAt: number }>(
+   681→   681→   681→        XBogusCDNExtractor.ALGORITHM_REDIS_KEY,
+   682→   682→   682→      );
+   683→   683→   683→      if (cached && cached.js && Date.now() - cached.extractedAt < XBogusCDNExtractor.ALGORITHM_CACHE_MS) {
+   684→   684→   684→        this.stats.cacheHits++;
+   685→   685→   685→        this.algorithmCache.set(cached.version, {
+   686→   686→   686→          js: cached.js,
+   687→   687→   687→          extractedAt: cached.extractedAt,
+   688→   688→   688→          version: cached.version,
+   689→   689→   689→        });
+   690→   690→   690→        return this.algorithmCache.get(cached.version) ?? null;
+   691→   691→   691→      }
+   692→   692→   692→    } catch (err: unknown) {
+   693→   693→   693→      logger.debug({ error: (err as Error).message }, 'Redis cache read failed');
+   694→   694→   694→    }
+   695→   695→   695→
+   696→   696→   696→    // Fresh extraction required
+   697→   697→   697→    this.stats.cacheMisses++;
+   698→   698→   698→    await this.refreshAlgorithm();
+   699→   699→   699→
+   700→   700→   700→    // Return from in-memory cache after extraction
+   701→   701→   701→    for (const [, entry] of this.algorithmCache.entries()) {
+   702→   702→   702→      if (Date.now() - entry.extractedAt < XBogusCDNExtractor.ALGORITHM_CACHE_MS) {
+   703→   703→   703→        return entry;
+   704→   704→   704→      }
+   705→   705→   705→    }
+   706→   706→   706→
+   707→   707→   707→    return null;
+   708→   708→   708→  }
+   709→   709→   709→
+   710→   710→   710→  /**
+   711→   711→   711→   * Generate a plausible ttwid cookie value.
+   712→   712→   712→   */
+   713→   713→   713→  private generateTTWid(): string {
+   714→   714→   714→    const ts = Date.now();
+   715→   715→   715→    const rand = Math.random().toString(36).substring(2, 15);
+   716→   716→   716→    return `${ts}_${rand}`;
+   717→   717→   717→  }
+   718→   718→   718→
+   719→   719→   719→  /**
+   720→   720→   720→   * Generate a plausible msToken cookie value (base64-like).
+   721→   721→   721→   */
+   722→   722→   722→  private generateMsToken(): string {
+   723→   723→   723→    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=';
+   724→   724→   724→    const length = 107 + Math.floor(Math.random() * 21);
+   725→   725→   725→    let token = '';
+   726→   726→   726→    for (let i = 0; i < length; i++) {
+   727→   727→   727→      token += chars.charAt(Math.floor(Math.random() * chars.length));
+   728→   728→   728→    }
+   729→   729→   729→    return token;
+   730→   730→   730→  }
+   731→   731→   731→
+   732→   732→   732→  /**
+   733→   733→   733→   * Generate a plausible odin_tt cookie value.
+   734→   734→   734→   */
+   735→   735→   735→  private generateOdinTT(): string {
+   736→   736→   736→    const ts = Math.floor(Date.now() / 1000);
+   737→   737→   737→    const rand = Math.random().toString(36).substring(2, 10);
+   738→   738→   738→    return `${ts}${rand}`;
+   739→   739→   739→  }
+   740→   740→   740→}
+   741→   741→   741→
+   742→   742→   742→// ===============================================================================
+   743→   743→   743→// SINGLETON
+   744→   744→   744→// ===============================================================================
+   745→   745→   745→
+   746→   746→   746→export const xbogusCDNExtractor = new XBogusCDNExtractor();
+   747→   747→   747→

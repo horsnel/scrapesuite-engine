@@ -1,0 +1,1007 @@
+     1→/**
+     2→ * Reddit Scroll Voter -- ScrapeSuite Engine
+     3→ *
+     4→ * Simulates realistic Reddit browsing behavior to evade behavioral
+     5→ * fingerprinting and detection systems. Generates human-like:
+     6→ *
+     7→ *   - Scroll patterns with reading pauses and direction changes
+     8→ *   - Vote patterns (80% up, 10% down, 10% skip — mimicking real engagement)
+     9→ *   - Comment reading with depth-aware timing
+    10→ *   - Complete browsing sessions with navigation between sections
+    11→ *   - Playwright-compatible interaction sequences
+    12→ *
+    13→ * Reddit's behavioral detection looks for:
+    14→ *   - Consistent scroll speeds (bots scroll uniformly)
+    15→ *   - Instant page transitions (humans have think-time)
+    16→ *   - No interaction patterns (humans occasionally vote/click)
+    17→ *   - Missing reading time correlated with content length
+    18→ *   - Perfect linear navigation (humans backtrack, revisit)
+    19→ */
+    20→
+    21→import { createChildLogger } from '../../utils/logger';
+    22→import { cacheSet } from '../../utils/redis';
+    23→import type {
+    24→  RedditInteractionConfig,
+    25→  RedditScrapeTarget,
+    26→  RedditSessionProfile,
+    27→  RedditBrowsingSession,
+    28→  PlaywrightAction,
+    29→  PlaywrightSequence,
+    30→} from './types';
+    31→import { DEFAULT_REDDIT_CONFIG } from './types';
+    32→
+    33→const logger = createChildLogger('reddit-scroll-voter');
+    34→
+    35→// ===============================================================================
+    36→// CONSTANTS
+    37→// ===============================================================================
+    38→
+    39→/** Average words per post body (for reading time calculation) */
+    40→const AVG_POST_BODY_WORDS = 150;
+    41→
+    42→/** Average words per comment (for reading time calculation) */
+    43→const AVG_COMMENT_WORDS = 45;
+    44→
+    45→/** Words per comment title (for reading time calculation) */
+    46→const AVG_TITLE_WORDS = 12;
+    47→
+    48→/** Maximum realistic scroll events per second */
+    49→const MAX_SCROLLS_PER_SECOND = 4;
+    50→
+    51→/** Minimum realistic reading time for any content (ms) */
+    52→const MIN_READING_TIME_MS = 400;
+    53→
+    54→/** Maximum items to track in a single simulation */
+    55→const MAX_SIMULATION_ITEMS = 200;
+    56→
+    57→/** Cache key prefix for simulation logs */
+    58→const CACHE_KEY_PREFIX = 'reddit:simulation:';
+    59→
+    60→// ===============================================================================
+    61→// SCROLL VOTER ENGINE
+    62→// ===============================================================================
+    63→
+    64→export class ScrollVoter {
+    65→  private config: RedditInteractionConfig;
+    66→  private stats = {
+    67→    totalSessions: 0,
+    68→    totalScrolls: 0,
+    69→    totalVotes: 0,
+    70→    totalCommentReads: 0,
+    71→    totalPlaywrightSequences: 0,
+    72→    avgSessionDurationMs: 0,
+    73→  };
+    74→
+    75→  constructor(config?: Partial<RedditInteractionConfig>) {
+    76→    this.config = { ...DEFAULT_REDDIT_CONFIG.interaction, ...config };
+    77→  }
+    78→
+    79→  // ===========================================================================
+    80→  // BROWSING SESSION GENERATION
+    81→  // ===========================================================================
+    82→
+    83→  /**
+    84→   * Generate a complete Reddit browsing session with realistic interactions.
+    85→   *
+    86→   * A session includes:
+    87→   *   - Entry point (usually a subreddit listing or the front page)
+    88→   *   - Scrolling through posts with reading pauses
+    89→   *   - Clicking into posts to read content/comments
+    90→   *   - Voting on some posts and comments
+    91→   *   - Navigating between sections (hot → comments → back)
+    92→   *   - Optional search behavior
+    93→   *   - Break periods for realism
+    94→   *
+    95→   * @param config - Optional override for interaction config
+    96→   * @returns A complete browsing session descriptor
+    97→   */
+    98→  generateBrowsingSession(config?: Partial<RedditInteractionConfig>): RedditBrowsingSession {
+    99→    const effectiveConfig = config
+   100→      ? { ...this.config, ...config }
+   101→      : this.config;
+   102→
+   103→    const sessionId = this.generateSessionId();
+   104→    const now = Date.now();
+   105→
+   106→    // Determine session duration
+   107→    const sessionDuration = this.randomBetween(
+   108→      effectiveConfig.sessionTiming.minSessionDurationMs,
+   109→      effectiveConfig.sessionTiming.maxSessionDurationMs
+   110→    );
+   111→
+   112→    // Create a session profile
+   113→    const profile = this.generateSessionProfile();
+   114→
+   115→    // Plan which sections to visit
+   116→    const sections = this.planSectionVisits(effectiveConfig);
+   117→
+   118→    // Generate the Playwright sequence
+   119→    const sequence = this.generatePlaywrightSequenceInternal(
+   120→      sections,
+   121→      profile,
+   122→      effectiveConfig
+   123→    );
+   124→
+   125→    // Generate vote actions
+   126→    const votes = this.generateSessionVotes(sections, effectiveConfig);
+   127→
+   128→    const session: RedditBrowsingSession = {
+   129→      sessionId,
+   130→      profile,
+   131→      sectionsVisited: sections.map(s => ({
+   132→        section: s.target,
+   133→        subreddit: s.subreddit,
+   134→        durationMs: s.estimatedDurationMs,
+   135→        actionsCount: s.actions.length,
+   136→      })),
+   137→      sequence,
+   138→      votes,
+   139→      totalDurationMs: sessionDuration,
+   140→      isActive: true,
+   141→      startedAt: now,
+   142→      endedAt: null,
+   143→    };
+   144→
+   145→    // Update stats
+   146→    this.stats.totalSessions++;
+   147→    this.stats.totalScrolls += sequence.actions.filter(a => a.type === 'scroll').length;
+   148→    this.stats.totalVotes += votes.length;
+   149→    this.stats.avgSessionDurationMs = this.stats.totalSessions > 0
+   150→      ? (this.stats.avgSessionDurationMs * (this.stats.totalSessions - 1) + sessionDuration) / this.stats.totalSessions
+   151→      : sessionDuration;
+   152→
+   153→    // Cache the session for audit trail
+   154→    cacheSet(`${CACHE_KEY_PREFIX}${sessionId}`, session, 3600).catch(() => {});
+   155→
+   156→    logger.info({
+   157→      sessionId,
+   158→      sectionsCount: sections.length,
+   159→      totalVotes: votes.length,
+   160→      totalActions: sequence.actions.length,
+   161→      durationMs: sessionDuration,
+   162→    }, 'Generated Reddit browsing session');
+   163→
+   164→    return session;
+   165→  }
+   166→
+   167→  // ===========================================================================
+   168→  // SCROLL PATTERN GENERATION
+   169→  // ===========================================================================
+   170→
+   171→  /**
+   172→   * Generate a scroll pattern for a specific Reddit section.
+   173→   *
+   174→   * Different sections have different natural scroll behaviors:
+   175→   *   - Listing pages: Continuous scroll with periodic pauses
+   176→   *   - Comment threads: Scroll-and-expand with depth reading
+   177→   *   - Search results: Faster scanning, fewer pauses
+   178→   *   - User profiles: Variable based on content type
+   179→   *
+   180→   * @param section - The Reddit section to generate scroll patterns for
+   181→   * @returns Array of scroll actions with timing
+   182→   */
+   183→  generateScrollPattern(section: RedditScrapeTarget): Array<{
+   184→    direction: 'down' | 'up';
+   185→    distancePx: number;
+   186→    delayAfterMs: number;
+   187→    isPause: boolean;
+   188→  }> {
+   189→    const patterns: Array<{
+   190→      direction: 'down' | 'up';
+   191→      distancePx: number;
+   192→      delayAfterMs: number;
+   193→      isPause: boolean;
+   194→    }> = [];
+   195→
+   196→    let totalDistance = 0;
+   197→    const maxScrollDistance = this.getMaxScrollDistance(section);
+   198→    const scrollCount = this.randomBetween(5, Math.min(25, MAX_SIMULATION_ITEMS));
+   199→
+   200→    for (let i = 0; i < scrollCount && totalDistance < maxScrollDistance; i++) {
+   201→      // Direction — mostly down, occasional up
+   202→      const direction: 'down' | 'up' = Math.random() < this.config.scrollPatterns.scrollBackProbability && i > 2
+   203→        ? 'up'
+   204→        : 'down';
+   205→
+   206→      // Distance — variable speed
+   207→      const distance = this.randomBetween(
+   208→        this.config.scrollPatterns.scrollSpeedRange.min,
+   209→        this.config.scrollPatterns.scrollSpeedRange.max
+   210→      );
+   211→
+   212→      // Delay after scroll
+   213→      const baseDelay = this.randomBetween(
+   214→        this.config.scrollPatterns.scrollIntervalRange.min,
+   215→        this.config.scrollPatterns.scrollIntervalRange.max
+   216→      );
+   217→
+   218→      // Reading pause — occurs at natural break points
+   219→      const isPause = Math.random() < this.config.scrollPatterns.pauseProbability;
+   220→      const pauseExtra = isPause
+   221→        ? this.randomBetween(
+   222→            this.config.scrollPatterns.pauseDurationRange.min,
+   223→            this.config.scrollPatterns.pauseDurationRange.max
+   224→          )
+   225→        : 0;
+   226→
+   227→      patterns.push({
+   228→        direction,
+   229→        distancePx: direction === 'down' ? distance : Math.min(distance, totalDistance),
+   230→        delayAfterMs: baseDelay + pauseExtra,
+   231→        isPause,
+   232→      });
+   233→
+   234→      totalDistance += direction === 'down' ? distance : -distance;
+   235→      totalDistance = Math.max(0, totalDistance);
+   236→    }
+   237→
+   238→    // Section-specific modifications
+   239→    if (section === 'comments') {
+   240→      // Comment sections have longer pauses (reading)
+   241→      for (const pattern of patterns) {
+   242→        if (pattern.isPause) {
+   243→          pattern.delayAfterMs *= 1.5; // 50% longer pauses for comments
+   244→        }
+   245→      }
+   246→    } else if (section === 'search') {
+   247→      // Search results get faster scanning
+   248→      for (const pattern of patterns) {
+   249→        pattern.delayAfterMs = Math.round(pattern.delayAfterMs * 0.7);
+   250→      }
+   251→    }
+   252→
+   253→    this.stats.totalScrolls += patterns.length;
+   254→
+   255→    logger.debug({
+   256→      section,
+   257→      scrollCount: patterns.length,
+   258→      pauseCount: patterns.filter(p => p.isPause).length,
+   259→      totalDistance,
+   260→    }, 'Generated scroll pattern');
+   261→
+   262→    return patterns;
+   263→  }
+   264→
+   265→  // ===========================================================================
+   266→  // VOTE PATTERN GENERATION
+   267→  // ===========================================================================
+   268→
+   269→  /**
+   270→   * Generate realistic upvote/downvote patterns for a set of posts.
+   271→   *
+   272→   * Real Reddit user behavior shows:
+   273→   *   - ~80% of votes are upvotes (positive bias)
+   274→   *   - ~10% are downvotes (rare but necessary for realism)
+   275→   *   - ~10% skip voting entirely
+   276→   *   - Vote timing correlates with content reading time
+   277→   *   - Occasional vote undos (rare, ~2%)
+   278→   *   - Comment votes are less frequent than post votes
+   279→   *
+   280→   * @param postCount - Number of posts to generate vote decisions for
+   281→   * @returns Array of vote decisions
+   282→   */
+   283→  generateVotePattern(postCount: number): Array<{
+   284→    direction: 'up' | 'down' | 'skip' | 'undo';
+   285→    delayMs: number;
+   286→    isCommentVote: boolean;
+   287→  }> {
+   288→    const votes: Array<{
+   289→      direction: 'up' | 'down' | 'skip' | 'undo';
+   290→      delayMs: number;
+   291→      isCommentVote: boolean;
+   292→    }> = [];
+   293→
+   294→    for (let i = 0; i < Math.min(postCount, MAX_SIMULATION_ITEMS); i++) {
+   295→      const rand = Math.random();
+   296→
+   297→      // Determine vote direction based on configured probabilities
+   298→      let direction: 'up' | 'down' | 'skip';
+   299→      if (rand < this.config.voteBehavior.upvoteProbability) {
+   300→        direction = 'up';
+   301→      } else if (rand < this.config.voteBehavior.upvoteProbability + this.config.voteBehavior.downvoteProbability) {
+   302→        direction = 'down';
+   303→      } else {
+   304→        direction = 'skip';
+   305→      }
+   306→
+   307→      // Reading time before voting (correlated with content length)
+   308→      const viewTime = this.randomBetween(
+   309→        this.config.voteBehavior.minViewTimeBeforeVote,
+   310→        this.config.voteBehavior.maxViewTimeBeforeVote
+   311→      );
+   312→
+   313→      // Determine if this is a comment vote (less common)
+   314→      const isCommentVote = Math.random() < this.config.voteBehavior.commentVoteProbability;
+   315→
+   316→      votes.push({
+   317→        direction,
+   318→        delayMs: viewTime,
+   319→        isCommentVote,
+   320→      });
+   321→
+   322→      // Occasional undo vote
+   323→      if (direction !== 'skip' && Math.random() < this.config.voteBehavior.undoVoteProbability) {
+   324→        votes.push({
+   325→          direction: 'undo',
+   326→          delayMs: this.randomBetween(3000, 10000), // Undo after a delay
+   327→          isCommentVote,
+   328→        });
+   329→      }
+   330→    }
+   331→
+   332→    this.stats.totalVotes += votes.filter(v => v.direction !== 'skip').length;
+   333→
+   334→    logger.debug({
+   335→      postCount,
+   336→      upvotes: votes.filter(v => v.direction === 'up').length,
+   337→      downvotes: votes.filter(v => v.direction === 'down').length,
+   338→      skips: votes.filter(v => v.direction === 'skip').length,
+   339→      undos: votes.filter(v => v.direction === 'undo').length,
+   340→    }, 'Generated vote pattern');
+   341→
+   342→    return votes;
+   343→  }
+   344→
+   345→  // ===========================================================================
+   346→  // COMMENT READING PATTERN GENERATION
+   347→  // ===========================================================================
+   348→
+   349→  /**
+   350→   * Generate comment reading behavior for a Reddit comment thread.
+   351→   *
+   352→   * Real comment reading behavior:
+   353→   *   - Top-level comments get the most attention
+   354→   *   - Deeper comments get progressively less reading time
+   355→   *   - Some collapsed comments get expanded (curiosity)
+   356→   *   - Long reply chains may be partially read
+   357→   *   - Reading time correlates with word count
+   358→   *
+   359→   * @param commentCount - Total number of comments in the thread
+   360→   * @returns Array of comment reading actions with timing
+   361→   */
+   362→  generateCommentReadingPattern(commentCount: number): Array<{
+   363→    depth: number;
+   364→    readTimeMs: number;
+   365→    isExpanded: boolean;
+   366→    isSkipped: boolean;
+   367→  }> {
+   368→    const actions: Array<{
+   369→      depth: number;
+   370→      readTimeMs: number;
+   371→      isExpanded: boolean;
+   372→      isSkipped: boolean;
+   373→    }> = [];
+   374→
+   375→    const effectiveCommentCount = Math.min(commentCount, MAX_SIMULATION_ITEMS);
+   376→
+   377→    for (let i = 0; i < effectiveCommentCount; i++) {
+   378→      // Determine depth — weighted toward top-level comments
+   379→      const depth = this.weightedDepth();
+   380→
+   381→      // Skip probability increases with depth
+   382→      const skipProbability = Math.min(0.6, depth * 0.12);
+   383→      const isSkipped = Math.random() < skipProbability;
+   384→
+   385→      if (isSkipped) {
+   386→        actions.push({
+   387→          depth,
+   388→          readTimeMs: 0,
+   389→          isExpanded: false,
+   390→          isSkipped: true,
+   391→        });
+   392→        continue;
+   393→      }
+   394→
+   395→      // Reading time based on comment length and depth
+   396→      const wordCount = this.randomBetween(
+   397→        Math.max(5, AVG_COMMENT_WORDS - 20),
+   398→        AVG_COMMENT_WORDS + 40
+   399→      );
+   400→      const baseReadTimeMs = Math.max(
+   401→        MIN_READING_TIME_MS,
+   402→        (wordCount / this.config.commentReading.readingSpeedWpm) * 60000
+   403→      );
+   404→      const depthMultiplier = Math.pow(
+   405→        this.config.commentReading.depthTimeMultiplier,
+   406→        depth
+   407→      );
+   408→      const readTimeMs = Math.round(baseReadTimeMs * depthMultiplier);
+   409→
+   410→      // Expand collapsed comments occasionally
+   411→      const isExpanded = depth > 1
+   412→        ? Math.random() < this.config.commentReading.expandCollapsedProbability
+   413→        : false;
+   414→
+   415→      actions.push({
+   416→        depth,
+   417→        readTimeMs,
+   418→        isExpanded,
+   419→        isSkipped: false,
+   420→      });
+   421→
+   422→      // Simulate reading a reply chain
+   423→      if (
+   424→        depth === 0 &&
+   425→        Math.random() < this.config.commentReading.replyChainReadProbability
+   426→      ) {
+   427→        // Add 1-3 replies to the chain
+   428→        const chainLength = this.randomBetween(1, 3);
+   429→        for (let j = 1; j <= chainLength && (i + j) < effectiveCommentCount; j++) {
+   430→          const chainWords = this.randomBetween(10, AVG_COMMENT_WORDS + 20);
+   431→          const chainReadTime = Math.max(
+   432→            MIN_READING_TIME_MS,
+   433→            (chainWords / this.config.commentReading.readingSpeedWpm) * 60000
+   434→              * Math.pow(this.config.commentReading.depthTimeMultiplier, j)
+   435→          );
+   436→
+   437→          actions.push({
+   438→            depth: j,
+   439→            readTimeMs: Math.round(chainReadTime),
+   440→            isExpanded: j > 1 && Math.random() < this.config.commentReading.expandCollapsedProbability,
+   441→            isSkipped: false,
+   442→          });
+   443→        }
+   444→      }
+   445→    }
+   446→
+   447→    this.stats.totalCommentReads += actions.filter(a => !a.isSkipped).length;
+   448→
+   449→    logger.debug({
+   450→      commentCount,
+   451→      readComments: actions.filter(a => !a.isSkipped).length,
+   452→      skippedComments: actions.filter(a => a.isSkipped).length,
+   453→      expandedComments: actions.filter(a => a.isExpanded).length,
+   454→      totalReadTimeMs: actions.reduce((sum, a) => sum + a.readTimeMs, 0),
+   455→    }, 'Generated comment reading pattern');
+   456→
+   457→    return actions;
+   458→  }
+   459→
+   460→  // ===========================================================================
+   461→  // PLAYWRIGHT SEQUENCE GENERATION
+   462→  // ===========================================================================
+   463→
+   464→  /**
+   465→   * Generate a Playwright-compatible interaction sequence for browser automation.
+   466→   *
+   467→   * Produces a sequence of actions that can be directly executed by
+   468→   * Playwright to simulate a realistic Reddit browsing session. Each action
+   469→   * includes timing information and optional humanization.
+   470→   *
+   471→   * @returns A complete Playwright interaction sequence
+   472→   */
+   473→  generatePlaywrightSequence(): PlaywrightSequence {
+   474→    const profile = this.generateSessionProfile();
+   475→    const sections = this.planSectionVisits(this.config);
+   476→    const sequence = this.generatePlaywrightSequenceInternal(sections, profile, this.config);
+   477→
+   478→    this.stats.totalPlaywrightSequences++;
+   479→
+   480→    return sequence;
+   481→  }
+   482→
+   483→  // ===========================================================================
+   484→  // STATISTICS
+   485→  // ===========================================================================
+   486→
+   487→  /**
+   488→   * Get scroll voter statistics.
+   489→   */
+   490→  getStats(): Record<string, unknown> {
+   491→    return { ...this.stats };
+   492→  }
+   493→
+   494→  // ===========================================================================
+   495→  // PRIVATE HELPERS — SESSION GENERATION
+   496→  // ===========================================================================
+   497→
+   498→  /**
+   499→   * Generate a unique session ID.
+   500→   */
+   501→  private generateSessionId(): string {
+   502→    return `rdt_sess_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+   503→  }
+   504→
+   505→  /**
+   506→   * Generate a realistic session profile.
+   507→   */
+   508→  private generateSessionProfile(): RedditSessionProfile {
+   509→    const userAgents = [
+   510→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+   511→      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+   512→      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+   513→      'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0',
+   514→      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+   515→    ];
+   516→
+   517→    const resolutions = [
+   518→      { width: 1920, height: 1080, dpr: 1 },
+   519→      { width: 1366, height: 768, dpr: 1 },
+   520→      { width: 1536, height: 864, dpr: 1.25 },
+   521→      { width: 1440, height: 900, dpr: 2 },
+   522→      { width: 2560, height: 1440, dpr: 1 },
+   523→    ];
+   524→
+   525→    const ua = userAgents[Math.floor(Math.random() * userAgents.length)];
+   526→    const res = resolutions[Math.floor(Math.random() * resolutions.length)];
+   527→
+   528→    const defaultSubreddits = [
+   529→      'worldnews', 'technology', 'science', 'gaming', 'pics',
+   530→      'AskReddit', 'todayilearned', 'funny', 'movies', 'music',
+   531→    ];
+   532→
+   533→    return {
+   534→      userAgent: ua,
+   535→      screenResolution: res,
+   536→      platform: ua.includes('Win') ? 'Win32' : ua.includes('Mac') ? 'MacIntel' : 'Linux x86_64',
+   537→      language: 'en-US',
+   538→      region: 'US',
+   539→      timezoneOffset: new Date().getTimezoneOffset(),
+   540→      isLoggedIn: Math.random() > 0.4, // 60% chance of appearing logged in
+   541→      redditVariant: Math.random() > 0.8 ? 'old' : 'new',
+   542→      useJsonApi: true,
+   543→      subscribedSubreddits: this.shuffleArray(defaultSubreddits).slice(0, this.randomBetween(3, 7)),
+   544→      cookies: {},
+   545→      sessionStart: Date.now(),
+   546→      sessionId: this.generateSessionId(),
+   547→    };
+   548→  }
+   549→
+   550→  /**
+   551→   * Plan which sections to visit during a browsing session.
+   552→   */
+   553→  private planSectionVisits(config: RedditInteractionConfig): Array<{
+   554→    target: RedditScrapeTarget;
+   555→    subreddit?: string;
+   556→    actions: PlaywrightAction[];
+   557→    estimatedDurationMs: number;
+   558→  }> {
+   559→    const sections: Array<{
+   560→      target: RedditScrapeTarget;
+   561→      subreddit?: string;
+   562→      actions: PlaywrightAction[];
+   563→      estimatedDurationMs: number;
+   564→    }> = [];
+   565→
+   566→    // Always start with a listing (front page or subreddit)
+   567→    const defaultSubs = ['popular', 'all', 'worldnews', 'technology', 'AskReddit'];
+   568→    const entrySubreddit = defaultSubs[Math.floor(Math.random() * defaultSubs.length)];
+   569→
+   570→    sections.push({
+   571→      target: 'listing',
+   572→      subreddit: entrySubreddit,
+   573→      actions: [],
+   574→      estimatedDurationMs: this.randomBetween(30000, 120000),
+   575→    });
+   576→
+   577→    // Click into some posts
+   578→    if (Math.random() < config.navigation.clickIntoPostProbability) {
+   579→      const postCount = this.randomBetween(1, 4);
+   580→      for (let i = 0; i < postCount; i++) {
+   581→        sections.push({
+   582→          target: 'post',
+   583→          actions: [],
+   584→          estimatedDurationMs: this.randomBetween(20000, 90000),
+   585→        });
+   586→
+   587→        // Read comments for some posts
+   588→        if (Math.random() < 0.7) {
+   589→          sections.push({
+   590→            target: 'comments',
+   591→            actions: [],
+   592→            estimatedDurationMs: this.randomBetween(30000, 180000),
+   593→          });
+   594→        }
+   595→      }
+   596→    }
+   597→
+   598→    // Visit another subreddit
+   599→    if (Math.random() < config.navigation.visitSubredditProbability) {
+   600→      const otherSubs = ['science', 'gaming', 'programming', 'datascience', 'machinelearning'];
+   601→      sections.push({
+   602→        target: 'subreddit',
+   603→        subreddit: otherSubs[Math.floor(Math.random() * otherSubs.length)],
+   604→        actions: [],
+   605→        estimatedDurationMs: this.randomBetween(20000, 60000),
+   606→      });
+   607→    }
+   608→
+   609→    // Search
+   610→    if (Math.random() < config.navigation.searchProbability) {
+   611→      sections.push({
+   612→        target: 'search',
+   613→        actions: [],
+   614→        estimatedDurationMs: this.randomBetween(15000, 45000),
+   615→      });
+   616→    }
+   617→
+   618→    // User profile visit
+   619→    if (Math.random() < config.navigation.visitProfileProbability) {
+   620→      sections.push({
+   621→        target: 'user',
+   622→        actions: [],
+   623→        estimatedDurationMs: this.randomBetween(10000, 30000),
+   624→      });
+   625→    }
+   626→
+   627→    // Wiki page
+   628→    if (Math.random() < 0.03) {
+   629→      sections.push({
+   630→        target: 'wiki',
+   631→        actions: [],
+   632→        estimatedDurationMs: this.randomBetween(15000, 60000),
+   633→      });
+   634→    }
+   635→
+   636→    return sections;
+   637→  }
+   638→
+   639→  /**
+   640→   * Generate votes for a complete session.
+   641→   */
+   642→  private generateSessionVotes(
+   643→    sections: Array<{ target: RedditScrapeTarget; subreddit?: string; actions: PlaywrightAction[]; estimatedDurationMs: number }>,
+   644→    config: RedditInteractionConfig
+   645→  ): Array<{ direction: 'up' | 'down' | 'undo'; targetId: string; targetType: 'post' | 'comment'; delayMs: number }> {
+   646→    const votes: Array<{ direction: 'up' | 'down' | 'undo'; targetId: string; targetType: 'post' | 'comment'; delayMs: number }> = [];
+   647→
+   648→    for (const section of sections) {
+   649→      if (section.target === 'listing' || section.target === 'subreddit') {
+   650→        // Vote on posts in listings
+   651→        const postCount = this.randomBetween(3, 12);
+   652→        const votePattern = this.generateVotePattern(postCount);
+   653→        for (const vote of votePattern) {
+   654→          if (vote.direction === 'skip') continue;
+   655→          votes.push({
+   656→            direction: vote.direction as 'up' | 'down' | 'undo',
+   657→            targetId: `t3_${this.randomAlphaNum(6)}`,
+   658→            targetType: vote.isCommentVote ? 'comment' : 'post',
+   659→            delayMs: vote.delayMs,
+   660→          });
+   661→        }
+   662→      } else if (section.target === 'comments') {
+   663→        // Vote on comments
+   664→        const commentCount = this.randomBetween(2, 8);
+   665→        const votePattern = this.generateVotePattern(commentCount);
+   666→        for (const vote of votePattern) {
+   667→          if (vote.direction === 'skip') continue;
+   668→          votes.push({
+   669→            direction: vote.direction as 'up' | 'down' | 'undo',
+   670→            targetId: `t1_${this.randomAlphaNum(6)}`,
+   671→            targetType: 'comment',
+   672→            delayMs: vote.delayMs,
+   673→          });
+   674→        }
+   675→      }
+   676→    }
+   677→
+   678→    return votes;
+   679→  }
+   680→
+   681→  // ===========================================================================
+   682→  // PRIVATE HELPERS — PLAYWRIGHT SEQUENCE
+   683→  // ===========================================================================
+   684→
+   685→  /**
+   686→   * Generate a Playwright sequence from planned sections.
+   687→   */
+   688→  private generatePlaywrightSequenceInternal(
+   689→    sections: Array<{
+   690→      target: RedditScrapeTarget;
+   691→      subreddit?: string;
+   692→      actions: PlaywrightAction[];
+   693→      estimatedDurationMs: number;
+   694→    }>,
+   695→    profile: RedditSessionProfile,
+   696→    config: RedditInteractionConfig
+   697→  ): PlaywrightSequence {
+   698→    const actions: PlaywrightAction[] = [];
+   699→    let totalDuration = 0;
+   700→
+   701→    // Initial page load
+   702→    const loadUrl = profile.redditVariant === 'old'
+   703→      ? `https://old.reddit.com/r/${sections[0]?.subreddit || 'popular'}`
+   704→      : `https://www.reddit.com/r/${sections[0]?.subreddit || 'popular'}`;
+   705→
+   706→    actions.push({
+   707→      type: 'navigate',
+   708→      value: loadUrl,
+   709→      durationMs: 0,
+   710→      label: 'Navigate to entry point',
+   711→      humanize: false,
+   712→    });
+   713→
+   714→    actions.push({
+   715→      type: 'wait',
+   716→      durationMs: this.randomBetween(2000, 4000),
+   717→      label: 'Page load wait',
+   718→      humanize: true,
+   719→    });
+   720→    totalDuration += 3000;
+   721→
+   722→    for (const section of sections) {
+   723→      // Navigate to section if not the first one
+   724→      if (section !== sections[0]) {
+   725→        const navDelay = this.randomBetween(
+   726→          config.navigation.navigationDelayRange.min,
+   727→          config.navigation.navigationDelayRange.max
+   728→        );
+   729→
+   730→        if (section.target === 'subreddit' && section.subreddit) {
+   731→          actions.push({
+   732→            type: 'navigate',
+   733→            value: `https://${profile.redditVariant === 'old' ? 'old' : 'www'}.reddit.com/r/${section.subreddit}`,
+   734→            durationMs: 0,
+   735→            label: `Navigate to r/${section.subreddit}`,
+   736→            humanize: false,
+   737→          });
+   738→        } else if (section.target === 'search') {
+   739→          actions.push({
+   740→            type: 'click',
+   741→            selector: '[aria-label="Search"]',
+   742→            durationMs: this.randomBetween(200, 500),
+   743→            label: 'Open search',
+   744→            humanize: true,
+   745→          });
+   746→          actions.push({
+   747→            type: 'type',
+   748→            selector: 'input[type="search"]',
+   749→            value: this.getRandomSearchQuery(),
+   750→            durationMs: this.randomBetween(800, 2000),
+   751→            label: 'Type search query',
+   752→            humanize: true,
+   753→          });
+   754→          actions.push({
+   755→            type: 'keyPress',
+   756→            value: 'Enter',
+   757→            durationMs: this.randomBetween(100, 300),
+   758→            label: 'Submit search',
+   759→            humanize: true,
+   760→          });
+   761→        }
+   762→
+   763→        actions.push({
+   764→          type: 'wait',
+   765→          durationMs: navDelay,
+   766→          label: `Navigation delay (${section.target})`,
+   767→          humanize: true,
+   768→        });
+   769→        totalDuration += navDelay;
+   770→      }
+   771→
+   772→      // Section-specific scroll behavior
+   773→      const scrollPattern = this.generateScrollPattern(section.target);
+   774→
+   775→      for (const scroll of scrollPattern) {
+   776→        actions.push({
+   777→          type: 'scroll',
+   778→          value: `${scroll.direction}:${scroll.distancePx}`,
+   779→          durationMs: this.randomBetween(50, 200),
+   780→          label: scroll.isPause ? 'Scroll + reading pause' : `Scroll ${scroll.direction}`,
+   781→          humanize: true,
+   782→        });
+   783→
+   784→        actions.push({
+   785→          type: 'wait',
+   786→          durationMs: scroll.delayAfterMs,
+   787→          label: scroll.isPause ? 'Reading pause' : 'Scroll interval',
+   788→          humanize: true,
+   789→        });
+   790→
+   791→        totalDuration += scroll.delayAfterMs;
+   792→      }
+   793→
+   794→      // Click into posts (for listing/subreddit sections)
+   795→      if (section.target === 'listing' || section.target === 'subreddit') {
+   796→        const postsToClick = this.randomBetween(0, 3);
+   797→        for (let i = 0; i < postsToClick; i++) {
+   798→          actions.push({
+   799→            type: 'click',
+   800→            selector: `:nth-child(${i + 1}) > [data-testid="post-container"] a`,
+   801→            durationMs: this.randomBetween(100, 400),
+   802→            label: `Click into post #${i + 1}`,
+   803→            humanize: true,
+   804→          });
+   805→
+   806→          actions.push({
+   807→            type: 'wait',
+   808→            durationMs: this.randomBetween(3000, 10000),
+   809→            label: 'Read post content',
+   810→            humanize: true,
+   811→          });
+   812→
+   813→          // Scroll through comments
+   814→          const commentScrolls = this.randomBetween(1, 5);
+   815→          for (let j = 0; j < commentScrolls; j++) {
+   816→            actions.push({
+   817→              type: 'scroll',
+   818→              value: 'down:200',
+   819→              durationMs: this.randomBetween(50, 150),
+   820→              label: 'Scroll through comments',
+   821→              humanize: true,
+   822→            });
+   823→            actions.push({
+   824→              type: 'wait',
+   825→              durationMs: this.randomBetween(1000, 4000),
+   826→              label: 'Read comment',
+   827→              humanize: true,
+   828→            });
+   829→          }
+   830→
+   831→          // Navigate back
+   832→          actions.push({
+   833→            type: 'keyPress',
+   834→            value: 'Alt+ArrowLeft',
+   835→            durationMs: this.randomBetween(100, 300),
+   836→            label: 'Navigate back',
+   837→            humanize: true,
+   838→          });
+   839→          actions.push({
+   840→            type: 'wait',
+   841→            durationMs: this.randomBetween(1000, 3000),
+   842→            label: 'Back navigation delay',
+   843→            humanize: true,
+   844→          });
+   845→        }
+   846→      }
+   847→
+   848→      // Expand collapsed comments (for comment sections)
+   849→      if (section.target === 'comments') {
+   850→        const expandCount = this.randomBetween(0, 3);
+   851→        for (let i = 0; i < expandCount; i++) {
+   852→          actions.push({
+   853→            type: 'expand',
+   854→            selector: `[data-testid="comment"] :nth-child(${i + 1}) [data-click-id="expand"]`,
+   855→            durationMs: this.randomBetween(200, 600),
+   856→            label: `Expand collapsed comment #${i + 1}`,
+   857→            humanize: true,
+   858→          });
+   859→          actions.push({
+   860→            type: 'wait',
+   861→            durationMs: this.randomBetween(1500, 5000),
+   862→            label: 'Read expanded comment',
+   863→            humanize: true,
+   864→          });
+   865→        }
+   866→      }
+   867→
+   868→      // Vote interactions (occasional)
+   869→      if (Math.random() < 0.4) {
+   870→        const voteDirection = Math.random() < 0.8 ? 'up' : 'down';
+   871→        actions.push({
+   872→          type: 'vote',
+   873→          value: voteDirection,
+   874→          selector: voteDirection === 'up'
+   875→            ? '[aria-label="upvote"]'
+   876→            : '[aria-label="downvote"]',
+   877→          durationMs: this.randomBetween(100, 300),
+   878→          label: `${voteDirection}vote post`,
+   879→          humanize: true,
+   880→        });
+   881→      }
+   882→
+   883→      // Break period (for long sessions)
+   884→      if (Math.random() < config.sessionTiming.breakProbability) {
+   885→        const breakDuration = this.randomBetween(
+   886→          config.sessionTiming.breakDurationRange.min,
+   887→          config.sessionTiming.breakDurationRange.max
+   888→        );
+   889→        actions.push({
+   890→          type: 'wait',
+   891→          durationMs: breakDuration,
+   892→          label: 'Session break',
+   893→          humanize: true,
+   894→        });
+   895→        totalDuration += breakDuration;
+   896→      }
+   897→    }
+   898→
+   899→    return {
+   900→      sequenceId: `seq_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+   901→      actions,
+   902→      estimatedDurationMs: totalDuration,
+   903→      targetSection: sections[0]?.target || 'listing',
+   904→      profile,
+   905→      generatedAt: Date.now(),
+   906→    };
+   907→  }
+   908→
+   909→  // ===========================================================================
+   910→  // PRIVATE HELPERS — UTILITIES
+   911→  // ===========================================================================
+   912→
+   913→  /**
+   914→   * Get the maximum realistic scroll distance for a section.
+   915→   */
+   916→  private getMaxScrollDistance(section: RedditScrapeTarget): number {
+   917→    switch (section) {
+   918→      case 'listing':
+   919→        return 15000;
+   920→      case 'comments':
+   921→        return 30000;
+   922→      case 'search':
+   923→        return 8000;
+   924→      case 'subreddit':
+   925→        return 12000;
+   926→      case 'user':
+   927→        return 10000;
+   928→      case 'post':
+   929→        return 5000;
+   930→      case 'wiki':
+   931→        return 20000;
+   932→      default:
+   933→        return 10000;
+   934→    }
+   935→  }
+   936→
+   937→  /**
+   938→   * Generate a weighted depth for comment reading.
+   939→   * Most comments read are at depth 0-2, deeper comments are rarer.
+   940→   */
+   941→  private weightedDepth(): number {
+   942→    const rand = Math.random();
+   943→    if (rand < 0.50) return 0;       // 50% top-level
+   944→    if (rand < 0.75) return 1;       // 25% first reply
+   945→    if (rand < 0.88) return 2;       // 13% second reply
+   946→    if (rand < 0.95) return 3;       // 7% deeper
+   947→    if (rand < 0.98) return 4;       // 3% very deep
+   948→    return 5;                         // 2% deepest
+   949→  }
+   950→
+   951→  /**
+   952→   * Get a random search query for simulation.
+   953→   */
+   954→  private getRandomSearchQuery(): string {
+   955→    const queries = [
+   956→      'best programming language 2024',
+   957→      'reddit api changes',
+   958→      'how to learn python',
+   959→      'web scraping tips',
+   960→      'data science career',
+   961→      'machine learning resources',
+   962→      'best laptop for coding',
+   963→      'home office setup',
+   964→      'tech news today',
+   965→      'open source projects',
+   966→    ];
+   967→    return queries[Math.floor(Math.random() * queries.length)];
+   968→  }
+   969→
+   970→  /**
+   971→   * Generate a random alphanumeric string.
+   972→   */
+   973→  private randomAlphaNum(length: number): string {
+   974→    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+   975→    let result = '';
+   976→    for (let i = 0; i < length; i++) {
+   977→      result += chars[Math.floor(Math.random() * chars.length)];
+   978→    }
+   979→    return result;
+   980→  }
+   981→
+   982→  /**
+   983→   * Shuffle an array using Fisher-Yates algorithm.
+   984→   */
+   985→  private shuffleArray<T>(array: T[]): T[] {
+   986→    const arr = [...array];
+   987→    for (let i = arr.length - 1; i > 0; i--) {
+   988→      const j = Math.floor(Math.random() * (i + 1));
+   989→      [arr[i], arr[j]] = [arr[j], arr[i]];
+   990→    }
+   991→    return arr;
+   992→  }
+   993→
+   994→  /**
+   995→   * Generate a random integer between min and max (inclusive).
+   996→   */
+   997→  private randomBetween(min: number, max: number): number {
+   998→    return Math.floor(Math.random() * (max - min + 1)) + min;
+   999→  }
+  1000→}
+  1001→
+  1002→// ===============================================================================
+  1003→// SINGLETON
+  1004→// ===============================================================================
+  1005→
+  1006→export const scrollVoter = new ScrollVoter();
+  1007→

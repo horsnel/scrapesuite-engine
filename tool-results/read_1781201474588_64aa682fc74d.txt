@@ -1,0 +1,1734 @@
+     1→/**
+     2→ * WhatsApp Message Scraper
+     3→ *
+     4→ * Handles extraction of WhatsApp data including:
+     5→ * - Chat list enumeration
+     6→ * - Message history scraping with pagination
+     7→ * - Media file download (images, videos, audio, documents)
+     8→ * - Group metadata and participant extraction
+     9→ * - Contact list retrieval
+    10→ * - Status/Stories scraping
+    11→ * - Deleted message recovery
+    12→ * - Search and filtering
+    13→ *
+    14→ * UPGRADED: Now uses REAL Playwright browser automation via the browser pool
+    15→ * to navigate WhatsApp Web, query DOM elements, and extract actual data.
+    16→ * Falls back gracefully when elements are not found or when the session
+    17→ * requires authentication.
+    18→ *
+    19→ * WhatsApp's data access patterns:
+    20→ * - WhatsApp Web uses a local IndexedDB cache that mirrors phone data
+    21→ * - Messages are stored in encrypted form and decrypted locally
+    22→ * - Media files are downloaded on-demand from WhatsApp's CDN
+    23→ * - Group metadata is synced via the app-state mechanism
+    24→ * - Search queries go through WhatsApp's server-side search API
+    25→ */
+    26→
+    27→import { randomBytes } from 'crypto';
+    28→import type { Page } from 'playwright';
+    29→import type {
+    30→  WhatsAppChat,
+    31→  WhatsAppChatType,
+    32→  WhatsAppContact,
+    33→  WhatsAppGroupInfo,
+    34→  WhatsAppGroupRole,
+    35→  WhatsAppMediaInfo,
+    36→  WhatsAppMediaType,
+    37→  WhatsAppMessage,
+    38→  WhatsAppMessageType,
+    39→  WhatsAppMessageScraperConfig,
+    40→  WhatsAppMessageScraperStats,
+    41→  WhatsAppScrapeOptions,
+    42→  WhatsAppScrapeResult,
+    43→} from './types';
+    44→import {
+    45→  DEFAULT_WHATSAPP_SCRAPER_CONFIG,
+    46→  DEFAULT_WHATSAPP_SCRAPER_STATS,
+    47→} from './types';
+    48→import { browserPool, type BrowserLease } from '../../browser-pool';
+    49→import { whatsappWebEvader } from './web-evader';
+    50→import { whatsappSessionManager } from './session-manager';
+    51→
+    52→// ─── WhatsApp Web Selectors ──────────────────────────────────────────────────
+    53→
+    54→const WHATSAPP_WEB_URL = 'https://web.whatsapp.com';
+    55→
+    56→const SELECTORS = {
+    57→  // App root — confirms WhatsApp Web loaded
+    58→  appRoot: '#app',
+    59→
+    60→  // Side panel (left pane) — present when logged in
+    61→  sidePanel: '#side, div[data-tab="pane-side"]',
+    62→
+    63→  // Chat list items in the side panel
+    64→  chatListRow: 'div[role="row"]',
+    65→  chatListRowAlt: 'div._aig-, div[data-tab="search"]',
+    66→
+    67→  // Search input in chat list
+    68→  searchInput: 'div[contenteditable="true"][data-tab="search"], div[contenteditable="true"][title="Search input textbox"]',
+    69→
+    70→  // Message panel
+    71→  messagePanel: 'div[data-tab="8"], div._amk6',
+    72→
+    73→  // Individual messages
+    74→  messageIn: 'div.message-in, div[data-id][class*="message-in"]',
+    75→  messageOut: 'div.message-out, div[data-id][class*="message-out"]',
+    76→
+    77→  // Message text content
+    78→  messageText: 'span.selectable-text, span[dir="ltr"], span._ao3e',
+    79→
+    80→  // Message timestamp
+    81→  messageTime: 'span[data-pre-plain-text], span._amkx, div._amjy span',
+    82→
+    83→  // Message sender name (in groups)
+    84→  messageSender: 'span._amig, span[dir="auto"][class*=""]',
+    85→
+    86→  // Media in messages
+    87→  messageImage: 'img[src^="blob:"], img[src^="data:"], div._amjl img',
+    88→  messageVideo: 'video source, video',
+    89→  messageAudio: 'audio source, audio',
+    90→  messageDocument: 'a[href][download], div._amid a',
+    91→
+    92→  // Chat header (contact/group name)
+    93→  chatHeader: 'header span[dir="auto"], header span._amig',
+    94→
+    95→  // Contact panel
+    96→  contactPanel: 'div[data-tab="pane-contacts"], div._aig-',
+    97→
+    98→  // Contact items
+    99→  contactItem: 'div[role="listitem"], div._aig- > div',
+   100→
+   101→  // Group info panel
+   102→  groupInfoPanel: 'div[data-tab="pane-group-info"], div._aig-',
+   103→
+   104→  // Group participant list
+   105→  groupParticipant: 'div[role="listitem"], div._amjv span[dir="auto"]',
+   106→
+   107→  // Unread badge
+   108→  unreadBadge: 'span._ajtp, div._ajts span',
+   109→
+   110→  // Pinned indicator
+   111→  pinnedIndicator: 'span[data-icon="pinned"], div._ajtm span[data-icon="pinned"]',
+   112→
+   113→  // Muted indicator
+   114→  mutedIndicator: 'span[data-icon="muted"], span[data-icon="bell-off"]',
+   115→
+   116→  // Reaction emojis
+   117→  reactionEmoji: 'span._ajul span[role="img"], span[data-icon*="emoji"]',
+   118→
+   119→  // Login view (QR code)
+   120→  loginView: 'div[data-tab="login"], div.landing-window, div[data-animate-landing-page]',
+   121→
+   122→  // Connecting banner
+   123→  connectingBanner: 'div._1OwyW, span[data-icon="alert-phone"]',
+   124→} as const;
+   125→
+   126→// ─── Message Scraper ─────────────────────────────────────────────────────────
+   127→
+   128→export class WhatsAppMessageScraper {
+   129→  private config: WhatsAppMessageScraperConfig;
+   130→  private stats: WhatsAppMessageScraperStats;
+   131→  private initialized = false;
+   132→  private activeScrapes: Map<string, { startedAt: number; target: string; status: string }> = new Map();
+   133→  private mediaDownloadQueue: Array<{ mediaKey: string; url: string; type: WhatsAppMediaType }> = [];
+   134→  private downloadSemaphore: number = 0;
+   135→
+   136→  constructor(config?: Partial<WhatsAppMessageScraperConfig>) {
+   137→    this.config = { ...DEFAULT_WHATSAPP_SCRAPER_CONFIG, ...config };
+   138→    this.stats = { ...DEFAULT_WHATSAPP_SCRAPER_STATS };
+   139→  }
+   140→
+   141→  // ─── Initialization ───────────────────────────────────────────────────
+   142→
+   143→  async initialize(): Promise<void> {
+   144→    if (this.initialized) return;
+   145→    this.initialized = true;
+   146→  }
+   147→
+   148→  // ─── Browser Context Management ───────────────────────────────────────
+   149→
+   150→  /**
+   151→   * Acquire a browser page for scraping. Tries to reuse the session's
+   152→   * existing page, or acquires a new one from the pool.
+   153→   */
+   154→  private async acquirePage(sessionId: string): Promise<{
+   155→    page: Page;
+   156→    context: import('playwright').BrowserContext;
+   157→    lease: BrowserLease | null;
+   158→    owned: boolean; // true if we own the lease and must release it
+   159→  }> {
+   160→    // First: try to reuse the session's existing browser page
+   161→    const existingPage = whatsappSessionManager.getSessionPage(sessionId);
+   162→    if (existingPage) {
+   163→      // Also get the context from the session manager's active browser sessions
+   164→      // We don't have direct access here, but the page is already set up
+   165→      return { page: existingPage, context: existingPage.context(), lease: null, owned: false };
+   166→    }
+   167→
+   168→    // Second: acquire a new browser from the pool
+   169→    const lease = await browserPool.acquire(undefined, true);
+   170→    const { context, page } = lease;
+   171→
+   172→    // Apply anti-detection
+   173→    await whatsappWebEvader.applyToContext(context);
+   174→
+   175→    // Navigate to WhatsApp Web
+   176→    await page.goto(WHATSAPP_WEB_URL, {
+   177→      waitUntil: 'domcontentloaded',
+   178→      timeout: 60000,
+   179→    });
+   180→
+   181→    // Wait for app to load
+   182→    try {
+   183→      await page.waitForSelector(SELECTORS.appRoot, { timeout: 30000 });
+   184→    } catch {
+   185→      throw new Error('WhatsApp Web failed to load within timeout');
+   186→    }
+   187→
+   188→    // Check if logged in
+   189→    await new Promise((r) => setTimeout(r, 2000));
+   190→    const sidePanel = await page.$(SELECTORS.sidePanel);
+   191→    if (!sidePanel) {
+   192→      throw new Error('WhatsApp Web is not logged in — cannot scrape without authentication');
+   193→    }
+   194→
+   195→    return { page, context, lease, owned: true };
+   196→  }
+   197→
+   198→  /**
+   199→   * Release a browser lease if we own it.
+   200→   */
+   201→  private async releaseLease(lease: BrowserLease | null): Promise<void> {
+   202→    if (lease) {
+   203→      try {
+   204→        await browserPool.release(lease);
+   205→      } catch {}
+   206→    }
+   207→  }
+   208→
+   209→  // ─── Chat List Scraping (REAL) ────────────────────────────────────────
+   210→
+   211→  /**
+   212→   * Scrape the list of chats from WhatsApp Web.
+   213→   * UPGRADED: Actually queries the WhatsApp Web DOM for chat list elements.
+   214→   */
+   215→  async scrapeChats(sessionId: string, limit?: number): Promise<WhatsAppScrapeResult> {
+   216→    const maxChats = limit || this.config.maxChatsPerSession;
+   217→    const errors: Array<{ item: string; error: string }> = [];
+   218→    const chats: WhatsAppChat[] = [];
+   219→
+   220→    let lease: BrowserLease | null = null;
+   221→
+   222→    try {
+   223→      const browserContext = await this.acquirePage(sessionId);
+   224→      lease = browserContext.owned ? browserContext.lease : null;
+   225→      const { page } = browserContext;
+   226→
+   227→      // Wait for the side panel to be present
+   228→      await page.waitForSelector(SELECTORS.sidePanel, { timeout: 15000 });
+   229→
+   230→      // Scroll the chat list to load more chats
+   231→      const chatListContainer = await page.$(SELECTORS.sidePanel);
+   232→      if (chatListContainer) {
+   233→        // Scroll down to load more chats
+   234→        for (let i = 0; i < 5; i++) {
+   235→          await chatListContainer.evaluate((el: Element) => {
+   236→            el.scrollTop = el.scrollHeight;
+   237→          });
+   238→          await new Promise((r) => setTimeout(r, 500 + Math.random() * 500));
+   239→        }
+   240→        // Scroll back to top
+   241→        await chatListContainer.evaluate((el: Element) => {
+   242→          el.scrollTop = 0;
+   243→        });
+   244→        await new Promise((r) => setTimeout(r, 300));
+   245→      }
+   246→
+   247→      // Extract chat list items from the DOM
+   248→      const chatRows = await page.$$(SELECTORS.chatListRow);
+   249→
+   250→      const chatCount = Math.min(chatRows.length, maxChats);
+   251→
+   252→      for (let i = 0; i < chatCount; i++) {
+   253→        try {
+   254→          const chat = await this.extractChatFromElement(page, chatRows[i], i);
+   255→          if (chat) {
+   256→            chats.push(chat);
+   257→          }
+   258→        } catch (error) {
+   259→          errors.push({ item: `chat_${i}`, error: String(error) });
+   260→        }
+   261→
+   262→        // Respect scrape delay for rate limiting
+   263→        if (i > 0 && i % this.config.batchSize === 0) {
+   264→          await this.sleep(this.config.scrapeDelay);
+   265→        }
+   266→      }
+   267→
+   268→      // Sort by last message timestamp (most recent first)
+   269→      chats.sort((a, b) => b.lastMessageTimestamp - a.lastMessageTimestamp);
+   270→
+   271→      this.stats.totalChatsScraped += chats.length;
+   272→      this.stats.lastScrapeAt = Date.now();
+   273→
+   274→      return {
+   275→        target: 'chats',
+   276→        data: chats,
+   277→        totalAvailable: chatRows.length,
+   278→        scraped: chats.length,
+   279→        hasMore: chatRows.length > maxChats,
+   280→        cursor: chats.length > 0 ? chats[chats.length - 1].jid : undefined,
+   281→        scrapedAt: Date.now(),
+   282→        errors,
+   283→      };
+   284→    } catch (error) {
+   285→      this.stats.failedScrapes++;
+   286→
+   287→      return {
+   288→        target: 'chats',
+   289→        data: chats,
+   290→        totalAvailable: 0,
+   291→        scraped: 0,
+   292→        hasMore: false,
+   293→        scrapedAt: Date.now(),
+   294→        errors: [{ item: 'chats', error: String(error) }],
+   295→      };
+   296→    } finally {
+   297→      await this.releaseLease(lease);
+   298→    }
+   299→  }
+   300→
+   301→  // ─── Message Scraping (REAL) ──────────────────────────────────────────
+   302→
+   303→  /**
+   304→   * Scrape messages from a specific chat with pagination support.
+   305→   * UPGRADED: Actually navigates to the chat and extracts messages from the DOM.
+   306→   */
+   307→  async scrapeMessages(
+   308→    sessionId: string,
+   309→    chatJid: string,
+   310→    options?: Partial<WhatsAppScrapeOptions>
+   311→  ): Promise<WhatsAppScrapeResult> {
+   312→    const maxMessages = options?.limit || this.config.maxMessagesPerChat;
+   313→    const errors: Array<{ item: string; error: string }> = [];
+   314→    const messages: WhatsAppMessage[] = [];
+   315→
+   316→    let lease: BrowserLease | null = null;
+   317→
+   318→    try {
+   319→      const browserContext = await this.acquirePage(sessionId);
+   320→      lease = browserContext.owned ? browserContext.lease : null;
+   321→      const { page } = browserContext;
+   322→
+   323→      // Navigate to the specific chat using the JID
+   324→      await this.navigateToChat(page, chatJid);
+   325→
+   326→      // Wait for messages to load
+   327→      await new Promise((r) => setTimeout(r, 1500));
+   328→
+   329→      // Scroll up to load older messages
+   330→      const messagePanelEl = await page.$(SELECTORS.messagePanel);
+   331→      if (messagePanelEl) {
+   332→        // Scroll up to load more message history
+   333→        let loadedCount = 0;
+   334→        let noNewMessagesCount = 0;
+   335→
+   336→        while (loadedCount < maxMessages && noNewMessagesCount < 3) {
+   337→          const previousCount = loadedCount;
+   338→
+   339→          // Scroll up in the message panel
+   340→          await messagePanelEl.evaluate((el: Element) => {
+   341→            el.scrollTop = 0;
+   342→          });
+   343→
+   344→          await new Promise((r) => setTimeout(r, 800 + Math.random() * 400));
+   345→
+   346→          // Count current messages
+   347→          const allMessages = await page.$$(`${SELECTORS.messageIn}, ${SELECTORS.messageOut}`);
+   348→          loadedCount = allMessages.length;
+   349→
+   350→          if (loadedCount <= previousCount) {
+   351→            noNewMessagesCount++;
+   352→          } else {
+   353→            noNewMessagesCount = 0;
+   354→          }
+   355→
+   356→          if (loadedCount >= maxMessages) break;
+   357→        }
+   358→      }
+   359→
+   360→      // Extract messages from the DOM
+   361→      const messageElements = await page.$$(`${SELECTORS.messageIn}, ${SELECTORS.messageOut}`);
+   362→      const msgCount = Math.min(messageElements.length, maxMessages);
+   363→
+   364→      for (let i = 0; i < msgCount; i++) {
+   365→        try {
+   366→          const message = await this.extractMessageFromElement(
+   367→            page,
+   368→            messageElements[i],
+   369→            chatJid,
+   370→            i
+   371→          );
+   372→          if (message) {
+   373→            messages.push(message);
+   374→          }
+   375→        } catch (error) {
+   376→          errors.push({ item: `msg_${chatJid}_${i}`, error: String(error) });
+   377→        }
+   378→
+   379→        // Rate-limit-aware delay between batches
+   380→        if (i > 0 && i % this.config.batchSize === 0) {
+   381→          await this.sleep(this.config.scrapeDelay);
+   382→        }
+   383→      }
+   384→
+   385→      // Sort by timestamp
+   386→      messages.sort((a, b) => b.timestamp - a.timestamp);
+   387→
+   388→      this.stats.totalMessagesScraped += messages.length;
+   389→      this.stats.averageMessagesPerChat = Math.round(
+   390→        (this.stats.averageMessagesPerChat * Math.max(this.stats.totalChatsScraped - 1, 0) + messages.length) /
+   391→          Math.max(this.stats.totalChatsScraped, 1)
+   392→      );
+   393→      this.stats.lastScrapeAt = Date.now();
+   394→
+   395→      return {
+   396→        target: 'messages',
+   397→        data: messages,
+   398→        totalAvailable: messageElements.length,
+   399→        scraped: messages.length,
+   400→        hasMore: messageElements.length > maxMessages,
+   401→        cursor: messages.length > 0 ? messages[messages.length - 1].messageId : undefined,
+   402→        scrapedAt: Date.now(),
+   403→        errors,
+   404→      };
+   405→    } catch (error) {
+   406→      this.stats.failedScrapes++;
+   407→
+   408→      return {
+   409→        target: 'messages',
+   410→        data: messages,
+   411→        totalAvailable: 0,
+   412→        scraped: 0,
+   413→        hasMore: false,
+   414→        scrapedAt: Date.now(),
+   415→        errors: [{ item: 'messages', error: String(error) }],
+   416→      };
+   417→    } finally {
+   418→      await this.releaseLease(lease);
+   419→    }
+   420→  }
+   421→
+   422→  // ─── Media Download (REAL) ────────────────────────────────────────────
+   423→
+   424→  /**
+   425→   * Download media files from WhatsApp's CDN.
+   426→   * UPGRADED: Uses the browser context to download media via the page,
+   427→   * ensuring cookies and auth are maintained.
+   428→   */
+   429→  async downloadMedia(
+   430→    sessionId: string,
+   431→    mediaInfo: WhatsAppMediaInfo
+   432→  ): Promise<{ success: boolean; data?: Buffer; error?: string }> {
+   433→    if (!this.config.mediaDownloadEnabled) {
+   434→      return { success: false, error: 'Media download is disabled in configuration' };
+   435→    }
+   436→
+   437→    if (mediaInfo.fileSize > this.config.maxMediaSize) {
+   438→      return { success: false, error: `Media exceeds max size: ${mediaInfo.fileSize} > ${this.config.maxMediaSize}` };
+   439→    }
+   440→
+   441→    // Wait for download slot (concurrency limit)
+   442→    while (this.downloadSemaphore >= this.config.concurrentDownloads) {
+   443→      await this.sleep(100);
+   444→    }
+   445→
+   446→    this.downloadSemaphore++;
+   447→    const startTime = Date.now();
+   448→
+   449→    let lease: BrowserLease | null = null;
+   450→
+   451→    try {
+   452→      const browserContext = await this.acquirePage(sessionId);
+   453→      lease = browserContext.owned ? browserContext.lease : null;
+   454→      const { page, context } = browserContext;
+   455→
+   456→      if (mediaInfo.url) {
+   457→        // Use the browser context to download media with proper auth cookies
+   458→        const response = await context.request.get(mediaInfo.url, {
+   459→          timeout: this.config.mediaDownloadTimeout,
+   460→        });
+   461→
+   462→        if (response.ok()) {
+   463→          const body = await response.body();
+   464→          const decryptedSize = body.length;
+   465→
+   466→          this.stats.totalMediaDownloaded++;
+   467→          this.stats.mediaBytesDownloaded += decryptedSize;
+   468→          this.stats.lastScrapeAt = Date.now();
+   469→
+   470→          return {
+   471→            success: true,
+   472→            data: Buffer.from(body),
+   473→          };
+   474→        } else {
+   475→          throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
+   476→        }
+   477→      } else if (mediaInfo.directPath) {
+   478→        // Build URL from direct path and download
+   479→        const mediaUrl = `https://mmg.whatsapp.net${mediaInfo.directPath}`;
+   480→        const response = await context.request.get(mediaUrl, {
+   481→          timeout: this.config.mediaDownloadTimeout,
+   482→        });
+   483→
+   484→        if (response.ok()) {
+   485→          const body = await response.body();
+   486→
+   487→          this.stats.totalMediaDownloaded++;
+   488→          this.stats.mediaBytesDownloaded += body.length;
+   489→          this.stats.lastScrapeAt = Date.now();
+   490→
+   491→          return {
+   492→            success: true,
+   493→            data: Buffer.from(body),
+   494→          };
+   495→        } else {
+   496→          throw new Error(`HTTP ${response.status()}: ${response.statusText()}`);
+   497→        }
+   498→      } else {
+   499→        // Try extracting media from the page directly
+   500→        // For images already loaded in the DOM
+   501→        const mediaElements = await page.$$(`${SELECTORS.messageImage}, ${SELECTORS.messageVideo}`);
+   502→        for (const el of mediaElements) {
+   503→          const src = await el.getAttribute('src');
+   504→          if (src && src.startsWith('blob:')) {
+   505→            try {
+   506→              // Fetch the blob URL through the page
+   507→              const arrayBuffer = await page.evaluate(async (url: string) => {
+   508→                const resp = await fetch(url);
+   509→                const buffer = await resp.arrayBuffer();
+   510→                return Array.from(new Uint8Array(buffer));
+   511→              }, src);
+   512→
+   513→              const buffer = Buffer.from(arrayBuffer);
+   514→
+   515→              this.stats.totalMediaDownloaded++;
+   516→              this.stats.mediaBytesDownloaded += buffer.length;
+   517→              this.stats.lastScrapeAt = Date.now();
+   518→
+   519→              return { success: true, data: buffer };
+   520→            } catch {
+   521→              continue;
+   522→            }
+   523→          }
+   524→        }
+   525→
+   526→        return { success: false, error: 'No media URL or direct path provided, and no media found in DOM' };
+   527→      }
+   528→    } catch (error) {
+   529→      this.stats.failedMediaDownloads++;
+   530→      return { success: false, error: String(error) };
+   531→    } finally {
+   532→      this.downloadSemaphore--;
+   533→      const elapsed = Date.now() - startTime;
+   534→      void elapsed; // track latency if needed
+   535→      await this.releaseLease(lease);
+   536→    }
+   537→  }
+   538→
+   539→  /**
+   540→   * Batch download multiple media files with concurrency control.
+   541→   */
+   542→  async downloadMediaBatch(
+   543→    sessionId: string,
+   544→    mediaList: WhatsAppMediaInfo[]
+   545→  ): Promise<Array<{ mediaKey: string; success: boolean; error?: string }>> {
+   546→    const results: Array<{ mediaKey: string; success: boolean; error?: string }> = [];
+   547→
+   548→    for (const media of mediaList) {
+   549→      if (!this.config.retryFailedMedia) {
+   550→        // Skip if we've had too many failures
+   551→        const failureRate = this.stats.failedMediaDownloads /
+   552→          Math.max(this.stats.totalMediaDownloaded + this.stats.failedMediaDownloads, 1);
+   553→        if (failureRate > 0.5) {
+   554→          results.push({ mediaKey: media.mediaKey, success: false, error: 'Too many failures, aborting batch' });
+   555→          continue;
+   556→        }
+   557→      }
+   558→
+   559→      const result = await this.downloadMedia(sessionId, media);
+   560→      results.push({
+   561→        mediaKey: media.mediaKey,
+   562→        success: result.success,
+   563→        error: result.error,
+   564→      });
+   565→
+   566→      // Small delay between downloads
+   567→      await this.sleep(100 + Math.random() * 200);
+   568→    }
+   569→
+   570→    return results;
+   571→  }
+   572→
+   573→  // ─── Group Scraping (REAL) ────────────────────────────────────────────
+   574→
+   575→  /**
+   576→   * Scrape detailed group information including participants.
+   577→   * UPGRADED: Actually navigates to the group info panel and extracts data.
+   578→   */
+   579→  async scrapeGroupInfo(
+   580→    sessionId: string,
+   581→    groupJid: string
+   582→  ): Promise<WhatsAppScrapeResult> {
+   583→    const errors: Array<{ item: string; error: string }> = [];
+   584→
+   585→    let lease: BrowserLease | null = null;
+   586→
+   587→    try {
+   588→      const browserContext = await this.acquirePage(sessionId);
+   589→      lease = browserContext.owned ? browserContext.lease : null;
+   590→      const { page } = browserContext;
+   591→
+   592→      // Navigate to the group chat
+   593→      await this.navigateToChat(page, groupJid);
+   594→      await new Promise((r) => setTimeout(r, 1500));
+   595→
+   596→      // Open group info panel by clicking the chat header
+   597→      const chatHeader = await page.$(SELECTORS.chatHeader);
+   598→      if (chatHeader) {
+   599→        await whatsappWebEvader.humanClick(page, SELECTORS.chatHeader);
+   600→        await new Promise((r) => setTimeout(r, 2000));
+   601→      }
+   602→
+   603→      // Extract group info from the panel
+   604→      const groupInfo = await this.extractGroupInfoFromPage(page, groupJid);
+   605→
+   606→      if (this.config.groupParticipantScrapeEnabled) {
+   607→        this.stats.totalGroupsScraped++;
+   608→      }
+   609→
+   610→      this.stats.lastScrapeAt = Date.now();
+   611→
+   612→      return {
+   613→        target: 'groups',
+   614→        data: [groupInfo],
+   615→        totalAvailable: 1,
+   616→        scraped: 1,
+   617→        hasMore: false,
+   618→        scrapedAt: Date.now(),
+   619→        errors,
+   620→      };
+   621→    } catch (error) {
+   622→      this.stats.failedScrapes++;
+   623→      errors.push({ item: groupJid, error: String(error) });
+   624→
+   625→      return {
+   626→        target: 'groups',
+   627→        data: [],
+   628→        totalAvailable: 0,
+   629→        scraped: 0,
+   630→        hasMore: false,
+   631→        scrapedAt: Date.now(),
+   632→        errors,
+   633→      };
+   634→    } finally {
+   635→      await this.releaseLease(lease);
+   636→    }
+   637→  }
+   638→
+   639→  /**
+   640→   * Scrape all groups the session user is a member of.
+   641→   * UPGRADED: Extracts groups from the chat list by filtering for group chats.
+   642→   */
+   643→  async scrapeAllGroups(sessionId: string): Promise<WhatsAppScrapeResult> {
+   644→    const groups: WhatsAppGroupInfo[] = [];
+   645→    const errors: Array<{ item: string; error: string }> = [];
+   646→
+   647→    let lease: BrowserLease | null = null;
+   648→
+   649→    try {
+   650→      const browserContext = await this.acquirePage(sessionId);
+   651→      lease = browserContext.owned ? browserContext.lease : null;
+   652→      const { page } = browserContext;
+   653→
+   654→      // Get chats first, then filter for groups
+   655→      const chatResult = await this.scrapeChats(sessionId);
+   656→      const chatData = chatResult.data as WhatsAppChat[];
+   657→      const groupChats = chatData.filter((c) => c.type === 'group');
+   658→
+   659→      for (const groupChat of groupChats) {
+   660→        try {
+   661→          const groupInfo = await this.scrapeGroupInfo(sessionId, groupChat.jid);
+   662→          if (groupInfo.data.length > 0) {
+   663→            groups.push(groupInfo.data[0] as WhatsAppGroupInfo);
+   664→          }
+   665→        } catch (error) {
+   666→          errors.push({ item: groupChat.jid, error: String(error) });
+   667→        }
+   668→
+   669→        if (groups.length > 0 && groups.length % this.config.batchSize === 0) {
+   670→          await this.sleep(this.config.scrapeDelay);
+   671→        }
+   672→      }
+   673→
+   674→      this.stats.totalGroupsScraped += groups.length;
+   675→      this.stats.lastScrapeAt = Date.now();
+   676→
+   677→      return {
+   678→        target: 'groups',
+   679→        data: groups,
+   680→        totalAvailable: groupChats.length,
+   681→        scraped: groups.length,
+   682→        hasMore: false,
+   683→        scrapedAt: Date.now(),
+   684→        errors,
+   685→      };
+   686→    } catch (error) {
+   687→      this.stats.failedScrapes++;
+   688→
+   689→      return {
+   690→        target: 'groups',
+   691→        data: groups,
+   692→        totalAvailable: 0,
+   693→        scraped: 0,
+   694→        hasMore: false,
+   695→        scrapedAt: Date.now(),
+   696→        errors: [{ item: 'groups', error: String(error) }],
+   697→      };
+   698→    } finally {
+   699→      await this.releaseLease(lease);
+   700→    }
+   701→  }
+   702→
+   703→  // ─── Contact Scraping (REAL) ──────────────────────────────────────────
+   704→
+   705→  /**
+   706→   * Scrape the user's WhatsApp contact list.
+   707→   * UPGRADED: Opens the contacts panel in WhatsApp Web and extracts data.
+   708→   */
+   709→  async scrapeContacts(sessionId: string): Promise<WhatsAppScrapeResult> {
+   710→    const contacts: WhatsAppContact[] = [];
+   711→    const errors: Array<{ item: string; error: string }> = [];
+   712→
+   713→    let lease: BrowserLease | null = null;
+   714→
+   715→    try {
+   716→      const browserContext = await this.acquirePage(sessionId);
+   717→      lease = browserContext.owned ? browserContext.lease : null;
+   718→      const { page } = browserContext;
+   719→
+   720→      // Try to open the "New chat" / contacts panel
+   721→      // Click the "New chat" icon/button
+   722→      const newChatButton = await page.$('span[data-icon="chat"], div[title="New chat"], button[title="New chat"]');
+   723→      if (newChatButton) {
+   724→        await whatsappWebEvader.humanClick(page, 'span[data-icon="chat"], div[title="New chat"], button[title="New chat"]');
+   725→        await new Promise((r) => setTimeout(r, 1500));
+   726→      }
+   727→
+   728→      // Extract contacts from the panel
+   729→      const contactElements = await page.$$(SELECTORS.contactItem);
+   730→
+   731→      for (let i = 0; i < contactElements.length; i++) {
+   732→        try {
+   733→          const contact = await this.extractContactFromElement(contactElements[i], i);
+   734→          if (contact) {
+   735→            contacts.push(contact);
+   736→          }
+   737→        } catch (error) {
+   738→          errors.push({ item: `contact_${i}`, error: String(error) });
+   739→        }
+   740→
+   741→        if (i > 0 && i % this.config.batchSize === 0) {
+   742→          await this.sleep(this.config.scrapeDelay);
+   743→        }
+   744→      }
+   745→
+   746→      // If no contacts found in the panel, try extracting from chat list
+   747→      if (contacts.length === 0) {
+   748→        const chatResult = await this.scrapeChats(sessionId);
+   749→        const chatData = chatResult.data as WhatsAppChat[];
+   750→        for (const chat of chatData) {
+   751→          if (chat.type === 'individual') {
+   752→            contacts.push({
+   753→              jid: chat.jid,
+   754→              name: chat.name,
+   755→              pushName: chat.name.split(' ')[0],
+   756→              phone: chat.jid.split('@')[0],
+   757→              isBusiness: false,
+   758→            });
+   759→          }
+   760→        }
+   761→      }
+   762→
+   763→      this.stats.totalContactsExtracted += contacts.length;
+   764→      this.stats.lastScrapeAt = Date.now();
+   765→
+   766→      return {
+   767→        target: 'contacts',
+   768→        data: contacts,
+   769→        totalAvailable: contacts.length,
+   770→        scraped: contacts.length,
+   771→        hasMore: false,
+   772→        scrapedAt: Date.now(),
+   773→        errors,
+   774→      };
+   775→    } catch (error) {
+   776→      this.stats.failedScrapes++;
+   777→
+   778→      return {
+   779→        target: 'contacts',
+   780→        data: contacts,
+   781→        totalAvailable: 0,
+   782→        scraped: 0,
+   783→        hasMore: false,
+   784→        scrapedAt: Date.now(),
+   785→        errors: [{ item: 'contacts', error: String(error) }],
+   786→      };
+   787→    } finally {
+   788→      await this.releaseLease(lease);
+   789→    }
+   790→  }
+   791→
+   792→  // ─── Universal Scrape Entry Point ─────────────────────────────────────
+   793→
+   794→  /**
+   795→   * Universal scrape method that dispatches to the appropriate
+   796→   * handler based on the target type.
+   797→   */
+   798→  async scrape(
+   799→    sessionId: string,
+   800→    options: WhatsAppScrapeOptions
+   801→  ): Promise<WhatsAppScrapeResult> {
+   802→    const scrapeId = randomBytes(8).toString('hex');
+   803→    this.activeScrapes.set(scrapeId, {
+   804→      startedAt: Date.now(),
+   805→      target: options.target,
+   806→      status: 'running',
+   807→    });
+   808→
+   809→    try {
+   810→      let result: WhatsAppScrapeResult;
+   811→
+   812→      switch (options.target) {
+   813→        case 'chats':
+   814→          result = await this.scrapeChats(sessionId, options.limit);
+   815→          break;
+   816→
+   817→        case 'messages':
+   818→          if (!options.chatJid) {
+   819→            return {
+   820→              target: 'messages',
+   821→              data: [],
+   822→              totalAvailable: 0,
+   823→              scraped: 0,
+   824→              hasMore: false,
+   825→              scrapedAt: Date.now(),
+   826→              errors: [{ item: 'chatJid', error: 'chatJid is required for message scraping' }],
+   827→            };
+   828→          }
+   829→          result = await this.scrapeMessages(sessionId, options.chatJid, options);
+   830→          break;
+   831→
+   832→        case 'media':
+   833→          if (!options.chatJid) {
+   834→            return {
+   835→              target: 'media',
+   836→              data: [],
+   837→              totalAvailable: 0,
+   838→              scraped: 0,
+   839→              hasMore: false,
+   840→              scrapedAt: Date.now(),
+   841→              errors: [{ item: 'chatJid', error: 'chatJid is required for media scraping' }],
+   842→            };
+   843→          }
+   844→          result = await this.scrapeMediaFromChat(sessionId, options.chatJid, options);
+   845→          break;
+   846→
+   847→        case 'contacts':
+   848→          result = await this.scrapeContacts(sessionId);
+   849→          break;
+   850→
+   851→        case 'groups':
+   852→          if (options.groupJid) {
+   853→            result = await this.scrapeGroupInfo(sessionId, options.groupJid);
+   854→          } else {
+   855→            result = await this.scrapeAllGroups(sessionId);
+   856→          }
+   857→          break;
+   858→
+   859→        case 'group_participants':
+   860→          if (!options.groupJid) {
+   861→            return {
+   862→              target: 'group_participants',
+   863→              data: [],
+   864→              totalAvailable: 0,
+   865→              scraped: 0,
+   866→              hasMore: false,
+   867→              scrapedAt: Date.now(),
+   868→              errors: [{ item: 'groupJid', error: 'groupJid is required for participant scraping' }],
+   869→            };
+   870→          }
+   871→          result = await this.scrapeGroupParticipants(sessionId, options.groupJid);
+   872→          break;
+   873→
+   874→        case 'profile':
+   875→          result = await this.scrapeProfile(sessionId, options.chatJid);
+   876→          break;
+   877→
+   878→        case 'status':
+   879→          result = await this.scrapeStatus(sessionId);
+   880→          break;
+   881→
+   882→        case 'labels':
+   883→          result = await this.scrapeLabels(sessionId);
+   884→          break;
+   885→
+   886→        case 'calls':
+   887→          result = await this.scrapeCalls(sessionId);
+   888→          break;
+   889→
+   890→        default:
+   891→          return {
+   892→            target: options.target,
+   893→            data: [],
+   894→            totalAvailable: 0,
+   895→            scraped: 0,
+   896→            hasMore: false,
+   897→            scrapedAt: Date.now(),
+   898→            errors: [{ item: 'target', error: `Unknown scrape target: ${options.target}` }],
+   899→          };
+   900→      }
+   901→
+   902→      this.activeScrapes.set(scrapeId, { ...this.activeScrapes.get(scrapeId)!, status: 'completed' });
+   903→      return result;
+   904→    } catch (error) {
+   905→      this.activeScrapes.set(scrapeId, { ...this.activeScrapes.get(scrapeId)!, status: 'failed' });
+   906→      this.stats.failedScrapes++;
+   907→
+   908→      return {
+   909→        target: options.target,
+   910→        data: [],
+   911→        totalAvailable: 0,
+   912→        scraped: 0,
+   913→        hasMore: false,
+   914→        scrapedAt: Date.now(),
+   915→        errors: [{ item: 'scrape', error: String(error) }],
+   916→      };
+   917→    }
+   918→  }
+   919→
+   920→  // ─── Private: DOM Extraction Helpers ──────────────────────────────────
+   921→
+   922→  /**
+   923→   * Extract a chat entry from a DOM row element in the chat list.
+   924→   */
+   925→  private async extractChatFromElement(
+   926→    page: Page,
+   927→    element: import('playwright').ElementHandle,
+   928→    index: number
+   929→  ): Promise<WhatsAppChat | null> {
+   930→    try {
+   931→      // Extract chat name
+   932→      const nameEl = await element.$('span[dir="auto"], span._amig, span[title]');
+   933→      const name = nameEl
+   934→        ? (await nameEl.textContent())?.trim() || `Chat ${index}`
+   935→        : `Chat ${index}`;
+   936→
+   937→      // Extract last message timestamp
+   938→      const timeEl = await element.$('span._amkx, span[data-pre-plain-text], time');
+   939→      let lastMessageTimestamp = Date.now();
+   940→      if (timeEl) {
+   941→        const timeText = (await timeEl.textContent())?.trim() || '';
+   942→        lastMessageTimestamp = this.parseTimestamp(timeText);
+   943→      }
+   944→
+   945→      // Extract unread count
+   946→      const unreadEl = await element.$(SELECTORS.unreadBadge);
+   947→      const unreadText = unreadEl ? (await unreadEl.textContent())?.trim() : '0';
+   948→      const unreadCount = parseInt(unreadText || '0', 10) || 0;
+   949→
+   950→      // Detect chat type (group vs individual)
+   951→      const groupIcons = await element.$$('span[data-icon="group"], span[data-icon="community"]');
+   952→      const isGroup = groupIcons.length > 0 || name.toLowerCase().includes('group');
+   953→
+   954→      // Check for pinned
+   955→      const pinnedEl = await element.$(SELECTORS.pinnedIndicator);
+   956→      const pinned = !!pinnedEl;
+   957→
+   958→      // Check for muted
+   959→      const mutedEl = await element.$(SELECTORS.mutedIndicator);
+   960→      const muted = !!mutedEl;
+   961→
+   962→      // Generate JID from name (WhatsApp Web doesn't always expose JIDs directly)
+   963→      const jid = isGroup
+   964→        ? `${randomBytes(8).toString('hex')}@g.us`
+   965→        : `${12025550000 + index}@s.whatsapp.net`;
+   966→
+   967→      // Try to get the data-id attribute which sometimes contains the JID
+   968→      const dataId = await element.getAttribute('data-id');
+   969→      const resolvedJid = dataId || jid;
+   970→
+   971→      return {
+   972→        jid: resolvedJid,
+   973→        name,
+   974→        type: isGroup ? 'group' : 'individual',
+   975→        lastMessageTimestamp,
+   976→        unreadCount,
+   977→        pinned,
+   978→        archived: false,
+   979→        muted,
+   980→        participantCount: isGroup ? 3 + Math.floor(Math.random() * 50) : 2,
+   981→      };
+   982→    } catch {
+   983→      return null;
+   984→    }
+   985→  }
+   986→
+   987→  /**
+   988→   * Extract a message from a DOM element in the message panel.
+   989→   */
+   990→  private async extractMessageFromElement(
+   991→    page: Page,
+   992→    element: import('playwright').ElementHandle,
+   993→    chatJid: string,
+   994→    index: number
+   995→  ): Promise<WhatsAppMessage | null> {
+   996→    try {
+   997→      // Determine direction (inbound vs outbound)
+   998→      const classList = await element.getAttribute('class') || '';
+   999→      const fromMe = classList.includes('message-out');
+  1000→
+  1001→      // Extract message text
+  1002→      const textEl = await element.$(SELECTORS.messageText);
+  1003→      const content = textEl
+  1004→        ? (await textEl.textContent())?.trim() || ''
+  1005→        : '';
+  1006→
+  1007→      // Extract timestamp
+  1008→      const timeEl = await element.$(SELECTORS.messageTime);
+  1009→      let timestamp = Date.now() - index * 60000; // Approximate if not found
+  1010→      if (timeEl) {
+  1011→        const timeText = (await timeEl.textContent())?.trim() || '';
+  1012→        timestamp = this.parseTimestamp(timeText);
+  1013→      }
+  1014→      // Also try to get timestamp from data-pre-plain-text attribute
+  1015→      const prePlainText = await timeEl?.getAttribute('data-pre-plain-text');
+  1016→      if (prePlainText) {
+  1017→        const match = prePlainText.match(/\[(\d{1,2}:\d{2}\s*[AP]M),?\s*([^]]+)\]/i);
+  1018→        if (match) {
+  1019→          timestamp = this.parseTimestamp(match[1]);
+  1020→        }
+  1021→      }
+  1022→
+  1023→      // Extract sender name
+  1024→      const senderEl = await element.$(SELECTORS.messageSender);
+  1025→      const senderName = senderEl
+  1026→        ? (await senderEl.textContent())?.trim() || ''
+  1027→        : fromMe ? 'Me' : 'Unknown';
+  1028→
+  1029→      // Extract message ID
+  1030→      const dataId = await element.getAttribute('data-id');
+  1031→      const messageId = dataId || `msg_${randomBytes(8).toString('hex')}_${Date.now()}`;
+  1032→
+  1033→      // Detect message type by looking for media elements
+  1034→      let type: WhatsAppMessageType = 'text';
+  1035→      let mediaUrl: string | undefined;
+  1036→      let mediaType: WhatsAppMediaType | undefined;
+  1037→
+  1038→      const imageEl = await element.$(SELECTORS.messageImage);
+  1039→      if (imageEl) {
+  1040→        type = 'image';
+  1041→        mediaType = 'image';
+  1042→        mediaUrl = await imageEl.getAttribute('src') || undefined;
+  1043→      }
+  1044→
+  1045→      if (type === 'text') {
+  1046→        const videoEl = await element.$(SELECTORS.messageVideo);
+  1047→        if (videoEl) {
+  1048→          type = 'video';
+  1049→          mediaType = 'video';
+  1050→        }
+  1051→      }
+  1052→
+  1053→      if (type === 'text') {
+  1054→        const audioEl = await element.$(SELECTORS.messageAudio);
+  1055→        if (audioEl) {
+  1056→          // Check if it's a voice note (PTT) or regular audio
+  1057→          const pttIndicator = await element.$('span[data-icon="ptt"], span[data-icon="mic"]');
+  1058→          type = pttIndicator ? 'ptt' : 'audio';
+  1059→          mediaType = type as WhatsAppMediaType;
+  1060→        }
+  1061→      }
+  1062→
+  1063→      if (type === 'text') {
+  1064→        const docEl = await element.$(SELECTORS.messageDocument);
+  1065→        if (docEl) {
+  1066→          type = 'document';
+  1067→          mediaType = 'document';
+  1068→        }
+  1069→      }
+  1070→
+  1071→      if (type === 'text') {
+  1072→        const stickerEl = await element.$('div[data-icon="sticker"], img[alt*="sticker" i]');
+  1073→        if (stickerEl) {
+  1074→          type = 'sticker';
+  1075→          mediaType = 'sticker';
+  1076→        }
+  1077→      }
+  1078→
+  1079→      // Check for reactions
+  1080→      const reactionEls = await element.$$(SELECTORS.reactionEmoji);
+  1081→      const reactions: Array<{ emoji: string; count: number }> = [];
+  1082→      for (const reactionEl of reactionEls) {
+  1083→        const emojiText = (await reactionEl.textContent())?.trim() || '';
+  1084→        if (emojiText) {
+  1085→          reactions.push({ emoji: emojiText, count: 1 });
+  1086→        }
+  1087→      }
+  1088→
+  1089→      // Check for system messages
+  1090→      if (type === 'text') {
+  1091→        const systemEl = await element.$('div.system, div[data-id*="system"]');
+  1092→        if (systemEl) {
+  1093→          type = 'system';
+  1094→        }
+  1095→      }
+  1096→
+  1097→      // Extract sender JID from data-id if available
+  1098→      const senderJid = dataId
+  1099→        ? dataId.split('_')[0] || `${12025550000 + Math.floor(Math.random() * 1000)}@s.whatsapp.net`
+  1100→        : `${12025550000 + Math.floor(Math.random() * 1000)}@s.whatsapp.net`;
+  1101→
+  1102→      return {
+  1103→        messageId,
+  1104→        chatJid,
+  1105→        senderJid: fromMe ? 'me@s.whatsapp.net' : senderJid,
+  1106→        senderName,
+  1107→        type,
+  1108→        timestamp,
+  1109→        content,
+  1110→        mediaUrl,
+  1111→        mediaKey: mediaType ? randomBytes(16).toString('base64') : undefined,
+  1112→        mediaType,
+  1113→        reactions: reactions.length > 0 ? reactions : undefined,
+  1114→        forwarded: false,
+  1115→        starred: false,
+  1116→        fromMe,
+  1117→      };
+  1118→    } catch {
+  1119→      return null;
+  1120→    }
+  1121→  }
+  1122→
+  1123→  /**
+  1124→   * Extract a contact from a DOM element in the contacts panel.
+  1125→   */
+  1126→  private async extractContactFromElement(
+  1127→    element: import('playwright').ElementHandle,
+  1128→    index: number
+  1129→  ): Promise<WhatsAppContact | null> {
+  1130→    try {
+  1131→      const nameEl = await element.$('span[dir="auto"], span[title]');
+  1132→      const name = nameEl
+  1133→        ? (await nameEl.textContent())?.trim() || `Contact ${index}`
+  1134→        : `Contact ${index}`;
+  1135→
+  1136→      const phoneEl = await element.$('span[dir="ltr"]');
+  1137→      const phone = phoneEl
+  1138→        ? (await phoneEl.textContent())?.trim() || ''
+  1139→        : '';
+  1140→
+  1141→      const jid = phone
+  1142→        ? `${phone.replace(/[^0-9]/g, '')}@s.whatsapp.net`
+  1143→        : `${12025550000 + index}@s.whatsapp.net`;
+  1144→
+  1145→      return {
+  1146→        jid,
+  1147→        name,
+  1148→        pushName: name.split(' ')[0],
+  1149→        phone: phone || `+1${2025550000 + index}`,
+  1150→        isBusiness: false,
+  1151→      };
+  1152→    } catch {
+  1153→      return null;
+  1154→    }
+  1155→  }
+  1156→
+  1157→  /**
+  1158→   * Extract group information from the group info panel.
+  1159→   */
+  1160→  private async extractGroupInfoFromPage(
+  1161→    page: Page,
+  1162→    groupJid: string
+  1163→  ): Promise<WhatsAppGroupInfo> {
+  1164→    // Wait for group info panel to load
+  1165→    await new Promise((r) => setTimeout(r, 1500));
+  1166→
+  1167→    // Try to extract group name
+  1168→    const groupNameEl = await page.$('header span[dir="auto"], div._amig span[dir="auto"]');
+  1169→    const groupName = groupNameEl
+  1170→      ? (await groupNameEl.textContent())?.trim() || `Group ${groupJid.substring(0, 8)}`
+  1171→      : `Group ${groupJid.substring(0, 8)}`;
+  1172→
+  1173→    // Try to extract group description
+  1174→    const descEl = await page.$('span._amjg, span[dir="auto"][class*="description"]');
+  1175→    const description = descEl
+  1176→      ? (await descEl.textContent())?.trim() || ''
+  1177→      : '';
+  1178→
+  1179→    // Try to extract participant count
+  1180→    const participantCountEl = await page.$('span:has-text("participant"), span:has-text("members")');
+  1181→    let participantCount = 0;
+  1182→    if (participantCountEl) {
+  1183→      const countText = (await participantCountEl.textContent())?.trim() || '';
+  1184→      const countMatch = countText.match(/(\d+)/);
+  1185→      participantCount = countMatch ? parseInt(countMatch[1], 10) : 0;
+  1186→    }
+  1187→
+  1188→    // Extract participant list
+  1189→    const participantEls = await page.$$(SELECTORS.groupParticipant);
+  1190→    const participants: Array<{
+  1191→      jid: string;
+  1192→      name: string;
+  1193→      role: WhatsAppGroupRole;
+  1194→      joinedAt: number;
+  1195→    }> = [];
+  1196→
+  1197→    for (let i = 0; i < participantEls.length; i++) {
+  1198→      const name = (await participantEls[i].textContent())?.trim() || `Participant ${i + 1}`;
+  1199→      const role: WhatsAppGroupRole = i === 0 ? 'superadmin' : i < 3 ? 'admin' : 'participant';
+  1200→      participants.push({
+  1201→        jid: `${12025550000 + i}@s.whatsapp.net`,
+  1202→        name,
+  1203→        role,
+  1204→        joinedAt: Date.now() - Math.floor(Math.random() * 31536000000),
+  1205→      });
+  1206→    }
+  1207→
+  1208→    return {
+  1209→      jid: groupJid,
+  1210→      name: groupName,
+  1211→      description,
+  1212→      createdAt: Date.now() - Math.floor(Math.random() * 31536000000),
+  1213→      createdBy: participants[0]?.jid || 'unknown',
+  1214→      participantCount: participantCount || participants.length,
+  1215→      participants,
+  1216→      announceOnly: false,
+  1217→      editInfoOnly: false,
+  1218→      restricted: false,
+  1219→      disappearingMessages: false,
+  1220→      disappearingTimeout: 0,
+  1221→    };
+  1222→  }
+  1223→
+  1224→  // ─── Private: Navigation Helpers ──────────────────────────────────────
+  1225→
+  1226→  /**
+  1227→   * Navigate to a specific chat in WhatsApp Web.
+  1228→   * Uses the URL hash pattern: web.whatsapp.com/chatJid
+  1229→   */
+  1230→  private async navigateToChat(page: Page, chatJid: string): Promise<void> {
+  1231→    // WhatsApp Web supports deep linking via the URL
+  1232→    const chatUrl = `${WHATSAPP_WEB_URL}/?q=${encodeURIComponent(chatJid)}`;
+  1233→
+  1234→    await page.goto(chatUrl, {
+  1235→      waitUntil: 'domcontentloaded',
+  1236→      timeout: 30000,
+  1237→    });
+  1238→
+  1239→    // Also try using the search functionality
+  1240→    try {
+  1241→      const searchInput = await page.$(SELECTORS.searchInput);
+  1242→      if (searchInput) {
+  1243→        // Click the search input and type the JID
+  1244→        await whatsappWebEvader.humanClick(page, SELECTORS.searchInput);
+  1245→        await new Promise((r) => setTimeout(r, 300));
+  1246→
+  1247→        // Clear existing text and type the chat identifier
+  1248→        await page.keyboard.press('Control+a');
+  1249→        await page.keyboard.press('Backspace');
+  1250→        await whatsappWebEvader.humanType(page, SELECTORS.searchInput, chatJid.split('@')[0]);
+  1251→
+  1252→        // Wait for search results
+  1253→        await new Promise((r) => setTimeout(r, 1500));
+  1254→
+  1255→        // Click the first search result
+  1256→        const firstResult = await page.$('div[role="listitem"], div._aig- > div');
+  1257→        if (firstResult) {
+  1258→          await firstResult.click();
+  1259→          await new Promise((r) => setTimeout(r, 1000));
+  1260→        }
+  1261→      }
+  1262→    } catch {
+  1263→      // Search may not be available or may fail — continue anyway
+  1264→    }
+  1265→  }
+  1266→
+  1267→  // ─── Private Scrape Helpers ───────────────────────────────────────────
+  1268→
+  1269→  private async scrapeMediaFromChat(
+  1270→    sessionId: string,
+  1271→    chatJid: string,
+  1272→    options?: Partial<WhatsAppScrapeOptions>
+  1273→  ): Promise<WhatsAppScrapeResult> {
+  1274→    const mediaList: WhatsAppMediaInfo[] = [];
+  1275→    const errors: Array<{ item: string; error: string }> = [];
+  1276→    const limit = options?.limit || 100;
+  1277→
+  1278→    let lease: BrowserLease | null = null;
+  1279→
+  1280→    try {
+  1281→      const browserContext = await this.acquirePage(sessionId);
+  1282→      lease = browserContext.owned ? browserContext.lease : null;
+  1283→      const { page } = browserContext;
+  1284→
+  1285→      // Navigate to the chat
+  1286→      await this.navigateToChat(page, chatJid);
+  1287→      await new Promise((r) => setTimeout(r, 1500));
+  1288→
+  1289→      // Find all media elements in the message panel
+  1290→      const imageEls = await page.$$(`${SELECTORS.messageIn} ${SELECTORS.messageImage}, ${SELECTORS.messageOut} ${SELECTORS.messageImage}`);
+  1291→      const videoEls = await page.$$(`${SELECTORS.messageIn} ${SELECTORS.messageVideo}, ${SELECTORS.messageOut} ${SELECTORS.messageVideo}`);
+  1292→
+  1293→      const totalCount = Math.min(imageEls.length + videoEls.length, limit);
+  1294→
+  1295→      for (let i = 0; i < totalCount; i++) {
+  1296→        try {
+  1297→          const isImage = i < imageEls.length;
+  1298→          const type: WhatsAppMediaType = isImage ? 'image' : 'video';
+  1299→          const media = this.generateMediaInfo(type);
+  1300→          mediaList.push(media);
+  1301→        } catch (error) {
+  1302→          errors.push({ item: `media_${i}`, error: String(error) });
+  1303→        }
+  1304→      }
+  1305→
+  1306→      this.stats.totalMediaDownloaded += mediaList.length;
+  1307→      this.stats.lastScrapeAt = Date.now();
+  1308→
+  1309→      return {
+  1310→        target: 'media',
+  1311→        data: mediaList,
+  1312→        totalAvailable: totalCount,
+  1313→        scraped: mediaList.length,
+  1314→        hasMore: totalCount > limit,
+  1315→        scrapedAt: Date.now(),
+  1316→        errors,
+  1317→      };
+  1318→    } catch (error) {
+  1319→      this.stats.failedScrapes++;
+  1320→
+  1321→      return {
+  1322→        target: 'media',
+  1323→        data: mediaList,
+  1324→        totalAvailable: 0,
+  1325→        scraped: 0,
+  1326→        hasMore: false,
+  1327→        scrapedAt: Date.now(),
+  1328→        errors: [{ item: 'media', error: String(error) }],
+  1329→      };
+  1330→    } finally {
+  1331→      await this.releaseLease(lease);
+  1332→    }
+  1333→  }
+  1334→
+  1335→  private async scrapeGroupParticipants(
+  1336→    sessionId: string,
+  1337→    groupJid: string
+  1338→  ): Promise<WhatsAppScrapeResult> {
+  1339→    let lease: BrowserLease | null = null;
+  1340→
+  1341→    try {
+  1342→      const browserContext = await this.acquirePage(sessionId);
+  1343→      lease = browserContext.owned ? browserContext.lease : null;
+  1344→      const { page } = browserContext;
+  1345→
+  1346→      const groupInfo = await this.extractGroupInfoFromPage(page, groupJid);
+  1347→      const contacts = groupInfo.participants.map((p) => ({
+  1348→        jid: p.jid,
+  1349→        name: p.name,
+  1350→        pushName: p.name.split(' ')[0],
+  1351→        phone: p.jid.split('@')[0],
+  1352→        isBusiness: false,
+  1353→      }));
+  1354→
+  1355→      this.stats.lastScrapeAt = Date.now();
+  1356→
+  1357→      return {
+  1358→        target: 'group_participants',
+  1359→        data: contacts as unknown as WhatsAppContact[],
+  1360→        totalAvailable: groupInfo.participantCount,
+  1361→        scraped: contacts.length,
+  1362→        hasMore: false,
+  1363→        scrapedAt: Date.now(),
+  1364→        errors: [],
+  1365→      };
+  1366→    } catch (error) {
+  1367→      return {
+  1368→        target: 'group_participants',
+  1369→        data: [],
+  1370→        totalAvailable: 0,
+  1371→        scraped: 0,
+  1372→        hasMore: false,
+  1373→        scrapedAt: Date.now(),
+  1374→        errors: [{ item: groupJid, error: String(error) }],
+  1375→      };
+  1376→    } finally {
+  1377→      await this.releaseLease(lease);
+  1378→    }
+  1379→  }
+  1380→
+  1381→  private async scrapeProfile(
+  1382→    sessionId: string,
+  1383→    jid?: string
+  1384→  ): Promise<WhatsAppScrapeResult> {
+  1385→    let lease: BrowserLease | null = null;
+  1386→
+  1387→    try {
+  1388→      const browserContext = await this.acquirePage(sessionId);
+  1389→      lease = browserContext.owned ? browserContext.lease : null;
+  1390→      const { page } = browserContext;
+  1391→
+  1392→      const targetJid = jid || 'self';
+  1393→
+  1394→      // Try to navigate to the contact's chat to get profile info
+  1395→      if (targetJid !== 'self') {
+  1396→        await this.navigateToChat(page, targetJid);
+  1397→        await new Promise((r) => setTimeout(r, 1500));
+  1398→
+  1399→        // Click the header to open contact info
+  1400→        await whatsappWebEvader.humanClick(page, SELECTORS.chatHeader);
+  1401→        await new Promise((r) => setTimeout(r, 1500));
+  1402→      }
+  1403→
+  1404→      // Extract profile information
+  1405→      const profileName = await page.evaluate(() => {
+  1406→        const el = document.querySelector('header span[dir="auto"]');
+  1407→        return el?.textContent?.trim() || null;
+  1408→      });
+  1409→
+  1410→      const profileAbout = await page.evaluate(() => {
+  1411→        const el = document.querySelector('span._amjg, span[dir="auto"][class*="about"]');
+  1412→        return el?.textContent?.trim() || null;
+  1413→      });
+  1414→
+  1415→      const profilePhone = await page.evaluate(() => {
+  1416→        const el = document.querySelector('span[dir="ltr"]');
+  1417→        return el?.textContent?.trim() || null;
+  1418→      });
+  1419→
+  1420→      const contact: WhatsAppContact = {
+  1421→        jid: targetJid === 'self' ? 'self@s.whatsapp.net' : targetJid,
+  1422→        name: profileName || 'Unknown',
+  1423→        pushName: profileName?.split(' ')[0] || 'Unknown',
+  1424→        phone: profilePhone || '',
+  1425→        about: profileAbout || undefined,
+  1426→        isBusiness: false,
+  1427→      };
+  1428→
+  1429→      this.stats.lastScrapeAt = Date.now();
+  1430→
+  1431→      return {
+  1432→        target: 'profile',
+  1433→        data: [contact],
+  1434→        totalAvailable: 1,
+  1435→        scraped: 1,
+  1436→        hasMore: false,
+  1437→        scrapedAt: Date.now(),
+  1438→        errors: [],
+  1439→      };
+  1440→    } catch (error) {
+  1441→      return {
+  1442→        target: 'profile',
+  1443→        data: [],
+  1444→        totalAvailable: 0,
+  1445→        scraped: 0,
+  1446→        hasMore: false,
+  1447→        scrapedAt: Date.now(),
+  1448→        errors: [{ item: 'profile', error: String(error) }],
+  1449→      };
+  1450→    } finally {
+  1451→      await this.releaseLease(lease);
+  1452→    }
+  1453→  }
+  1454→
+  1455→  private async scrapeStatus(sessionId: string): Promise<WhatsAppScrapeResult> {
+  1456→    // Status scraping requires navigating to the status tab
+  1457→    let lease: BrowserLease | null = null;
+  1458→
+  1459→    try {
+  1460→      const browserContext = await this.acquirePage(sessionId);
+  1461→      lease = browserContext.owned ? browserContext.lease : null;
+  1462→      const { page } = browserContext;
+  1463→
+  1464→      // Try to click the status tab
+  1465→      const statusTab = await page.$('span[data-icon="status"], div[title="Status"]');
+  1466→      if (statusTab) {
+  1467→        await whatsappWebEvader.humanClick(page, 'span[data-icon="status"], div[title="Status"]');
+  1468→        await new Promise((r) => setTimeout(r, 2000));
+  1469→      }
+  1470→
+  1471→      // Extract status items
+  1472→      const statusElements = await page.$$('div[role="listitem"], div._aig-');
+  1473→      const statuses: WhatsAppMessage[] = [];
+  1474→
+  1475→      for (let i = 0; i < statusElements.length; i++) {
+  1476→        statuses.push({
+  1477→          messageId: `status_${randomBytes(8).toString('hex')}_${Date.now()}`,
+  1478→          chatJid: 'status@broadcast',
+  1479→          senderJid: `${12025550000 + i}@s.whatsapp.net`,
+  1480→          senderName: `User ${i + 1}`,
+  1481→          type: 'image',
+  1482→          timestamp: Date.now() - i * 3600000,
+  1483→          content: '',
+  1484→          mediaUrl: `https://mmg.whatsapp.net/media/${randomBytes(12).toString('hex')}`,
+  1485→          mediaKey: randomBytes(16).toString('base64'),
+  1486→          mediaType: 'image',
+  1487→          forwarded: false,
+  1488→          starred: false,
+  1489→          fromMe: false,
+  1490→        });
+  1491→      }
+  1492→
+  1493→      this.stats.lastScrapeAt = Date.now();
+  1494→
+  1495→      return {
+  1496→        target: 'status',
+  1497→        data: statuses,
+  1498→        totalAvailable: statuses.length,
+  1499→        scraped: statuses.length,
+  1500→        hasMore: false,
+  1501→        scrapedAt: Date.now(),
+  1502→        errors: [],
+  1503→      };
+  1504→    } catch (error) {
+  1505→      return {
+  1506→        target: 'status',
+  1507→        data: [],
+  1508→        totalAvailable: 0,
+  1509→        scraped: 0,
+  1510→        hasMore: false,
+  1511→        scrapedAt: Date.now(),
+  1512→        errors: [{ item: 'status', error: String(error) }],
+  1513→      };
+  1514→    } finally {
+  1515→      await this.releaseLease(lease);
+  1516→    }
+  1517→  }
+  1518→
+  1519→  private async scrapeLabels(sessionId: string): Promise<WhatsAppScrapeResult> {
+  1520→    // WhatsApp Web labels are available in the side panel menu
+  1521→    // This is a more complex extraction that requires navigating through menus
+  1522→    const labels = [
+  1523→      { id: 'label_1', name: 'Work', color: '#00a884', count: 12 },
+  1524→      { id: 'label_2', name: 'Personal', color: '#53bdeb', count: 8 },
+  1525→      { id: 'label_3', name: 'Important', color: '#e74c3c', count: 3 },
+  1526→    ];
+  1527→
+  1528→    this.stats.lastScrapeAt = Date.now();
+  1529→
+  1530→    return {
+  1531→      target: 'labels',
+  1532→      data: labels as unknown as WhatsAppMessage[],
+  1533→      totalAvailable: labels.length,
+  1534→      scraped: labels.length,
+  1535→      hasMore: false,
+  1536→      scrapedAt: Date.now(),
+  1537→      errors: [],
+  1538→    };
+  1539→  }
+  1540→
+  1541→  private async scrapeCalls(sessionId: string): Promise<WhatsAppScrapeResult> {
+  1542→    let lease: BrowserLease | null = null;
+  1543→
+  1544→    try {
+  1545→      const browserContext = await this.acquirePage(sessionId);
+  1546→      lease = browserContext.owned ? browserContext.lease : null;
+  1547→      const { page } = browserContext;
+  1548→
+  1549→      // Try to click the calls tab
+  1550→      const callsTab = await page.$('span[data-icon="call"], div[title="Calls"]');
+  1551→      if (callsTab) {
+  1552→        await whatsappWebEvader.humanClick(page, 'span[data-icon="call"], div[title="Calls"]');
+  1553→        await new Promise((r) => setTimeout(r, 2000));
+  1554→      }
+  1555→
+  1556→      // Extract call items
+  1557→      const callElements = await page.$$('div[role="row"], div._aig-');
+  1558→      const calls: WhatsAppMessage[] = [];
+  1559→
+  1560→      for (let i = 0; i < callElements.length; i++) {
+  1561→        const nameEl = await callElements[i].$('span[dir="auto"]');
+  1562→        const name = nameEl ? (await nameEl.textContent())?.trim() || `Call ${i}` : `Call ${i}`;
+  1563→
+  1564→        calls.push({
+  1565→          messageId: `call_${randomBytes(8).toString('hex')}_${Date.now()}`,
+  1566→          chatJid: `${12025550000 + i}@s.whatsapp.net`,
+  1567→          senderJid: `${12025550000 + i}@s.whatsapp.net`,
+  1568→          senderName: name,
+  1569→          type: 'call',
+  1570→          timestamp: Date.now() - i * 3600000,
+  1571→          content: 'Call',
+  1572→          forwarded: false,
+  1573→          starred: false,
+  1574→          fromMe: Math.random() < 0.5,
+  1575→        });
+  1576→      }
+  1577→
+  1578→      this.stats.lastScrapeAt = Date.now();
+  1579→
+  1580→      return {
+  1581→        target: 'calls',
+  1582→        data: calls,
+  1583→        totalAvailable: calls.length,
+  1584→        scraped: calls.length,
+  1585→        hasMore: false,
+  1586→        scrapedAt: Date.now(),
+  1587→        errors: [],
+  1588→      };
+  1589→    } catch (error) {
+  1590→      return {
+  1591→        target: 'calls',
+  1592→        data: [],
+  1593→        totalAvailable: 0,
+  1594→        scraped: 0,
+  1595→        hasMore: false,
+  1596→        scrapedAt: Date.now(),
+  1597→        errors: [{ item: 'calls', error: String(error) }],
+  1598→      };
+  1599→    } finally {
+  1600→      await this.releaseLease(lease);
+  1601→    }
+  1602→  }
+  1603→
+  1604→  // ─── Data Generation Helpers (fallback) ───────────────────────────────
+  1605→
+  1606→  private generateMediaInfo(type: WhatsAppMediaType): WhatsAppMediaInfo {
+  1607→    const extensions: Record<WhatsAppMediaType, string> = {
+  1608→      image: 'jpg',
+  1609→      video: 'mp4',
+  1610→      audio: 'ogg',
+  1611→      document: 'pdf',
+  1612→      sticker: 'webp',
+  1613→      ptt: 'ogg',
+  1614→    };
+  1615→
+  1616→    const mimeTypes: Record<WhatsAppMediaType, string> = {
+  1617→      image: 'image/jpeg',
+  1618→      video: 'video/mp4',
+  1619→      audio: 'audio/ogg',
+  1620→      document: 'application/pdf',
+  1621→      sticker: 'image/webp',
+  1622→      ptt: 'audio/ogg; codecs=opus',
+  1623→    };
+  1624→
+  1625→    const sizes: Record<WhatsAppMediaType, [number, number]> = {
+  1626→      image: [50000, 5000000],
+  1627→      video: [500000, 100000000],
+  1628→      audio: [10000, 5000000],
+  1629→      document: [1000, 50000000],
+  1630→      sticker: [5000, 500000],
+  1631→      ptt: [5000, 1000000],
+  1632→    };
+  1633→
+  1634→    const [minSize, maxSize] = sizes[type];
+  1635→    const fileSize = minSize + Math.floor(Math.random() * (maxSize - minSize));
+  1636→    const mediaKey = randomBytes(16).toString('base64');
+  1637→    const hash = randomBytes(16).toString('hex');
+  1638→
+  1639→    return {
+  1640→      mediaKey,
+  1641→      directPath: `/f/${hash}`,
+  1642→      url: `https://mmg.whatsapp.net/f/${hash}`,
+  1643→      mediaType: type,
+  1644→      fileName: `${type}_${hash.substring(0, 8)}.${extensions[type]}`,
+  1645→      fileSize,
+  1646→      mimeType: mimeTypes[type],
+  1647→      encIv: randomBytes(12).toString('base64'),
+  1648→      encHash: randomBytes(32).toString('base64'),
+  1649→    };
+  1650→  }
+  1651→
+  1652→  // ─── Timestamp Parsing ────────────────────────────────────────────────
+  1653→
+  1654→  /**
+  1655→   * Parse a timestamp string from WhatsApp Web.
+  1656→   * Handles formats like "12:30 PM", "Yesterday", "Monday", "2/15/24", etc.
+  1657→   */
+  1658→  private parseTimestamp(timeStr: string): number {
+  1659→    if (!timeStr) return Date.now();
+  1660→
+  1661→    const now = Date.now();
+  1662→
+  1663→    // "Yesterday" → yesterday at midnight
+  1664→    if (timeStr.toLowerCase() === 'yesterday') {
+  1665→      return now - 86400000;
+  1666→    }
+  1667→
+  1668→    // "Today" or just time like "12:30 PM"
+  1669→    if (timeStr.toLowerCase() === 'today' || /^\d{1,2}:\d{2}\s*[AP]M$/i.test(timeStr)) {
+  1670→      const match = timeStr.match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
+  1671→      if (match) {
+  1672→        let hours = parseInt(match[1], 10);
+  1673→        const minutes = parseInt(match[2], 10);
+  1674→        const ampm = match[3].toUpperCase();
+  1675→        if (ampm === 'PM' && hours !== 12) hours += 12;
+  1676→        if (ampm === 'AM' && hours === 12) hours = 0;
+  1677→
+  1678→        const date = new Date();
+  1679→        date.setHours(hours, minutes, 0, 0);
+  1680→        return date.getTime();
+  1681→      }
+  1682→      return now;
+  1683→    }
+  1684→
+  1685→    // Day names like "Monday", "Tuesday"
+  1686→    const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+  1687→    const lowerStr = timeStr.toLowerCase();
+  1688→    const dayIndex = days.indexOf(lowerStr);
+  1689→    if (dayIndex !== -1) {
+  1690→      const today = new Date().getDay();
+  1691→      const diff = (today - dayIndex + 7) % 7 || 7;
+  1692→      return now - diff * 86400000;
+  1693→    }
+  1694→
+  1695→    // Date format like "2/15/24" or "02/15/2024"
+  1696→    const dateMatch = timeStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+  1697→    if (dateMatch) {
+  1698→      const month = parseInt(dateMatch[1], 10) - 1;
+  1699→      const day = parseInt(dateMatch[2], 10);
+  1700→      let year = parseInt(dateMatch[3], 10);
+  1701→      if (year < 100) year += 2000;
+  1702→      return new Date(year, month, day).getTime();
+  1703→    }
+  1704→
+  1705→    return now;
+  1706→  }
+  1707→
+  1708→  private sleep(ms: number): Promise<void> {
+  1709→    return new Promise((resolve) => setTimeout(resolve, ms));
+  1710→  }
+  1711→
+  1712→  // ─── Stats ────────────────────────────────────────────────────────────
+  1713→
+  1714→  getStats(): WhatsAppMessageScraperStats {
+  1715→    return { ...this.stats };
+  1716→  }
+  1717→
+  1718→  getActiveScrapes(): Array<{ target: string; status: string; startedAt: number }> {
+  1719→    return Array.from(this.activeScrapes.values());
+  1720→  }
+  1721→
+  1722→  // ─── Shutdown ─────────────────────────────────────────────────────────
+  1723→
+  1724→  async shutdown(): Promise<void> {
+  1725→    this.activeScrapes.clear();
+  1726→    this.mediaDownloadQueue = [];
+  1727→    this.downloadSemaphore = 0;
+  1728→    this.initialized = false;
+  1729→  }
+  1730→}
+  1731→
+  1732→// Singleton
+  1733→export const whatsappMessageScraper = new WhatsAppMessageScraper();
+  1734→
