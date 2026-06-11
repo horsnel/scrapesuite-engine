@@ -1,5 +1,7 @@
 import { createChildLogger } from '../utils/logger';
 import { profileGenerator } from './profile-generator';
+import { canvasSpoofer } from './canvas-spoofer';
+import { audioSpoofer } from './audio-spoofer';
 
 const logger = createChildLogger('anti-bot:stealth');
 
@@ -278,8 +280,22 @@ export class StealthEngine {
         return originalDebug.apply(console, arguments);
       };
 
-      // --- Canvas fingerprint noise ----------------------------
-      ${p.canvasNoise ? `
+      // --- Canvas fingerprint spoofing (Advanced — deterministic per-profile) ---
+      // Replaced basic single-pixel noise with multi-layer canvas spoofer.
+      // The canvas-spoofer module provides: text rendering offsets, gradient stop
+      // manipulation, shadow color perturbation, path rendering jitter,
+      // multi-pixel image data noise, and WebGL readPixels noise — all
+      // deterministic per profile seed so the same profile always produces the
+      // same canvas hash (critical to defeat double-test detection).
+      //
+      // If the advanced spoofer fails to generate a script, fall back to the
+      // basic single-pixel approach with the profile's canvasNoise value.
+      ${(() => {
+        try {
+          return canvasSpoofer.getScript(p.profileHash || 'default', String(p.canvasNoise || 0.001));
+        } catch {
+          // Fallback to basic canvas noise
+          return p.canvasNoise ? `
       const originalToDataURL = HTMLCanvasElement.prototype.toDataURL;
       HTMLCanvasElement.prototype.toDataURL = function() {
         const ctx = this.getContext('2d');
@@ -292,7 +308,6 @@ export class StealthEngine {
         }
         return originalToDataURL.apply(this, arguments);
       };
-
       const originalToBlob = HTMLCanvasElement.prototype.toBlob;
       HTMLCanvasElement.prototype.toBlob = function() {
         const ctx = this.getContext('2d');
@@ -305,10 +320,23 @@ export class StealthEngine {
         }
         return originalToBlob.apply(this, arguments);
       };
-      ` : ''}
+          ` : '';
+        }
+      })()}
 
-      // --- Audio context noise ---------------------------------
-      ${p.audioNoise ? `
+      // --- Audio context spoofing (Advanced — full pipeline) ---
+      // Replaced basic getFloatFrequencyData jitter with full OfflineAudioContext
+      // pipeline spoofing. The audio-spoofer module provides: OscillatorNode
+      // frequency perturbation, DynamicsCompressor parameter overrides,
+      // OfflineAudioContext deterministic rendering, AnalyserNode float+byte
+      // frequency data overrides, GainNode perturbation, and BiquadFilter
+      // parameter shifts — all deterministic per profile seed.
+      ${(() => {
+        try {
+          return audioSpoofer.getScript(p.profileHash || 'default', String(p.audioNoise || 0.0001));
+        } catch {
+          // Fallback to basic audio noise
+          return p.audioNoise ? `
       const originalGetFloatFrequencyData = AnalyserNode.prototype.getFloatFrequencyData;
       AnalyserNode.prototype.getFloatFrequencyData = function(array) {
         originalGetFloatFrequencyData.call(this, array);
@@ -316,7 +344,9 @@ export class StealthEngine {
           array[i] += (Math.random() - 0.5) * ${p.audioNoise};
         }
       };
-      ` : ''}
+          ` : '';
+        }
+      })()}
     `;
   }
 

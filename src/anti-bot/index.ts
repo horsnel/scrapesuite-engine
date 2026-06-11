@@ -62,3 +62,5 @@ export { humanBehaviorEngine, HumanBehaviorEngine } from './human-behavior';
 export { profileGenerator, ProfileGenerator } from './profile-generator';
 export { requestPacer } from './request-pacer';
 export { stealthEngine } from './stealth';
+export { canvasSpoofer, CanvasSpoofer, getCanvasSpoofScript, getCanvasSpoofStats, resetCanvasSpoofStats, deriveSeedFromProfileId, XorShift128Plus, DEFAULT_CANVAS_SPOOF_CONFIG } from './canvas-spoofer';
+export type { CanvasSpoofConfig, CanvasSpoofStats } from './canvas-spoofer';
