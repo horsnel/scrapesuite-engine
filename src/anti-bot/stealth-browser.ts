@@ -1026,6 +1026,9 @@ class StealthBrowserEngine {
       '--no-default-browser-check',
       '--no-pings',
       '--disable-infobars',
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
     ];
 
     // New headless mode -- less detectable than old headless
