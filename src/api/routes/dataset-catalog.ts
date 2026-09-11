@@ -7,7 +7,7 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { datasetCatalogManager } from '../../dataset-catalog';
-import { DatasetExportFormat, DatasetQuery, DatasetVisibility, QueryFilter } from '../../dataset-catalog/types';
+import { DatasetQuery, DatasetVisibility, QueryFilter } from '../../dataset-catalog/types';
 
 interface CreateDatasetBody {
   name: string;
@@ -30,10 +30,6 @@ interface QueryDatasetBody {
   limit?: number;
   offset?: number;
   fields?: string[];
-}
-
-interface ExportQuery {
-  format?: DatasetExportFormat;
 }
 
 interface ListDatasetsQuery {
@@ -66,12 +62,8 @@ export async function datasetCatalogRoutes(app: FastifyInstance): Promise<void> 
     return reply.send({ datasets });
   });
 
-  // Get a dataset
-  app.get('/v1/datasets/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-    const dataset = await datasetCatalogManager.getDataset(req.params.id);
-    if (!dataset) return reply.status(404).send({ error: 'Dataset not found' });
-    return reply.send(dataset);
-  });
+  // NOTE: GET /v1/datasets/:id and GET /v1/datasets/:id/export are registered by
+  // the collectors module (authenticated). Do not duplicate them here.
 
   // Delete a dataset
   app.delete('/v1/datasets/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
@@ -102,22 +94,6 @@ export async function datasetCatalogRoutes(app: FastifyInstance): Promise<void> 
     };
     const result = await datasetCatalogManager.queryDataset(query);
     return reply.send(result);
-  });
-
-  // Export a dataset
-  app.get('/v1/datasets/:id/export', async (req: FastifyRequest<{ Params: { id: string }; Querystring: ExportQuery }>, reply) => {
-    const format: DatasetExportFormat = req.query.format ?? 'JSON';
-    const buffer = await datasetCatalogManager.exportDataset(req.params.id, format);
-    const contentTypes: Record<string, string> = {
-      JSON: 'application/json',
-      CSV: 'text/csv',
-      NDJSON: 'application/x-ndjson',
-      SQL: 'text/plain',
-      PARQUET: 'application/octet-stream',
-    };
-    reply.header('Content-Type', contentTypes[format] ?? 'application/json');
-    reply.header('Content-Disposition', `attachment; filename="dataset-${req.params.id}.${format.toLowerCase()}"`);
-    return reply.send(buffer);
   });
 
   // List dataset versions

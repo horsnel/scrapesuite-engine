@@ -114,22 +114,8 @@ export async function captchaRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // GET /v1/captcha/balance — Get provider balances
-  app.get('/v1/captcha/balance', async (_req, reply) => {
-    try {
-      const balances = await captchaSolver.getBalances();
-      return reply.send({
-        success: true,
-        data: balances,
-      });
-    } catch (err: any) {
-      logger.error({ error: err.message }, 'Failed to get CAPTCHA balances');
-      return reply.status(500).send({
-        success: false,
-        error: err.message || 'Failed to get CAPTCHA balances',
-      });
-    }
-  });
+  // NOTE: GET /v1/captcha/balance is registered by the proxy-stats module
+  // (authenticated). Do not duplicate it here.
 
   // GET /v1/captcha/stats — Get solver statistics
   app.get('/v1/captcha/stats', async (_req, reply) => {

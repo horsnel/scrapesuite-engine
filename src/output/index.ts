@@ -277,8 +277,8 @@ const NOISE_SELF_CLOSING_RE = /<(script|style|noscript|iframe|svg|nav|footer|hea
 /** Common ad / popup / cookie banner class and id patterns. */
 const AD_NOISE_CLASS_IDS = [
   // Ad-related
-  'ad[s-_]?banner', 'ad[s-_]?container', 'ad[s-_]?wrapper', 'ad[s-_]?slot',
-  'ad[s-_]?unit', 'ad[s-_]?placement', 'google[_-]?ad', 'adsense',
+  'ad[s_-]?banner', 'ad[s_-]?container', 'ad[s_-]?wrapper', 'ad[s_-]?slot',
+  'ad[s_-]?unit', 'ad[s_-]?placement', 'google[_-]?ad', 'adsense',
   'advertisement', 'sponsored',
   // Cookie / consent
   'cookie[_-]?banner', 'cookie[_-]?consent', 'cookie[_-]?notice',
