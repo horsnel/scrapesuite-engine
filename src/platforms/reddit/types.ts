@@ -615,3 +615,89 @@ export interface RedditAuthResult {
   /** Error description */
   errorDescription?: string;
 }
+
+// ===============================================================================
+// RSS FETCH MODE
+// ===============================================================================
+
+/**
+ * A single entry parsed from a Reddit Atom (.rss) feed.
+ *
+ * Reddit exposes public Atom feeds for every listing, post comment thread,
+ * user profile, and search query at `<path>.rss`. These feeds are not subject
+ * to the same IP-level blocking as the unauthenticated `.json` API, making
+ * them a viable fallback when JSON endpoints return 403.
+ */
+export interface RedditRssEntry {
+  /**
+   * Entry kind, inferred from the Atom `<id>` fullname:
+   *   - `post`    — listing entry (t3_)
+   *   - `comment` — comment entry from a post comments feed (t1_)
+   *   - `entry`   — unrecognized / other feed entry
+   */
+  kind: 'post' | 'comment' | 'entry';
+  /** Fullname (t3_xxx / t1_xxx) when present in the feed, else parsed from the link URL */
+  id: string | null;
+  /** Entry title (post title or "Comment on <post>" style title) */
+  title: string | null;
+  /** Author username (normalized, without the /u/ prefix) */
+  author: string | null;
+  /** Subreddit name (without r/ prefix), parsed from <category term="r/..."> */
+  subreddit: string | null;
+  /** Absolute Reddit permalink for this entry */
+  permalink: string | null;
+  /** External URL for link posts (best-effort extraction from content) */
+  externalUrl: string | null;
+  /** Comment ID (t1_xxx) when this entry is a comment */
+  commentId: string | null;
+  /** Parent post ID (t3_xxx) for comment entries */
+  parentPostId: string | null;
+  /** Published timestamp (epoch ms) */
+  publishedAt: number | null;
+  /** Last updated timestamp (epoch ms) */
+  updatedAt: number | null;
+  /** Decoded HTML content (type="html" payload after entity decoding) */
+  htmlContent: string | null;
+  /** Plain-text excerpt (tags stripped, whitespace collapsed, max ~500 chars) */
+  textExcerpt: string | null;
+  /** Category terms attached to the entry (e.g. ["r/programming"]) */
+  categories: string[];
+}
+
+/**
+ * Result of fetching and parsing a Reddit Atom feed.
+ */
+export interface RedditRssFetchResult {
+  /** Whether the fetch and parse both succeeded */
+  success: boolean;
+  /** The .rss URL that was fetched */
+  feedUrl: string;
+  /** Feed-level title (e.g. "posts - r/programming") */
+  feedTitle: string | null;
+  /** Feed-level <updated> timestamp (epoch ms) */
+  feedUpdatedAt: number | null;
+  /** Parsed entries (empty on failure) */
+  entries: RedditRssEntry[];
+  /** Convenience count of entries */
+  entryCount: number;
+  /** HTTP status of the feed response */
+  httpStatus: number;
+  /** Epoch ms when the fetch completed */
+  fetchedAt: number;
+  /** Non-fatal warnings collected during fetch/parse */
+  errors: string[];
+}
+
+/**
+ * Statistics tracked by the RSS adapter.
+ */
+export interface RedditRssAdapterStats {
+  totalFeedRequests: number;
+  successfulFetches: number;
+  rateLimitEncounters: number;
+  blockedEncounters: number;
+  networkErrors: number;
+  entriesParsed: number;
+  lastFetchAt: number | null;
+  lastFeedUrl: string | null;
+}

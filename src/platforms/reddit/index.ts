@@ -23,6 +23,7 @@ export { RedditManager, redditManager } from './manager';
 export { RateLimiterEvader, rateLimiterEvader } from './rate-limiter-evader';
 export { ScrollVoter, scrollVoter } from './scroll-voter';
 export { RedditApiAdapter, redditApiAdapter } from './api-adapter';
+export { RedditRssAdapter, rssAdapter, parseAtomFeed, decodeXmlEntities, htmlToText } from './rss-adapter';
 
 // Type exports
 export type {
@@ -39,6 +40,9 @@ export type {
   RedditListingParseResult,
   RedditBrowsingSession,
   RedditAuthResult,
+  RedditRssEntry,
+  RedditRssFetchResult,
+  RedditRssAdapterStats,
 } from './types';
 
 // Constant exports

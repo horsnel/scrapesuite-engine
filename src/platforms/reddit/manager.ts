@@ -22,6 +22,7 @@ import { db } from '../../utils/db';
 import { RateLimiterEvader, rateLimiterEvader } from './rate-limiter-evader';
 import { ScrollVoter, scrollVoter } from './scroll-voter';
 import { RedditApiAdapter, redditApiAdapter } from './api-adapter';
+import { rssAdapter } from './rss-adapter';
 import type {
   RedditManagerConfig,
   RedditManagerStats,
@@ -30,6 +31,8 @@ import type {
   RedditListingParseResult,
   RedditScrapeTarget,
   RedditAuthResult,
+  RedditRssEntry,
+  RedditRssFetchResult,
 } from './types';
 import { DEFAULT_REDDIT_CONFIG, DEFAULT_REDDIT_STATS } from './types';
 
@@ -48,6 +51,7 @@ export class RedditManager {
   private stats: RedditManagerStats;
   private activeSessions = new Map<string, RedditBrowsingSession>();
   private requestTimestamps: number[] = [];
+  private rssRequestTimestamps: number[] = [];
   private tokenRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config?: Partial<RedditManagerConfig>) {
@@ -234,6 +238,14 @@ export class RedditManager {
       useOAuth?: boolean;
       maxPages?: number;
       after?: string;
+      /** Fetch mode: 'json' (default, needs OAuth or a non-blocked IP) or 'rss' (public Atom feeds). */
+      mode?: 'json' | 'rss';
+      /** RSS mode: entry limit passed to the feed (1-100). */
+      rssLimit?: number;
+      /** RSS mode: max retries on 429 / network errors. */
+      rssMaxRetries?: number;
+      /** RSS mode: base delay for the 429 exponential backoff (ms). */
+      rssRetryBaseDelayMs?: number;
     }
   ): Promise<{
     success: boolean;
@@ -243,6 +255,24 @@ export class RedditManager {
     pagesScraped: number;
     errors: string[];
   }> {
+    if (options?.mode === 'rss') {
+      const rss = await this.scrapeListingRss(url, {
+        limit: options.rssLimit,
+        maxRetries: options.rssMaxRetries,
+        retryBaseDelayMs: options.rssRetryBaseDelayMs,
+      });
+      return {
+        success: rss.success,
+        data: rss.success
+          ? { feedUrl: rss.feedUrl, feedTitle: rss.feedTitle, entries: rss.entries }
+          : null,
+        parseResult: rss.parseResult,
+        rateLimitRemaining: rss.rateLimitRemaining,
+        pagesScraped: rss.success ? 1 : 0,
+        errors: rss.errors,
+      };
+    }
+
     if (!this.initialized) {
       await this.initialize();
     }
@@ -421,6 +451,207 @@ export class RedditManager {
       parseResult,
       rateLimitRemaining,
       pagesScraped,
+      errors,
+    };
+  }
+
+  // ===========================================================================
+  // RSS FETCH MODE
+  // ===========================================================================
+
+  /**
+   * Scrape a Reddit listing via the public Atom (.rss) feed.
+   *
+   * Reddit's unauthenticated `.json` API is edge-blocked (403) for many
+   * datacenter IPs, but the `.rss` feeds produced for feed readers remain
+   * reachable from those same IPs. This path needs NO credentials and
+   * yields titles, authors, permalinks, self-text HTML and comments —
+   * but not scores or upvote ratios.
+   *
+   * Etiquette / pacing:
+   *   - Honours the unauthenticated budget (default 10 req/min) with a
+   *     sliding-window spacing of >= 6s between feed requests
+   *   - Adds small human-like jitter on top of the deterministic spacing
+   *   - On 429: records the hit in the shared RateLimiterEvader (backoff
+   *     level + cooldown) and retries with exponential backoff
+   *   - On 403: records a detection encounter and fails without retry
+   *
+   * @param url - Any Reddit listing / post / user / search URL
+   * @param options - RSS fetch options
+   */
+  async scrapeListingRss(
+    url: string,
+    options?: {
+      /** Entry limit passed to the feed (1-100, Reddit feed parameter). */
+      limit?: number;
+      /** Max retries on 429 / transient errors (default 2). */
+      maxRetries?: number;
+      /** Base delay for the 429 exponential backoff (default 30s). */
+      retryBaseDelayMs?: number;
+      /** Per-attempt fetch timeout (default 20s). */
+      timeoutMs?: number;
+      /** Enforce the 10 req/min sliding window (default true). */
+      strictSpacing?: boolean;
+    }
+  ): Promise<{
+    success: boolean;
+    feedUrl: string | null;
+    feedTitle: string | null;
+    entries: RedditRssEntry[];
+    entryCount: number;
+    parseResult: RedditListingParseResult;
+    rateLimitRemaining: number;
+    attempts: number;
+    errors: string[];
+  }> {
+    if (!this.initialized) {
+      await this.initialize();
+    }
+
+    const emptyResult = (
+      errors: string[],
+      parseResult: RedditListingParseResult,
+      feedUrl: string | null = null,
+      rateLimitRemaining = 0
+    ) => ({
+      success: false as const,
+      feedUrl,
+      feedTitle: null,
+      entries: [] as RedditRssEntry[],
+      entryCount: 0,
+      parseResult,
+      rateLimitRemaining,
+      attempts: 0,
+      errors,
+    });
+
+    // Step 1: Validate the URL through the shared parser
+    const parseResult = this.apiAdapter.parseListingUrl(url);
+    if (!parseResult.valid) {
+      return emptyResult([`Invalid Reddit URL: ${url}`], parseResult);
+    }
+
+    // Step 2: Build the feed URL
+    const feedUrl = rssAdapter.buildRssUrl(url, options?.limit);
+    if (!feedUrl) {
+      return emptyResult([`Cannot build RSS feed URL from: ${url}`], parseResult);
+    }
+
+    // Step 3: Cooldown check (shared IP-level state with the JSON path)
+    const domain = 'www.reddit.com';
+    if (this.rateLimiter.isInCooldown(domain)) {
+      logger.warn({ domain, feedUrl }, 'RSS scrape refused: domain in cooldown');
+      return emptyResult([`Domain ${domain} is in rate limit cooldown`], parseResult, feedUrl);
+    }
+
+    const maxRetries = options?.maxRetries ?? 2;
+    const retryBaseDelayMs = options?.retryBaseDelayMs ?? 30_000;
+    const errors: string[] = [];
+    let rateLimitRemaining = 0;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Pacing — feed-reader etiquette
+      await this.enforceRssSpacing(options?.strictSpacing !== false);
+
+      logger.info({
+        feedUrl: feedUrl.substring(0, 100),
+        attempt,
+        maxRetries,
+      }, 'Fetching Reddit RSS feed');
+
+      const result = await rssAdapter.fetchAndParse(url, {
+        limit: options?.limit,
+        timeoutMs: options?.timeoutMs,
+      });
+
+      // A request is a request: record it for the sliding window
+      this.rssRequestTimestamps.push(Date.now());
+      this.rssRequestTimestamps = this.rssRequestTimestamps.filter(
+        t => Date.now() - t < 60_000
+      );
+      this.stats.totalRequests++;
+
+      // NOTE: RSS responses carry x-ratelimit-* headers describing the
+      // UNAUTHENTICATED JSON pool, not the RSS path (from a blocked IP they
+      // literally read remaining=0). Feeding them into the shared rate
+      // limiter would poison the domain state and trigger phantom cooldowns,
+      // so RSS pacing is handled exclusively by enforceRssSpacing() plus
+      // record429() on real RSS 429 responses below.
+
+      if (result.success) {
+        this.stats.successfulRequests++;
+        if (parseResult.subreddit) this.stats.subredditsScraped++;
+        if (parseResult.postId) this.stats.postsScraped++;
+        if (parseResult.searchQuery) this.stats.searchesExecuted++;
+
+        logger.info({
+          feedUrl: feedUrl.substring(0, 80),
+          entries: result.entryCount,
+          attempts: attempt + 1,
+        }, 'Reddit RSS feed scraped successfully');
+
+        await this.persistStats();
+
+        return {
+          success: true,
+          feedUrl: result.feedUrl,
+          feedTitle: result.feedTitle,
+          entries: result.entries,
+          entryCount: result.entryCount,
+          parseResult,
+          rateLimitRemaining,
+          attempts: attempt + 1,
+          errors: [...errors, ...result.errors],
+        };
+      }
+
+      errors.push(...result.errors);
+      const status = result.httpStatus;
+
+      if (status === 429) {
+        this.stats.rateLimitEncounters++;
+        this.rateLimiter.record429(domain);
+
+        if (attempt < maxRetries) {
+          const backoff = retryBaseDelayMs * Math.pow(2, attempt) + Math.floor(Math.random() * 5_000);
+          logger.warn({ feedUrl, attempt, backoffMs: backoff }, 'RSS rate limited (429) — backing off');
+          await this.sleep(backoff);
+          continue;
+        }
+        logger.error({ feedUrl }, 'RSS rate limited (429) — retries exhausted');
+        break;
+      }
+
+      if (status === 403 || status === 401) {
+        this.stats.cloudflareEncounters++;
+        this.stats.detectionEncounters++;
+        this.stats.lastDetectionAt = Date.now();
+        logger.error({ feedUrl, status }, 'RSS feed blocked — not retrying');
+        break;
+      }
+
+      // Network error / unexpected status — short backoff, then retry
+      this.stats.failedRequests++;
+      if (attempt < maxRetries) {
+        const backoff = 5_000 * Math.pow(2, attempt) + Math.floor(Math.random() * 2_000);
+        logger.warn({ feedUrl, status, attempt, backoffMs: backoff }, 'RSS transient failure — retrying');
+        await this.sleep(backoff);
+        continue;
+      }
+      break;
+    }
+
+    await this.persistStats();
+
+    return {
+      success: false,
+      feedUrl,
+      feedTitle: null,
+      entries: [],
+      entryCount: 0,
+      parseResult,
+      rateLimitRemaining,
+      attempts: Math.min(maxRetries + 1, Math.max(1, this.rssRequestTimestamps.length)),
       errors,
     };
   }
@@ -613,12 +844,15 @@ export class RedditManager {
     rateLimiter: Record<string, unknown>;
     scrollVoter: Record<string, unknown>;
     apiAdapter: Record<string, unknown>;
+    rssAdapter: Record<string, unknown>;
   } {
+    const rssStats = rssAdapter.getStats();
     return {
       manager: this.getStats(),
       rateLimiter: this.rateLimiter.getStats(),
       scrollVoter: this.scrollVoterEngine.getStats(),
       apiAdapter: this.apiAdapter.getStats(),
+      rssAdapter: { ...rssStats },
     };
   }
 
@@ -769,6 +1003,41 @@ export class RedditManager {
       await cacheSet('reddit:manager:stats', this.stats, 3600);
     } catch (err: any) {
       logger.debug({ err: err.message }, 'Failed to persist manager stats');
+    }
+  }
+
+  /**
+   * Enforce feed-reader pacing for RSS fetches.
+   *
+   * Keeps a sliding 60s window of feed requests and ensures:
+   *   - At least `60s / unauthenticatedRequestsPerMinute` (6s at the default
+   *     budget of 10/min) between consecutive feed requests
+   *   - At most `unauthenticatedRequestsPerMinute` requests inside the window
+   *     (when strict), waiting out the oldest request otherwise
+   *   - A small random jitter so request rhythm is not machine-regular
+   */
+  private async enforceRssSpacing(strict: boolean): Promise<void> {
+    const now = Date.now();
+    this.rssRequestTimestamps = this.rssRequestTimestamps.filter(t => now - t < 60_000);
+
+    const perMinute = this.config.rateLimit.unauthenticatedRequestsPerMinute;
+    const minGapMs = 60_000 / Math.max(1, perMinute);
+
+    let waitMs = 0;
+    if (this.rssRequestTimestamps.length > 0) {
+      const last = this.rssRequestTimestamps[this.rssRequestTimestamps.length - 1];
+      waitMs = Math.max(waitMs, last + minGapMs - now);
+    }
+    if (strict && this.rssRequestTimestamps.length >= perMinute) {
+      const oldest = this.rssRequestTimestamps[0];
+      waitMs = Math.max(waitMs, oldest + 60_000 - now + 250);
+    }
+
+    const jitter = Math.floor(Math.random() * 800);
+    const totalMs = Math.max(0, waitMs) + jitter;
+    if (totalMs > 0) {
+      logger.debug({ waitMs: totalMs }, 'RSS pacing: waiting before feed fetch');
+      await this.sleep(totalMs);
     }
   }
 

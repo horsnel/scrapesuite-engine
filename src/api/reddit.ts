@@ -26,16 +26,24 @@ export async function redditRoutes(app: FastifyInstance): Promise<void> {
     return session;
   });
 
-  // Scrape a Reddit listing
+  // Scrape a Reddit listing (mode: 'json' = .json API, 'rss' = public Atom feed)
   app.post('/v1/reddit/scrape', async (request) => {
     const body = request.body as {
       url: string;
       useOAuth?: boolean;
       maxPages?: number;
+      mode?: 'json' | 'rss';
+      rssLimit?: number;
+      rssMaxRetries?: number;
+      rssRetryBaseDelayMs?: number;
     };
     const result = await redditManager.scrapeListing(body.url, {
       useOAuth: body.useOAuth,
       maxPages: body.maxPages,
+      mode: body.mode,
+      rssLimit: body.rssLimit,
+      rssMaxRetries: body.rssMaxRetries,
+      rssRetryBaseDelayMs: body.rssRetryBaseDelayMs,
     });
     return result;
   });
