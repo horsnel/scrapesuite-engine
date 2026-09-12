@@ -37,6 +37,8 @@ export { YouTubeManager, youtubeManager } from './manager';
 export { BotDetectionEvader, botDetectionEvader } from './bot-detection-evader';
 export { WatchSimulator, watchSimulator } from './watch-simulator';
 export { YouTubeApiSigner, youtubeApiSigner } from './api-signer';
+export { InnertubeClient, innertubeClient } from './innertube-client';
+export { fetchYouTubeBootstrap } from './bootstrap';
 
 // ===============================================================================
 // TYPE EXPORTS
@@ -73,6 +75,14 @@ export type {
   YouTubeManagerConfig,
   YouTubeManagerStats,
 } from './types';
+
+// InnerTube client + bootstrap types (defined in their own modules)
+export type {
+  InnertubeRequestOptions,
+  InnertubeResponse,
+  InnertubeResponseKind,
+} from './innertube-client';
+export type { YouTubeBootstrapResult } from './bootstrap';
 
 // ===============================================================================
 // VALUE EXPORTS

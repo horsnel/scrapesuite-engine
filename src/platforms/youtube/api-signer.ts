@@ -350,13 +350,30 @@ export class YouTubeApiSigner {
   // ---------------------------------------------------------------------------
 
   /**
-   * Build a YouTube InnerTube context object.
+   * Build a canonical YouTube InnerTube context object.
    *
    * The context is a JSON structure included in every InnerTube API request
    * body. It contains client information, user settings, and request metadata
    * that YouTube uses for authentication, personalization, and rate limiting.
    *
-   * Example context structure:
+   * IMPORTANT — canonical field policy (learned from live probing):
+   * InnerTube validates the context shape strictly and answers 400
+   * "Precondition check failed" for non-canonical fields. A 6-probe matrix
+   * (2026-09) isolated three fabricated fields that real WEB clients never
+   * send and this engine previously injected:
+   *
+   *   - `client.clientNameId`  → NOT a real InnerTube field (the numeric ID
+   *     travels only in the X-YouTube-Client-Name HEADER)
+   *   - `client.playbackNonce` → cpn belongs at the TOP LEVEL of the request
+   *     body for `player` requests, never inside context.client
+   *   - `request.clickTracking`→ real clients pass clickTrackingParams as
+   *     body-level fields, not inside context.request
+   *
+   * `client.tvAppInfo` is TV-only and is omitted for non-TV platforms.
+   * Canonical WEB contexts additionally carry `userAgent`, `acceptHeader`,
+   * and screen point dimensions, which are included here.
+   *
+   * Example canonical context:
    * {
    *   "client": {
    *     "clientName": "WEB",
@@ -366,7 +383,7 @@ export class YouTubeApiSigner {
    *     ...
    *   },
    *   "user": { "lockedSafetyMode": false },
-   *   "request": { ... }
+   *   "request": { "useSsl": true, ... }
    * }
    *
    * @param clientName - InnerTube client name (e.g. "WEB", "ANDROID")
@@ -382,37 +399,37 @@ export class YouTubeApiSigner {
     sessionIndex?: number,
   ): Record<string, unknown> {
     const platform = this.getClientPlatform(clientName);
-    const clientNameId = CLIENT_NAME_IDS[clientName] || 1;
+    const isDesktopWeb = platform === 'web';
 
-    // Base context structure
+    // Base context structure — mirrors real browser ytcfg INNERTUBE_CONTEXT
     const context: Record<string, unknown> = {
       client: {
         clientName,
         clientVersion,
-        clientNameId,
-        gl: 'US',
         hl: 'en',
+        gl: 'US',
+        timeZone: 'America/New_York',
+        utcOffsetMinutes: -300,
         deviceMake: '',
         deviceModel: '',
         osName: this.getOSName(platform),
         osVersion: this.getOSVersion(platform),
         originalUrl: this.config.origin + '/',
-        platform: platform === 'web' ? 'DESKTOP' : 'MOBILE',
-        clientFormFactor: platform === 'web' ? 'UNKNOWN_FORM_FACTOR' : 'SMALL_FORM_FACTOR',
+        platform: isDesktopWeb ? 'DESKTOP' : 'MOBILE',
+        clientFormFactor: isDesktopWeb ? 'UNKNOWN_FORM_FACTOR' : 'SMALL_FORM_FACTOR',
         userInterfaceTheme: 'USER_INTERFACE_THEME_LIGHT',
-        browserName: platform === 'web' ? 'Chrome' : '',
-        browserVersion: platform === 'web' ? '131.0.0.0' : '',
-        timeZone: 'America/New_York',
-        utcOffsetMinutes: -300,
+        browserName: isDesktopWeb ? 'Chrome' : '',
+        browserVersion: isDesktopWeb ? '131.0.0.0' : '',
+        userAgent: this.generateUserAgent(platform),
+        acceptHeader:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        screenWidthPoints: 1920,
+        screenHeightPoints: 1080,
         screenDensityFloat: 1,
         screenPixelDensity: 1,
         connectionType: 'CONN_WIFI',
         mainAppWebDomain: 'www.youtube.com',
         playerType: 'UNIPLAYER',
-        tvAppInfo: {
-          tvAppInstallFrom: '',
-          tvAppLaunchFrom: '',
-        },
       },
       user: {
         lockedSafetyMode: false,
@@ -424,8 +441,17 @@ export class YouTubeApiSigner {
       },
     };
 
-    // Add visitor data if available
-    if (sessionIds && this.config.includeVisitorData) {
+    // TV clients carry tvAppInfo; other platforms must not send it
+    if (platform === 'tv') {
+      (context.client as Record<string, unknown>).tvAppInfo = {
+        tvAppInstallFrom: '',
+        tvAppLaunchFrom: '',
+      };
+    }
+
+    // Add visitor data if available (real visitorData from bootstrap is
+    // preferred; a fabricated one is worse than none on a flagged IP)
+    if (sessionIds && this.config.includeVisitorData && sessionIds.visitorData) {
       (context.client as Record<string, unknown>).visitorData = sessionIds.visitorData;
     }
 
@@ -434,26 +460,16 @@ export class YouTubeApiSigner {
       (context.user as Record<string, unknown>).onBehalfOfUser = sessionIndex;
     }
 
-    // Add click tracking parameters
-    if (sessionIds?.clickTrackingParams) {
-      (context.request as Record<string, unknown>).clickTracking = {
-        clickTrackingParams: sessionIds.clickTrackingParams,
-      };
-    }
-
-    // Add active playlist info for watch contexts
-    if (sessionIds?.cpn) {
-      (context.client as Record<string, unknown>).playbackNonce = sessionIds.cpn;
-    }
-
     // Platform-specific context additions
     if (platform === 'android') {
-      (context.client as Record<string, unknown>).androidSdkVersion = 34;
-      (context.client as Record<string, unknown>).deviceMake = 'Google';
-      (context.client as Record<string, unknown>).deviceModel = 'Pixel 8';
+      const client = context.client as Record<string, unknown>;
+      client.androidSdkVersion = 34;
+      client.deviceMake = 'Google';
+      client.deviceModel = 'Pixel 8';
     } else if (platform === 'ios') {
-      (context.client as Record<string, unknown>).deviceMake = 'Apple';
-      (context.client as Record<string, unknown>).deviceModel = 'iPhone15,2';
+      const client = context.client as Record<string, unknown>;
+      client.deviceMake = 'Apple';
+      client.deviceModel = 'iPhone15,2';
     }
 
     this.stats.totalContextsGenerated++;
@@ -551,11 +567,16 @@ export class YouTubeApiSigner {
 
   /**
    * Build the signed URL for an InnerTube API endpoint.
+   *
+   * SCRAPESUITE_INNERTUBE_BASE_URL overrides the base (test hook / gateway
+   * routing); it must include the /youtubei/v1 path prefix when set.
    */
   private buildSignedUrl(endpoint: string): string {
     // Validate endpoint
     const cleanEndpoint = endpoint.replace(/^\/+|\/+$/g, '');
-    return `${INNERTUBE_BASE_URL}/${cleanEndpoint}?key=${this.config.apiKey}`;
+    const base =
+      process.env.SCRAPESUITE_INNERTUBE_BASE_URL || INNERTUBE_BASE_URL;
+    return `${base.replace(/\/+$/, '')}/${cleanEndpoint}?key=${this.config.apiKey}`;
   }
 
   /**

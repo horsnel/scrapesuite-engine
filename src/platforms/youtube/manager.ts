@@ -29,6 +29,8 @@ import { cacheGet, cacheSet } from '../../utils/redis';
 import { BotDetectionEvader, botDetectionEvader } from './bot-detection-evader';
 import { WatchSimulator, watchSimulator } from './watch-simulator';
 import { YouTubeApiSigner, youtubeApiSigner } from './api-signer';
+import { innertubeClient } from './innertube-client';
+import type { InnertubeRequestOptions, InnertubeResponse } from './innertube-client';
 import type {
   YouTubeManagerConfig,
   YouTubeManagerStats,
@@ -340,6 +342,27 @@ export class YouTubeManager {
     }, 'YouTube request signed');
 
     return result;
+  }
+
+  // ---------------------------------------------------------------------------
+  // INNERTUBE EXECUTION
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Execute an InnerTube request end-to-end (sign → proxy → classify).
+   *
+   * Thin convenience wrapper over `innertubeClient.execute()` so callers get
+   * the full request path — canonical context, proxy resolution, real
+   * visitorData bootstrap, and response classification — through the manager
+   * they already use. See `InnertubeRequestOptions` for the option surface.
+   *
+   * @param options - Request options (endpoint, body, proxy, bootstrap)
+   * @returns Classified response with JSON or failure-kind details
+   */
+  async fetchInnertube(options: InnertubeRequestOptions): Promise<InnertubeResponse> {
+    this.ensureInitialized();
+    this.stats.totalRequestsSigned++;
+    return innertubeClient.execute(options);
   }
 
   // ---------------------------------------------------------------------------

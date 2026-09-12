@@ -122,6 +122,36 @@ function getOrCreateAgent(proxyUrl: string): UndiciProxyAgent {
 }
 
 /**
+ * Resolve the proxy URL to use for a request.
+ *
+ * Priority order:
+ *   1. Explicit `proxyUrl` argument (per-request override)
+ *   2. Platform-specific env var (SCRAPESUITE_YOUTUBE_PROXY / SCRAPESUITE_TIKTOK_PROXY)
+ *   3. Engine-wide SCRAPESUITE_PROXY_URL
+ *   4. Standard HTTPS_PROXY / HTTP_PROXY environment variables
+ *
+ * Returns undefined when no proxy is configured (direct connection).
+ */
+export function resolveProxyUrl(
+  explicit?: string,
+  platform?: 'youtube' | 'tiktok',
+): string | undefined {
+  if (explicit) return explicit;
+
+  const candidates: Array<string | undefined> = [];
+  if (platform === 'youtube') candidates.push(process.env.SCRAPESUITE_YOUTUBE_PROXY);
+  if (platform === 'tiktok') candidates.push(process.env.SCRAPESUITE_TIKTOK_PROXY);
+  candidates.push(process.env.SCRAPESUITE_PROXY_URL);
+  candidates.push(process.env.HTTPS_PROXY);
+  candidates.push(process.env.https_proxy);
+  candidates.push(process.env.HTTP_PROXY);
+  candidates.push(process.env.http_proxy);
+
+  const resolved = candidates.find((c) => typeof c === 'string' && c.length > 0);
+  return resolved || undefined;
+}
+
+/**
  * Mask credentials in a proxy URL for safe logging.
  */
 function maskProxyUrl(url: string): string {
