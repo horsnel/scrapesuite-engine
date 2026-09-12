@@ -145,6 +145,41 @@ export class MsTokenRotatorEngine {
   }
 
   /**
+   * Seed the rotator with an EXTERNAL (real) msToken, e.g. one harvested
+   * from a live browser session by TikTokBrowserHarvester. The external
+   * token becomes the active token and heads the pool so it is used before
+   * any synthetic tokens.
+   *
+   * @param token - Real msToken value from a browser session
+   * @param source - Provenance label (default 'browser')
+   * @param lifetimeSeconds - Token lifetime (default 2 hours; real browser
+   *   msTokens outlive the synthetic ones substantially)
+   */
+  seedFromExternal(token: string, source: string = 'browser', lifetimeSeconds: number = 7200): MsTokenResult {
+    const now = Date.now();
+    const result: MsTokenResult = {
+      token,
+      version: `external-${source}`,
+      generatedAt: now,
+      expiresAt: now + lifetimeSeconds * 1000,
+      isValid: true,
+    };
+
+    // De-pool any previous external seeds to avoid stale duplication
+    this.tokenPool = this.tokenPool.filter((t) => !t.version.startsWith('external-'));
+
+    this.tokenPool.unshift(result);
+    this.activeTokenIndex = 0;
+
+    logger.info(
+      { source, tokenPrefix: token.slice(0, 8) + '...', lifetimeSeconds },
+      'External msToken seeded into rotator',
+    );
+
+    return result;
+  }
+
+  /**
    * Generate a new msToken.
    */
   generateToken(): MsTokenResult {

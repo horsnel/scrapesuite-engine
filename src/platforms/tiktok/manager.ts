@@ -15,6 +15,8 @@ import { MsTokenRotatorEngine, msTokenRotator } from './mstoken-rotator';
 import { DeviceRegistrarEngine, deviceRegistrar } from './device-registrar';
 import { TikTokSignatureEngine, tiktokSignatureEngine } from './signature-engine';
 import { FeedSimulatorEngine, feedSimulator } from './feed-simulator';
+import { tiktokBrowserHarvester } from './browser-harvester';
+import type { TikTokBrowserSession } from './browser-harvester';
 import {
   DEFAULT_TIKTOK_CONFIG,
 } from './types';
@@ -42,6 +44,7 @@ export class TikTokManager {
   private deviceRegistrar: DeviceRegistrarEngine;
   private feedSimulator: FeedSimulatorEngine;
   private initialized = false;
+  private harvestedSession: TikTokBrowserSession | null = null;
   private stats: TikTokManagerStats = {
     totalSignatures: 0,
     totalMsTokenRotations: 0,
@@ -179,7 +182,62 @@ export class TikTokManager {
   }
 
   /**
+   * Import a REAL browser session harvested by TikTokBrowserHarvester
+   * (or supplied from an external browser-automation pipeline).
+   *
+   * The harvested msToken is seeded into the rotator as the active token,
+   * and the full cookie jar + exact browser UA are stored. prepareSession()
+   * then merges them into every session: cookies restore the browser's
+   * credibility state, and the browser's UA is used for signing because
+   * X-Bogus is UA-bound — a signed request with a different UA is
+   * detectable on sight.
+   *
+   * @param session - Harvested session payload
+   * @throws Error if the session lacks the minimum credible fields
+   */
+  importBrowserSession(session: TikTokBrowserSession): void {
+    const check = tiktokBrowserHarvester.validateSession(session);
+    if (!check.valid) {
+      throw new Error(`Cannot import TikTok browser session: ${check.reason}`);
+    }
+
+    const msToken =
+      session.cookies['msToken'] || session.observedMsTokens[0];
+    if (msToken) {
+      this.msTokenRotator.seedFromExternal(msToken, 'browser');
+    }
+
+    this.harvestedSession = session;
+    logger.info(
+      {
+        cookieNames: Object.keys(session.cookies),
+        hasUniversalData: !!session.universalData,
+        observedMsTokens: session.observedMsTokens.length,
+        harvestedAt: new Date(session.harvestedAt).toISOString(),
+      },
+      'TikTok browser session imported',
+    );
+  }
+
+  /**
+   * Whether a real browser session is currently imported.
+   */
+  hasBrowserSession(): boolean {
+    return this.harvestedSession !== null;
+  }
+
+  /**
+   * Clear the imported browser session (e.g. after it expires or is burnt).
+   */
+  clearBrowserSession(): void {
+    this.harvestedSession = null;
+  }
+
+  /**
    * Prepare a complete TikTok scraping session.
+   *
+   * When a browser session has been imported, its cookies take precedence
+   * over synthetic ones and its exact UA is used for signing.
    */
   async prepareSession(options?: {
     deviceType?: TikTokDeviceType;
@@ -207,6 +265,17 @@ export class TikTokManager {
       'ttwid': registration.ttwid,
       'odin_tt': registration.odin_tt,
     };
+
+    // Merge the real browser session where available: its cookies carry the
+    // browser's credibility state, and its UA must win because X-Bogus is
+    // computed over the exact UA string.
+    if (this.harvestedSession) {
+      Object.assign(cookies, this.harvestedSession.cookies);
+      if (this.harvestedSession.cookies['msToken']) {
+        cookies['msToken'] = this.harvestedSession.cookies['msToken'];
+      }
+      headers['User-Agent'] = this.harvestedSession.userAgent;
+    }
 
     return { device: profile, registration, msToken, headers, cookies };
   }

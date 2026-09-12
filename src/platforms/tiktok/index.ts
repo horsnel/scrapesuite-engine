@@ -12,6 +12,14 @@ export { DeviceRegistrarEngine, deviceRegistrar } from './device-registrar';
 export { TikTokSignatureEngine, tiktokSignatureEngine } from './signature-engine';
 export { FeedSimulatorEngine, feedSimulator } from './feed-simulator';
 export { XBogusCDNExtractor, xbogusCDNExtractor } from './xbogus-cdn-extractor';
+export {
+  TikTokBrowserHarvester,
+  tiktokBrowserHarvester,
+} from './browser-harvester';
+export type {
+  TikTokBrowserSession,
+  HarvestOptions,
+} from './browser-harvester';
 
 export type {
   TikTokDeviceType,
