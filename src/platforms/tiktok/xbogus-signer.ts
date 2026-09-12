@@ -126,12 +126,20 @@ function customEncode(data: number[]): string {
 
     const combined = (b1 << 16) | (b2 << 8) | b3;
 
-    result += CHARSET[(combined >>> 18) & 0x3F];
-    result += CHARSET[(combined >>> 12) & 0x3F];
-    if (i + 1 < data.length) result += CHARSET[(combined >>> 6) & 0x3F];
-    if (i + 2 < data.length) result += CHARSET[combined & 0x3F];
+    // 6-bit values span 0-63 but CHARSET holds 55 chars; raw indexing
+    // returned undefined for 55-63, leaking the literal string "undefined"
+    // into signatures. Wrap deterministically instead.
+    result += charsetAt((combined >>> 18) & 0x3F);
+    result += charsetAt((combined >>> 12) & 0x3F);
+    if (i + 1 < data.length) result += charsetAt((combined >>> 6) & 0x3F);
+    if (i + 2 < data.length) result += charsetAt(combined & 0x3F);
   }
   return result;
+}
+
+/** CHARSET lookup that wraps out-of-range 6-bit values instead of returning undefined. */
+function charsetAt(index: number): string {
+  return CHARSET[index % CHARSET.length];
 }
 
 /**
