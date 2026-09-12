@@ -31,6 +31,16 @@ import { WatchSimulator, watchSimulator } from './watch-simulator';
 import { YouTubeApiSigner, youtubeApiSigner } from './api-signer';
 import { innertubeClient } from './innertube-client';
 import type { InnertubeRequestOptions, InnertubeResponse } from './innertube-client';
+import {
+  getTranscript as fetchTranscript,
+  getComments as fetchComments,
+  getMoreComments as fetchMoreComments,
+} from './innertube-endpoints';
+import type {
+  TranscriptResult,
+  CommentsResult,
+  CommentsOptions,
+} from './innertube-endpoints';
 import type {
   YouTubeManagerConfig,
   YouTubeManagerStats,
@@ -363,6 +373,53 @@ export class YouTubeManager {
     this.ensureInitialized();
     this.stats.totalRequestsSigned++;
     return innertubeClient.execute(options);
+  }
+
+  /**
+   * Fetch a video transcript via InnerTube `get_transcript`.
+   *
+   * @param videoId - The YouTube video ID
+   * @param options - Language/ASR selection plus underlying request options
+   * @returns Ordered transcript segments with timestamps and joined text
+   */
+  async getTranscript(
+    videoId: string,
+    options: Pick<CommentsOptions, 'lang' | 'asr' | 'request'> = {},
+  ): Promise<TranscriptResult> {
+    this.ensureInitialized();
+    this.stats.totalRequestsSigned++;
+    return fetchTranscript(videoId, options);
+  }
+
+  /**
+   * Fetch comments via InnerTube `next` (metadata → continuation → threads).
+   *
+   * @param videoId - The YouTube video ID
+   * @param options - Pagination/limits plus underlying request options
+   * @returns Parsed first page of comments with a cursor for getMoreComments()
+   */
+  async getComments(videoId: string, options: CommentsOptions = {}): Promise<CommentsResult> {
+    this.ensureInitialized();
+    this.stats.totalRequestsSigned++;
+    return fetchComments(videoId, options);
+  }
+
+  /**
+   * Fetch the next comments page using a cursor from getComments().
+   *
+   * @param continuationToken - Cursor returned by a previous comments call
+   * @param videoId - Optional video ID echoed back in the result
+   * @param options - Limits plus underlying request options
+   * @returns Parsed comments page with the following cursor when present
+   */
+  async getMoreComments(
+    continuationToken: string,
+    videoId = '',
+    options: Pick<CommentsOptions, 'maxComments' | 'request'> = {},
+  ): Promise<CommentsResult> {
+    this.ensureInitialized();
+    this.stats.totalRequestsSigned++;
+    return fetchMoreComments(continuationToken, videoId, options);
   }
 
   // ---------------------------------------------------------------------------

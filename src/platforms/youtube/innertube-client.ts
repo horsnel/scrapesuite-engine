@@ -64,6 +64,13 @@ export interface InnertubeRequestOptions {
   maxAttempts?: number;
   /** Per-attempt timeout in ms (default 15000) */
   timeoutMs?: number;
+  /**
+   * Post-signing context overrides, merged into body.context (one level
+   * deep for object values). Use for page-bound endpoints whose tokens
+   * must match the originating page, e.g. get_transcript:
+   *   { client: { originalUrl: 'https://www.youtube.com/watch?v=ID' } }
+   */
+  contextPatch?: Record<string, unknown>;
 }
 
 export interface InnertubeResponse {
@@ -202,6 +209,20 @@ export class InnertubeClient {
         body.cpn = signed.sessionIds.cpn;
       }
       body.context = signed.context;
+
+      // Page-bound tokens (get_transcript etc.) can require the context to
+      // reference the page the token was issued on — apply caller overrides
+      if (options.contextPatch) {
+        for (const [key, value] of Object.entries(options.contextPatch)) {
+          const existing = (body.context as Record<string, unknown>)[key];
+          const bothPlain =
+            typeof value === 'object' && value !== null && !Array.isArray(value) &&
+            typeof existing === 'object' && existing !== null && !Array.isArray(existing);
+          (body.context as Record<string, unknown>)[key] = bothPlain
+            ? { ...(existing as Record<string, unknown>), ...(value as Record<string, unknown>) }
+            : value;
+        }
+      }
 
       const cookieHeader = Object.entries({ ...signed.cookies, ...options.cookies })
         .filter(([, v]) => !!v)

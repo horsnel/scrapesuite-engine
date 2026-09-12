@@ -38,6 +38,17 @@ export { BotDetectionEvader, botDetectionEvader } from './bot-detection-evader';
 export { WatchSimulator, watchSimulator } from './watch-simulator';
 export { YouTubeApiSigner, youtubeApiSigner } from './api-signer';
 export { InnertubeClient, innertubeClient } from './innertube-client';
+export {
+  getTranscript,
+  getComments,
+  getMoreComments,
+  encodeGetTranscriptParams,
+  extractTranscriptParams,
+  extractVisitorData,
+  parseCount,
+  parseTranscriptSegments,
+  parseCommentThreads,
+} from './innertube-endpoints';
 export { fetchYouTubeBootstrap } from './bootstrap';
 
 // ===============================================================================
@@ -83,6 +94,13 @@ export type {
   InnertubeResponseKind,
 } from './innertube-client';
 export type { YouTubeBootstrapResult } from './bootstrap';
+export type {
+  TranscriptResult,
+  TranscriptSegment,
+  Comment,
+  CommentsResult,
+  CommentsOptions,
+} from './innertube-endpoints';
 
 // ===============================================================================
 // VALUE EXPORTS
