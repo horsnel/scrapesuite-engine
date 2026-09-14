@@ -17,6 +17,7 @@ import { TikTokSignatureEngine, tiktokSignatureEngine } from './signature-engine
 import { FeedSimulatorEngine, feedSimulator } from './feed-simulator';
 import { tiktokBrowserHarvester } from './browser-harvester';
 import type { TikTokBrowserSession } from './browser-harvester';
+import { depositSession, lendSession, reportSessionOutcome } from './session-farm';
 import {
   DEFAULT_TIKTOK_CONFIG,
 } from './types';
@@ -45,6 +46,8 @@ export class TikTokManager {
   private feedSimulator: FeedSimulatorEngine;
   private initialized = false;
   private harvestedSession: TikTokBrowserSession | null = null;
+  /** Farm id of the session currently borrowed via prepareSession(), if any. */
+  private currentFarmSessionId: string | null = null;
   private stats: TikTokManagerStats = {
     totalSignatures: 0,
     totalMsTokenRotations: 0,
@@ -208,6 +211,12 @@ export class TikTokManager {
     }
 
     this.harvestedSession = session;
+    this.currentFarmSessionId = null;
+
+    // Also bank the session into the farm (fire-and-forget) so other
+    // workers/processes can lend it later.
+    void depositSession(session).catch(() => {});
+
     logger.info(
       {
         cookieNames: Object.keys(session.cookies),
@@ -269,6 +278,28 @@ export class TikTokManager {
     // Merge the real browser session where available: its cookies carry the
     // browser's credibility state, and its UA must win because X-Bogus is
     // computed over the exact UA string.
+    //
+    // Session farm: when nothing is imported locally, borrow the healthiest
+    // farmed session (harvested by any worker) transparently.
+    if (!this.harvestedSession) {
+      try {
+        const lent = await lendSession();
+        if (lent) {
+          this.harvestedSession = lent.session;
+          this.currentFarmSessionId = lent.id;
+          if (lent.session.cookies['msToken'] || lent.session.observedMsTokens[0]) {
+            this.msTokenRotator.seedFromExternal(
+              lent.session.cookies['msToken'] || lent.session.observedMsTokens[0],
+              'browser',
+            );
+          }
+          logger.info({ farmSessionId: lent.id }, 'Borrowed browser session from farm');
+        }
+      } catch {
+        // Farm unavailable — synthetic path continues.
+      }
+    }
+
     if (this.harvestedSession) {
       Object.assign(cookies, this.harvestedSession.cookies);
       if (this.harvestedSession.cookies['msToken']) {
@@ -278,6 +309,15 @@ export class TikTokManager {
     }
 
     return { device: profile, registration, msToken, headers, cookies };
+  }
+
+  /**
+   * Report the outcome of work done with the current (farmed or imported)
+   * browser session. Feeds the farm's health model; fire-and-forget.
+   */
+  reportSessionOutcome(outcome: 'success' | 'bot_wall' | 'rate_limited' | 'shape_rejected' | 'network_error' | 'timeout', detail?: string): void {
+    if (!this.currentFarmSessionId) return;
+    void reportSessionOutcome(this.currentFarmSessionId, outcome, detail).catch(() => {});
   }
 
   /**

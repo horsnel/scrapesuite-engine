@@ -25,6 +25,9 @@
 import { createChildLogger } from '../../utils/logger';
 import { innertubeClient } from './innertube-client';
 import type { InnertubeRequestOptions, InnertubeResponseKind } from './innertube-client';
+import { tripwire } from '../fixture-store';
+import { cachedFetch } from '../response-cache';
+import { encodeProto, bytesToBase64, type ProtoMessage } from './protobuf';
 
 const logger = createChildLogger('youtube-innertube-endpoints');
 
@@ -89,6 +92,8 @@ export interface CommentsOptions {
   maxComments?: number;
   /** Follow the next-page cursor automatically up to maxComments (default false) */
   paginate?: boolean;
+  /** Serve from the response cache when a fresh copy exists (default true) */
+  cache?: boolean;
   /** Underlying request options (proxy, cookies, timeouts) */
   request?: Partial<Pick<
     InnertubeRequestOptions,
@@ -111,37 +116,20 @@ export interface CommentsResult {
 }
 
 // ===============================================================================
-// PROTOBUF ENCODING (get_transcript params)
+// PROTOBUF ENCODING (get_transcript params — built on the general toolkit)
 // ===============================================================================
-
-function writeVarint(bytes: number[], value: number): void {
-  let v = value;
-  while (v > 0x7f) {
-    bytes.push((v & 0x7f) | 0x80);
-    v >>>= 7;
-  }
-  bytes.push(v & 0x7f);
-}
-
-function writeStringField(bytes: number[], fieldNumber: number, value: string): void {
-  const tag = (fieldNumber << 3) | 2;
-  bytes.push(tag);
-  const utf8 = Buffer.from(value, 'utf-8');
-  writeVarint(bytes, utf8.length);
-  for (const b of utf8) bytes.push(b);
-}
 
 /**
  * Encode get_transcript params the way the web client does:
  * protobuf { 1: videoId, 2: "asr"?, 3: lang?, 5: "" } → base64.
+ * Kept for diagnostics/offline experimentation: live servers require
+ * SERVER-ISSUED params (see getTranscript) — client-built ones are rejected.
  */
 export function encodeGetTranscriptParams(videoId: string, lang = '', asr = false): string {
-  const bytes: number[] = [];
-  writeStringField(bytes, 1, videoId);
-  if (asr) writeStringField(bytes, 2, 'asr');
-  if (lang) writeStringField(bytes, 3, lang);
-  writeStringField(bytes, 5, '');
-  return Buffer.from(bytes).toString('base64');
+  const message: ProtoMessage = { 1: videoId, 5: '' };
+  if (asr) message[2] = 'asr';
+  if (lang) message[3] = lang;
+  return bytesToBase64(encodeProto(message));
 }
 
 // ===============================================================================
@@ -477,6 +465,21 @@ function describe(resp: { status: number; kind: InnertubeResponseKind; latencyMs
  */
 export async function getTranscript(
   videoId: string,
+  options: Pick<CommentsOptions, 'lang' | 'asr' | 'request' | 'cache'> = {},
+): Promise<TranscriptResult> {
+  const useCache = options.cache !== false;
+  if (!useCache) return getTranscriptUncached(videoId, options);
+  const { value } = await cachedFetch<TranscriptResult>({
+    surface: 'youtube.transcript',
+    key: JSON.stringify({ v: videoId, l: options.lang ?? '', a: options.asr ?? false }),
+    producer: () => getTranscriptUncached(videoId, options),
+    shouldCache: (r) => r.ok === true,
+  });
+  return value;
+}
+
+async function getTranscriptUncached(
+  videoId: string,
   options: Pick<CommentsOptions, 'lang' | 'asr' | 'request'> = {},
 ): Promise<TranscriptResult> {
   const lang = options.lang ?? '';
@@ -596,6 +599,21 @@ export async function getComments(
   videoId: string,
   options: CommentsOptions = {},
 ): Promise<CommentsResult> {
+  const useCache = options.cache !== false;
+  if (!useCache) return getCommentsUncached(videoId, options);
+  const { value } = await cachedFetch<CommentsResult>({
+    surface: 'youtube.comments',
+    key: JSON.stringify({ v: videoId, m: options.maxComments ?? 20, p: !!options.paginate, l: options.lang ?? '' }),
+    producer: () => getCommentsUncached(videoId, options),
+    shouldCache: (r) => r.ok === true,
+  });
+  return value;
+}
+
+async function getCommentsUncached(
+  videoId: string,
+  options: CommentsOptions = {},
+): Promise<CommentsResult> {
   const maxComments = options.maxComments ?? 20;
 
   // ---- Step 1: watch metadata → comment continuation token -------------------
@@ -619,6 +637,17 @@ export async function getComments(
 
   const token = extractCommentsToken(first.json);
   if (!token) {
+    // Zero-result tripwire: metadata arrived but no comment section found —
+    // comments-disabled videos are normal, a SHAPE BREAK is not. Save the
+    // payload so the difference is diagnosable offline.
+    await tripwire({
+      surface: 'youtube.next',
+      payload: JSON.stringify(first.json),
+      parsed: null,
+      isEmpty: () => true,
+      url: `youtube:watch/${videoId}#comments-token`,
+      meta: { stage: 'token-extraction', videoId },
+    });
     return {
       ok: false,
       comments: [],
@@ -654,6 +683,17 @@ export async function getComments(
     }
 
     const { comments: pageComments, nextToken } = parseCommentThreads(pageResp.json);
+    if (pageComments.length === 0 && page === 0) {
+      // Zero-result tripwire on the first page — the silent-killer guard.
+      await tripwire({
+        surface: 'youtube.next',
+        payload: JSON.stringify(pageResp.json),
+        parsed: pageComments,
+        isEmpty: (c) => !c || c.length === 0,
+        url: `youtube:watch/${videoId}#comments-page-0`,
+        meta: { stage: 'thread-parse', videoId },
+      });
+    }
     comments.push(...pageComments);
     cursor = nextToken;
     if (!nextToken || pageComments.length === 0) {

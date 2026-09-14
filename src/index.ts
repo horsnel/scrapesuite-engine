@@ -84,6 +84,10 @@ async function main() {
     // Start session manager cleanup
     sessionManager.startCleanup();
     logger.info('Session manager started');
+
+    // Start platform upkeep (version refresh + optional canary schedule)
+    const { startUpkeep } = await import('./platforms/upkeep');
+    startUpkeep();
   }
 
   logger.info({ mode }, 'ScrapeSuite Engine v3.0 ready -- Bright Data competitor mode');

@@ -37,6 +37,7 @@ import { tiktokRoutes } from './tiktok';
 import { youtubeRoutes } from './youtube';
 import { redditRoutes } from './reddit';
 import { realTimeLearnerRoutes } from './real-time-learner';
+import { unifiedRoutes } from './unified';
 import { renderingPipelineRoutes } from './routes/rendering-pipeline';
 import { tlsSpooferRoutes } from './routes/tls-spoofer';
 import { captchaRoutes } from './routes/captcha';
@@ -442,6 +443,7 @@ export async function buildServer() {
   await app.register(youtubeRoutes);
   await app.register(redditRoutes);
   await app.register(realTimeLearnerRoutes);
+  await app.register(unifiedRoutes);
   await app.register(renderingPipelineRoutes);
   await app.register(tlsSpooferRoutes);
   await app.register(captchaRoutes);

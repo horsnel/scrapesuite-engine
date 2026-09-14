@@ -24,8 +24,41 @@ import { createChildLogger } from '../../utils/logger';
 import { youtubeApiSigner } from './api-signer';
 import { fetchYouTubeBootstrap, type YouTubeBootstrapResult } from './bootstrap';
 import { proxyFetch, resolveProxyUrl } from '../../utils/proxy-fetch';
-
+import { recordAttempt, type PlatformOutcome, type PlatformSurface } from '../telemetry';
 const logger = createChildLogger('youtube-innertube-client');
+
+// ===============================================================================
+// TELEMETRY HELPERS
+// ===============================================================================
+
+/** Map an InnerTube endpoint name to a platform telemetry surface. */
+function innertubeSurface(endpoint: string): PlatformSurface {
+  switch (endpoint) {
+    case 'browse': return 'youtube.browse';
+    case 'search': return 'youtube.search';
+    case 'player': return 'youtube.player';
+    case 'next': return 'youtube.next';
+    case 'get_transcript': return 'youtube.transcript';
+    default: return 'youtube.other';
+  }
+}
+
+/** Map an InnerTube response kind to a platform telemetry outcome. */
+function innertubeOutcome(response: InnertubeResponse): PlatformOutcome {
+  switch (response.kind) {
+    case 'json': return 'success';
+    case 'innertube_error': return 'shape_rejected';
+    case 'sorry_page': return 'bot_wall';
+    case 'rate_limited': return 'rate_limited';
+    case 'network_error': return 'network_error';
+    default: return 'bot_wall'; // other_html and anything new behaves like a wall
+  }
+}
+
+/** Stable URL-ish identifier for signatures (endpoint, not secrets). */
+function signedEndpointUrl(endpoint: string): string {
+  return `https://youtubei.googleapis.com/youtubei/v1/${endpoint}`;
+}
 
 // ===============================================================================
 // TYPES
@@ -333,6 +366,27 @@ export class InnertubeClient {
     } else {
       logger.warn(logPayload, 'InnerTube request failed');
     }
+
+    // ---- Telemetry: feed the self-improver brain + failure-signature store ----
+    recordAttempt({
+      surface: innertubeSurface(options.endpoint),
+      outcome: innertubeOutcome(response),
+      url: signedEndpointUrl(options.endpoint),
+      durationMs: totalMs,
+      context: {
+        proxyTier: response.proxyUsed ? 'proxy' : 'direct',
+        proxySource: response.proxyUsed || undefined,
+        sessionProvenance: 'synthetic',
+        clientVersion: options.clientVersion || this.lastBootstrap?.clientVersion || undefined,
+        visitorData: response.usedBootstrappedVisitorData,
+      },
+      response: {
+        status: response.status,
+        bytes: (response.textSnippet ?? '').length,
+        errorKind: response.kind === 'innertube_error' ? response.error : undefined,
+        marker: response.ok ? undefined : response.error || (response.textSnippet ?? '').slice(0, 120),
+      },
+    });
   }
 }
 

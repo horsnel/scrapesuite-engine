@@ -59,6 +59,12 @@ const DESKTOP_UA =
 
 const CACHE_KEY = 'youtube:bootstrap:ytcfg';
 const CACHE_TTL_SECONDS = 30 * 60; // 30 minutes — visitorData lives much longer, but stay fresh
+/**
+ * A cached clientVersion older than this is considered stale and triggers a
+ * network refresh even when visitorData is present. YouTube ships client
+ * versions every ~2 weeks; 7 days keeps us comfortably ahead.
+ */
+const VERSION_STALENESS_MS = 7 * 24 * 60 * 60 * 1000;
 
 // ===============================================================================
 // EXTRACTION HELPERS
@@ -186,13 +192,26 @@ export async function fetchYouTubeBootstrap(options?: {
 }): Promise<YouTubeBootstrapResult> {
   const proxyUrl = resolveProxyUrl(options?.proxyUrl, 'youtube');
 
-  // Cache lookup (only cache successful bootstraps)
+  // Cache lookup — serve when the cached record carries a visitorData, or at
+  // least a clientVersion younger than the version-staleness window. Keeps
+  // client versions fresh even on IPs where visitorData is unobtainable.
   if (!options?.skipCache) {
     try {
       const cached = await cacheGet<YouTubeBootstrapResult>(CACHE_KEY);
-      if (cached?.visitorData) {
-        logger.debug('YouTube bootstrap served from cache');
-        return { ...cached, proxyUsed: !!proxyUrl };
+      if (cached) {
+        const ageMs = Date.now() - (cached.fetchedAt ?? 0);
+        const versionFresh = !!cached.clientVersion && ageMs < VERSION_STALENESS_MS;
+        if (cached.visitorData || versionFresh) {
+          logger.debug(
+            { hasVisitorData: !!cached.visitorData, versionFresh, ageMs },
+            'YouTube bootstrap served from cache',
+          );
+          return { ...cached, proxyUsed: !!proxyUrl };
+        }
+        logger.info(
+          { cachedVersion: cached.clientVersion, ageMs },
+          'Cached bootstrap stale — refreshing from network',
+        );
       }
     } catch {
       // Cache unavailable — proceed to network
@@ -270,7 +289,7 @@ export async function fetchYouTubeBootstrap(options?: {
     }
   }
 
-  if (result.visitorData) {
+  if (result.visitorData || result.clientVersion) {
     result.fetchedAt = Date.now();
     try {
       await cacheSet(CACHE_KEY, result, CACHE_TTL_SECONDS);
@@ -282,8 +301,9 @@ export async function fetchYouTubeBootstrap(options?: {
         source: result.source,
         clientVersion: result.clientVersion,
         hasApiKey: !!result.apiKey,
+        hasVisitorData: !!result.visitorData,
         proxied: !!proxyUrl,
-        visitorDataPrefix: result.visitorData.slice(0, 12) + '...',
+        visitorDataPrefix: result.visitorData ? result.visitorData.slice(0, 12) + '...' : null,
       },
       'YouTube bootstrap succeeded',
     );

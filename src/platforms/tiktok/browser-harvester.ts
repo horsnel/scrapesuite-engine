@@ -31,6 +31,7 @@ import { createChildLogger } from '../../utils/logger';
 import type { Browser, BrowserContext, Page } from 'playwright';
 
 const logger = createChildLogger('tiktok-browser-harvester');
+import { recordAttempt } from '../telemetry';
 
 // ===============================================================================
 // TYPES
@@ -106,6 +107,26 @@ export class TikTokBrowserHarvester {
    * @returns Session payload ready for `TikTokManager.importBrowserSession()`
    */
   async harvestSession(options?: HarvestOptions): Promise<TikTokBrowserSession> {
+    // playwright is an optional runtime dependency — load lazily so the
+    // module works in environments where it is not installed
+    const harvestStartedAt = Date.now();
+    try {
+      return await this.harvestSessionInner(options);
+    } catch (err: any) {
+      recordAttempt({
+        surface: 'tiktok.harvest',
+        outcome: err?.name === 'TimeoutError' || err?.name === 'AbortError' ? 'timeout' : 'network_error',
+        url: options?.targetUrl ?? 'https://www.tiktok.com/',
+        durationMs: Date.now() - harvestStartedAt,
+        context: { proxyTier: options?.proxyUrl ? 'proxy' : 'direct', sessionProvenance: 'harvested' },
+        response: { marker: (err?.message ?? String(err)).slice(0, 120) },
+      });
+      throw err;
+    }
+  }
+
+  private async harvestSessionInner(options?: HarvestOptions): Promise<TikTokBrowserSession> {
+    const harvestStartedAt = Date.now();
     const {
       targetUrl = 'https://www.tiktok.com/',
       executablePath,
@@ -224,6 +245,19 @@ export class TikTokBrowserHarvester {
         },
         'TikTok browser session harvested',
       );
+
+      recordAttempt({
+        surface: 'tiktok.harvest',
+        outcome: universalData || sigiState ? 'success' : 'parse_empty',
+        url: session.pageUrl,
+        durationMs: Date.now() - harvestStartedAt,
+        context: { proxyTier: proxyUrl ? 'proxy' : 'direct', sessionProvenance: 'harvested' },
+        response: {
+          status: response?.status() ?? 0,
+          bytes: Object.keys(cookies).length,
+          marker: universalData || sigiState ? undefined : 'no __UNIVERSAL_DATA__ / SIGI_STATE on page (geo-block or wall)',
+        },
+      });
 
       return session;
     } finally {

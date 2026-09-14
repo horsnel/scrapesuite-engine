@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src/platforms/**/*",
+    "src/utils/**/*",
+    "src/self-improver/**/*",
+    "src/types/**/*"
+  ],
+  "exclude": ["node_modules", "dist", "test"]
+}

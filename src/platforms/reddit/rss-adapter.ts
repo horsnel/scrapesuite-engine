@@ -29,6 +29,7 @@
  */
 
 import { createChildLogger } from '../../utils/logger';
+import { recordAttempt, type PlatformOutcome } from '../telemetry';
 import type {
   RedditRssEntry,
   RedditRssFetchResult,
@@ -350,6 +351,16 @@ export class RedditRssAdapter {
   ): Promise<RedditRssFetchResult & { responseHeaders: Record<string, string | undefined> }> {
     const feedUrl = this.buildRssUrl(url, options?.limit);
     const startedAt = Date.now();
+    // Telemetry helper — fire-and-forget, one call per terminal outcome.
+    const telem = (outcome: PlatformOutcome, status = 0, marker?: string) =>
+      recordAttempt({
+        surface: 'reddit.rss',
+        outcome,
+        url: feedUrl ?? url,
+        durationMs: Date.now() - startedAt,
+        context: { sessionProvenance: 'synthetic' },
+        response: { status, bytes: 0, marker },
+      });
     const base: RedditRssFetchResult = {
       success: false,
       feedUrl: feedUrl ?? url,
@@ -393,6 +404,7 @@ export class RedditRssAdapter {
       );
       base.fetchedAt = Date.now();
       logger.warn({ feedUrl, err: err?.message }, 'RSS feed fetch failed');
+      telem(isTimeout ? 'timeout' : 'network_error');
       return { ...base, responseHeaders: {} };
     }
 
@@ -407,17 +419,20 @@ export class RedditRssAdapter {
     if (response.status === 429) {
       this.stats.rateLimitEncounters++;
       base.errors.push('Rate limited (429) on RSS feed');
+      telem('rate_limited', response.status);
       return { ...base, responseHeaders };
     }
 
     if (response.status === 403 || response.status === 401) {
       this.stats.blockedEncounters++;
       base.errors.push(`Blocked (${response.status}) on RSS feed`);
+      telem('bot_wall', response.status);
       return { ...base, responseHeaders };
     }
 
     if (!response.ok) {
       base.errors.push(`HTTP ${response.status}: ${response.statusText}`);
+      telem(response.status >= 500 ? 'network_error' : 'bot_wall', response.status);
       return { ...base, responseHeaders };
     }
 
@@ -432,6 +447,7 @@ export class RedditRssAdapter {
 
     if (!/<feed[\s>]/i.test(xml)) {
       base.errors.push('Response is not an Atom feed (unexpected payload)');
+      telem('parse_empty', response.status, xml.slice(0, 120));
       return { ...base, responseHeaders };
     }
 
@@ -446,6 +462,13 @@ export class RedditRssAdapter {
       entries: parsed.entries.length,
       durationMs: Date.now() - startedAt,
     }, 'RSS feed fetched and parsed');
+
+    // Zero-result tripwire: bytes arrived, no entries parsed.
+    if (parsed.entries.length === 0) {
+      telem('parse_empty', response.status, xml.slice(0, 120));
+    } else {
+      telem('success', response.status);
+    }
 
     return {
       success: true,

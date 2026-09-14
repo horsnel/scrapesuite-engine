@@ -9,6 +9,7 @@
 
 import { ProxyAgent as UndiciProxyAgent } from 'undici';
 import { createChildLogger } from './logger';
+import { pickProxy, reportResult, type PoolOutcome } from './proxy-pool';
 
 const logger = createChildLogger('proxy-fetch');
 
@@ -66,14 +67,22 @@ export async function proxyFetch(
   // Use undici's fetch with ProxyAgent for proper proxy support
   const { fetch: undiciFetch } = await import('undici');
 
-  const response = await undiciFetch(url, {
-    method: options.method || 'GET',
-    headers: options.headers,
-    signal: options.signal,
-    body: options.body as any,
-    redirect: options.redirect || 'follow',
-    dispatcher: agent,
-  });
+  let response;
+  try {
+    response = await undiciFetch(url, {
+      method: options.method || 'GET',
+      headers: options.headers,
+      signal: options.signal,
+      body: options.body as any,
+      redirect: options.redirect || 'follow',
+      dispatcher: agent,
+    });
+  } catch (err: any) {
+    // Proxy burn accounting: network failures through the proxy count against it.
+    const isTimeout = err?.name === 'TimeoutError' || err?.name === 'AbortError' || err?.code === 'UND_ERR_ABORTED';
+    reportResult(proxyUrl, isTimeout ? 'timeout' : 'network_error', err?.message?.slice(0, 120));
+    throw err;
+  }
 
   const responseHeaders: Record<string, string> = {};
   try {
@@ -87,6 +96,16 @@ export async function proxyFetch(
       });
     } catch {}
   }
+
+  // Proxy burn accounting: classify the status for the health pool. Only
+  // pool-managed proxies are affected; one-off explicit proxies are ignored
+  // by the pool's id matching.
+  const status = response.status;
+  if (status >= 200 && status < 400) reportResult(proxyUrl, 'success');
+  else if (status === 429) reportResult(proxyUrl, 'rate_limited');
+  else if (status === 403 || status === 401) reportResult(proxyUrl, 'bot_wall');
+  else if (status >= 500) reportResult(proxyUrl, 'network_error');
+  else reportResult(proxyUrl, 'shape_rejected');
 
   return {
     text: await response.text() as string,
@@ -137,6 +156,18 @@ export function resolveProxyUrl(
   platform?: 'youtube' | 'tiktok',
 ): string | undefined {
   if (explicit) return explicit;
+
+  // Health-aware pool rotation (when configured and not disabled). The pool
+  // never overrides an explicit proxy, but it does outrank static env vars —
+  // that's the whole point of rotation.
+  if (process.env.SCRAPESUITE_PROXY_POOL_ROTATE !== '0') {
+    try {
+      const picked = pickProxy();
+      if (picked) return picked.url;
+    } catch {
+      // Pool module unavailable — fall through to static envs.
+    }
+  }
 
   const candidates: Array<string | undefined> = [];
   if (platform === 'youtube') candidates.push(process.env.SCRAPESUITE_YOUTUBE_PROXY);
